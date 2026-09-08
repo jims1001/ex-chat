@@ -1,0 +1,36 @@
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Chatwoot source references & prototypes (excluded from repository)
+Chatwoot完整文档/
+Chatwoot客服系统界面原型/
+
+# Binaries and build outputs
+bin/
+dist/
+tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+
+# Go test coverage
+*.coverprofile
+coverage.txt
+coverage.html
+
+# Local environment and data files
+.env
+.env.local
+data/*.db
+data/*.db-journal
+data/*.db-wal
+*.db
+*.db-journal
+*.db-wal
