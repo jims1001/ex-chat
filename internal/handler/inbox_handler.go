@@ -30,6 +30,9 @@ type CreateInboxRequest struct {
 	GreetingMessage     string `json:"greeting_message"`
 	GreetingEnabled     *bool  `json:"greeting_enabled"`
 	WorkingHoursEnabled *bool  `json:"working_hours_enabled"`
+	OutOfOfficeMessage  string `json:"out_of_office_message"`
+	Timezone            string `json:"timezone"`
+	WorkingHours        string `json:"working_hours"`
 }
 
 type UpdateInboxRequest struct {
@@ -37,6 +40,9 @@ type UpdateInboxRequest struct {
 	GreetingMessage     string `json:"greeting_message"`
 	GreetingEnabled     *bool  `json:"greeting_enabled"`
 	WorkingHoursEnabled *bool  `json:"working_hours_enabled"`
+	OutOfOfficeMessage  string `json:"out_of_office_message"`
+	Timezone            string `json:"timezone"`
+	WorkingHours        string `json:"working_hours"`
 }
 
 type AddInboxMembersRequest struct {
@@ -95,6 +101,9 @@ func (h *InboxHandler) CreateInbox(c *gin.Context) {
 		GreetingMessage:     req.GreetingMessage,
 		GreetingEnabled:     greetingEnabled,
 		WorkingHoursEnabled: workingHoursEnabled,
+		OutOfOfficeMessage:  req.OutOfOfficeMessage,
+		Timezone:            req.Timezone,
+		WorkingHours:        req.WorkingHours,
 	}
 
 	if err := h.inboxRepo.Create(&inbox); err != nil {
@@ -157,6 +166,15 @@ func (h *InboxHandler) UpdateInbox(c *gin.Context) {
 	}
 	if req.WorkingHoursEnabled != nil {
 		inbox.WorkingHoursEnabled = *req.WorkingHoursEnabled
+	}
+	if req.OutOfOfficeMessage != "" {
+		inbox.OutOfOfficeMessage = req.OutOfOfficeMessage
+	}
+	if req.Timezone != "" {
+		inbox.Timezone = req.Timezone
+	}
+	if req.WorkingHours != "" {
+		inbox.WorkingHours = req.WorkingHours
 	}
 
 	if err := h.inboxRepo.Update(inbox); err != nil {

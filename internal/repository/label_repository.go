@@ -37,6 +37,10 @@ func (r *LabelRepository) List(accountID uint) ([]domain.Label, error) {
 	return labels, err
 }
 
+func (r *LabelRepository) Update(label *domain.Label) error {
+	return r.db.Save(label).Error
+}
+
 func (r *LabelRepository) Delete(accountID, id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		_ = tx.Where("label_id = ?", id).Delete(&domain.ConversationLabel{}).Error

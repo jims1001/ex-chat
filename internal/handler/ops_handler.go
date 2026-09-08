@@ -51,6 +51,9 @@ func (h *OpsHandler) ListCannedResponses(c *gin.Context) {
 	accountID := rawAccountID.(uint)
 
 	search := strings.TrimSpace(c.Query("q"))
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search"))
+	}
 	list, err := h.cannedRepo.List(accountID, search)
 	if err != nil {
 		response.InternalError(c, "Failed to list canned responses")
@@ -178,6 +181,46 @@ func (h *OpsHandler) CreateLabel(c *gin.Context) {
 	}
 
 	response.Created(c, label)
+}
+
+func (h *OpsHandler) UpdateLabel(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid ID")
+		return
+	}
+
+	label, err := h.labelRepo.FindByID(accountID, uint(id))
+	if err != nil || label == nil {
+		response.NotFound(c, "Label not found")
+		return
+	}
+
+	var req CreateLabelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	if req.Title != "" {
+		label.Title = strings.TrimSpace(req.Title)
+	}
+	if req.Description != "" {
+		label.Description = req.Description
+	}
+	if req.Color != "" {
+		label.Color = req.Color
+	}
+
+	if err := h.labelRepo.Update(label); err != nil {
+		response.InternalError(c, "Failed to update label")
+		return
+	}
+
+	response.Success(c, label)
 }
 
 func (h *OpsHandler) DeleteLabel(c *gin.Context) {

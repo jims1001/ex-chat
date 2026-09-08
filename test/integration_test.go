@@ -3,6 +3,7 @@ package test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -84,7 +85,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		"greeting_message": "Welcome! How can we assist you today?",
 	})
 	wInbox := httptest.NewRecorder()
-	reqInbox, _ := http.NewRequest("POST", "/api/v1/accounts/1/inboxes", bytes.NewBuffer(inboxBody))
+	reqInbox, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/inboxes", accountID), bytes.NewBuffer(inboxBody))
 	reqInbox.Header.Set("Authorization", "Bearer "+token)
 	reqInbox.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wInbox, reqInbox)
@@ -108,7 +109,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		"user_ids": []uint{adminID},
 	})
 	wMember := httptest.NewRecorder()
-	reqMember, _ := http.NewRequest("POST", "/api/v1/accounts/1/inboxes/1/members", bytes.NewBuffer(addMemberBody))
+	reqMember, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/inboxes/%d/members", accountID, inboxID), bytes.NewBuffer(addMemberBody))
 	reqMember.Header.Set("Authorization", "Bearer "+token)
 	reqMember.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wMember, reqMember)
@@ -161,7 +162,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 
 	// Step 6: Agent views the conversation in their inbox
 	wGetConv := httptest.NewRecorder()
-	reqGetConv, _ := http.NewRequest("GET", "/api/v1/accounts/1/conversations/1", nil)
+	reqGetConv, _ := http.NewRequest("GET", fmt.Sprintf("/api/v1/accounts/%d/conversations/%d", accountID, convID), nil)
 	reqGetConv.Header.Set("Authorization", "Bearer "+token)
 	engine.ServeHTTP(wGetConv, reqGetConv)
 	if wGetConv.Code != http.StatusOK {
@@ -174,7 +175,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		"private": false,
 	})
 	wReply := httptest.NewRecorder()
-	reqReply, _ := http.NewRequest("POST", "/api/v1/accounts/1/conversations/1/messages", bytes.NewBuffer(replyBody))
+	reqReply, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/messages", accountID, convID), bytes.NewBuffer(replyBody))
 	reqReply.Header.Set("Authorization", "Bearer "+token)
 	reqReply.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wReply, reqReply)
@@ -188,7 +189,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		"color": "#00aa55",
 	})
 	wLabel := httptest.NewRecorder()
-	reqLabel, _ := http.NewRequest("POST", "/api/v1/accounts/1/labels", bytes.NewBuffer(labelBody))
+	reqLabel, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/labels", accountID), bytes.NewBuffer(labelBody))
 	reqLabel.Header.Set("Authorization", "Bearer "+token)
 	reqLabel.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wLabel, reqLabel)
@@ -205,12 +206,12 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		"label_ids": []uint{labelID},
 	})
 	wAttach := httptest.NewRecorder()
-	reqAttach, _ := http.NewRequest("POST", "/api/v1/accounts/1/conversations/1/labels", bytes.NewBuffer(attachBody))
+	reqAttach, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/labels", accountID, convID), bytes.NewBuffer(attachBody))
 	reqAttach.Header.Set("Authorization", "Bearer "+token)
 	reqAttach.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wAttach, reqAttach)
 	if wAttach.Code != http.StatusOK {
-		t.Fatalf("attach label failed: %d", wAttach.Code)
+		t.Fatalf("attach label failed: %d, body: %s", wAttach.Code, wAttach.Body.String())
 	}
 
 	// Step 9: Agent resolves the conversation
@@ -218,7 +219,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		"status": "resolved",
 	})
 	wResolve := httptest.NewRecorder()
-	reqResolve, _ := http.NewRequest("POST", "/api/v1/accounts/1/conversations/1/toggle_status", bytes.NewBuffer(resolveBody))
+	reqResolve, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/toggle_status", accountID, convID), bytes.NewBuffer(resolveBody))
 	reqResolve.Header.Set("Authorization", "Bearer "+token)
 	reqResolve.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wResolve, reqResolve)
@@ -228,7 +229,7 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 
 	// Step 10: Check Reports Summary
 	wSummary := httptest.NewRecorder()
-	reqSummary, _ := http.NewRequest("GET", "/api/v2/accounts/1/reports/summary", nil)
+	reqSummary, _ := http.NewRequest("GET", fmt.Sprintf("/api/v2/accounts/%d/reports/summary", accountID), nil)
 	reqSummary.Header.Set("Authorization", "Bearer "+token)
 	engine.ServeHTTP(wSummary, reqSummary)
 	if wSummary.Code != http.StatusOK {

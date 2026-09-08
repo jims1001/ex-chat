@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
@@ -13,9 +14,10 @@ import (
 )
 
 type AuthHandler struct {
-	cfg         *config.Config
-	userRepo    *repository.UserRepository
-	accountRepo *repository.AccountRepository
+	cfg            *config.Config
+	userRepo       *repository.UserRepository
+	accountRepo    *repository.AccountRepository
+	enterpriseRepo repository.ChannelAuthEnterpriseRepository
 }
 
 func NewAuthHandler(cfg *config.Config, userRepo *repository.UserRepository, accountRepo *repository.AccountRepository) *AuthHandler {
@@ -24,6 +26,10 @@ func NewAuthHandler(cfg *config.Config, userRepo *repository.UserRepository, acc
 		userRepo:    userRepo,
 		accountRepo: accountRepo,
 	}
+}
+
+func (h *AuthHandler) SetEnterpriseRepo(enterpriseRepo repository.ChannelAuthEnterpriseRepository) {
+	h.enterpriseRepo = enterpriseRepo
 }
 
 type SignUpRequest struct {
@@ -36,6 +42,7 @@ type SignUpRequest struct {
 type SignInRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	MFAOTP   string `json:"mfa_otp"`
 }
 
 type AvailabilityRequest struct {
@@ -128,6 +135,38 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 		return
 	}
 
+	// Check if user has MFA enabled
+	if h.enterpriseRepo != nil {
+		profile, err := h.enterpriseRepo.GetMFAProfile(user.ID)
+		if err == nil && profile != nil && profile.Enabled {
+			if req.MFAOTP == "" {
+				// Block login: prompt client for MFA token
+				response.Unauthorized(c, "Multi-factor authentication required")
+				return
+			}
+			// Verify MFA TOTP code or backup code
+			valid := auth.VerifyTOTPCode(profile.Secret, req.MFAOTP)
+			if !valid {
+				var backupCodes []string
+				_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
+				for i, code := range backupCodes {
+					if code == req.MFAOTP {
+						valid = true
+						backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
+						bBytes, _ := json.Marshal(backupCodes)
+						profile.BackupCodes = string(bBytes)
+						_ = h.enterpriseRepo.SaveMFAProfile(profile)
+						break
+					}
+				}
+			}
+			if !valid {
+				response.Unauthorized(c, "Invalid MFA verification code")
+				return
+			}
+		}
+	}
+
 	token, err := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
 	if err != nil {
 		response.InternalError(c, "Failed to generate authentication token")
@@ -187,4 +226,52 @@ func (h *AuthHandler) UpdateAvailability(c *gin.Context) {
 
 	user, _ := h.userRepo.FindByID(userID)
 	response.Success(c, user)
+}
+
+type UpdateProfileRequest struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
+}
+
+func (h *AuthHandler) UpdateProfile(c *gin.Context) {
+	rawUserID, exists := c.Get(middleware.ContextUserID)
+	if !exists {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	userID := rawUserID.(uint)
+
+	var req UpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid profile payload: "+err.Error())
+		return
+	}
+
+	user, err := h.userRepo.FindByID(userID)
+	if err != nil || user == nil {
+		response.NotFound(c, "User not found")
+		return
+	}
+
+	if strings.TrimSpace(req.Name) != "" {
+		user.Name = strings.TrimSpace(req.Name)
+	}
+	if strings.TrimSpace(req.DisplayName) != "" {
+		user.Name = strings.TrimSpace(req.DisplayName)
+	}
+	if req.AvatarURL != "" {
+		user.AvatarURL = req.AvatarURL
+	}
+
+	if err := h.userRepo.Update(user); err != nil {
+		response.InternalError(c, "Failed to update profile")
+		return
+	}
+
+	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
+	response.Success(c, gin.H{
+		"user":     user,
+		"accounts": accounts,
+	})
 }

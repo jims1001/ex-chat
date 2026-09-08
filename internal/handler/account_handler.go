@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
@@ -34,6 +36,43 @@ type AddAgentRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Role     string `json:"role"`
 	Password string `json:"password"`
+}
+
+type UpdateAgentRequest struct {
+	Role         string `json:"role"`
+	Availability string `json:"availability"`
+	Name         string `json:"name"`
+}
+
+type CreateCustomRoleRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	Permissions any    `json:"permissions" binding:"required"`
+}
+
+type UpdateCustomRoleRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Permissions any    `json:"permissions"`
+}
+
+func formatCustomRolePermissions(val any) string {
+	if val == nil {
+		return "[]"
+	}
+	switch v := val.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return "[]"
+		}
+		return v
+	default:
+		bytes, err := json.Marshal(v)
+		if err != nil {
+			return "[]"
+		}
+		return string(bytes)
+	}
 }
 
 func (h *AccountHandler) CreateAccount(c *gin.Context) {
@@ -187,3 +226,166 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 	membership.User = user
 	response.Created(c, membership)
 }
+
+func (h *AccountHandler) UpdateAgent(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	agentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid agent ID")
+		return
+	}
+
+	membership, err := h.accountRepo.GetMembership(accountID, uint(agentID))
+	if err != nil || membership == nil {
+		response.NotFound(c, "Agent not found in account")
+		return
+	}
+
+	var req UpdateAgentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if req.Role != "" {
+		membership.Role = req.Role
+	}
+	if req.Availability != "" {
+		membership.Availability = req.Availability
+	}
+
+	if err := h.accountRepo.UpdateMember(membership); err != nil {
+		response.InternalError(c, "Failed to update agent")
+		return
+	}
+
+	if req.Name != "" {
+		user, _ := h.userRepo.FindByID(uint(agentID))
+		if user != nil {
+			user.Name = req.Name
+			_ = h.userRepo.Update(user)
+		}
+	}
+
+	membership, _ = h.accountRepo.GetMembership(accountID, uint(agentID))
+	response.Success(c, membership)
+}
+
+func (h *AccountHandler) RemoveAgent(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	agentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid agent ID")
+		return
+	}
+
+	if err := h.accountRepo.RemoveMember(accountID, uint(agentID)); err != nil {
+		response.InternalError(c, "Failed to remove agent")
+		return
+	}
+
+	response.Success(c, gin.H{"deleted": true})
+}
+
+func (h *AccountHandler) ListCustomRoles(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	roles, err := h.accountRepo.ListCustomRoles(accountID)
+	if err != nil {
+		response.InternalError(c, "Failed to list custom roles")
+		return
+	}
+	response.Success(c, roles)
+}
+
+func (h *AccountHandler) CreateCustomRole(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	var req CreateCustomRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	role := domain.CustomRole{
+		AccountID:   accountID,
+		Name:        req.Name,
+		Description: req.Description,
+		Permissions: formatCustomRolePermissions(req.Permissions),
+	}
+	if err := h.accountRepo.CreateCustomRole(&role); err != nil {
+		response.InternalError(c, "Failed to create custom role")
+		return
+	}
+	response.Created(c, role)
+}
+
+func (h *AccountHandler) GetCustomRole(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid role ID")
+		return
+	}
+	role, err := h.accountRepo.GetCustomRole(accountID, uint(id))
+	if err != nil || role == nil {
+		response.NotFound(c, "Custom role not found")
+		return
+	}
+	response.Success(c, role)
+}
+
+func (h *AccountHandler) UpdateCustomRole(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid role ID")
+		return
+	}
+	role, err := h.accountRepo.GetCustomRole(accountID, uint(id))
+	if err != nil || role == nil {
+		response.NotFound(c, "Custom role not found")
+		return
+	}
+	var req UpdateCustomRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if req.Name != "" {
+		role.Name = req.Name
+	}
+	if req.Description != "" {
+		role.Description = req.Description
+	}
+	if req.Permissions != nil {
+		role.Permissions = formatCustomRolePermissions(req.Permissions)
+	}
+	if err := h.accountRepo.UpdateCustomRole(role); err != nil {
+		response.InternalError(c, "Failed to update custom role")
+		return
+	}
+	response.Success(c, role)
+}
+
+func (h *AccountHandler) DeleteCustomRole(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid role ID")
+		return
+	}
+	if err := h.accountRepo.DeleteCustomRole(accountID, uint(id)); err != nil {
+		response.InternalError(c, "Failed to delete custom role")
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
+

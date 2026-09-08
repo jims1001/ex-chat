@@ -30,6 +30,12 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
+	if sqlDB, err := db.DB(); err == nil {
+		if cfg.DBPath == ":memory:" {
+			sqlDB.SetMaxOpenConns(1)
+		}
+	}
+
 	if err := AutoMigrate(db); err != nil {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
@@ -52,5 +58,66 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.Label{},
 		&domain.ConversationLabel{},
 		&domain.CannedResponse{},
+		&domain.LocalChangeJournal{},
+		&domain.AuditLog{},
+		&domain.SecurityAuditLog{},
+		&domain.AuditExport{},
+		&domain.IntegrityVerification{},
+		&domain.DataChangeCorrection{},
+		&domain.AccessLog{},
+		&domain.Team{},
+		&domain.TeamMember{},
+		&domain.CapacityPolicy{},
+		&domain.CustomAttributeDefinition{},
+		&domain.ContactNote{},
+		&domain.AutomationRule{},
+		&domain.Portal{},
+		&domain.Category{},
+		&domain.Article{},
+		&domain.Webhook{},
+		&domain.DashboardApp{},
+		&domain.SystemConfig{},
+		&domain.AccountFeature{},
+		&domain.Macro{},
+		&domain.Notification{},
+		&domain.CSATSurvey{},
+		&domain.PlatformApp{},
+		&domain.NotificationSubscription{},
+		&domain.Company{},
+		&domain.Campaign{},
+		&domain.SLAPolicy{},
+		&domain.AgentBot{},
+		&domain.Attachment{},
+		&domain.CustomFilter{},
+		&domain.DraftMessage{},
+		&domain.ConversationParticipant{},
+		&domain.Call{},
+		&domain.Conference{},
+		&domain.SAMLSetting{},
+		&domain.UserSession{},
+		&domain.PasswordResetToken{},
+		&domain.MFAProfile{},
+		&domain.DataImport{},
+		&domain.MigrationJob{},
+		&domain.ReportingEvent{},
+		&domain.AccountLimit{},
+		&domain.AccountBilling{},
+		&domain.Onboarding{},
+		&domain.BrandedEmailLayout{},
+		&domain.EmailChannelMigration{},
+		&domain.WebhookDelivery{},
+		&domain.IntegrationInstallation{},
+		&domain.SLABreachLog{},
+		&domain.CampaignDelivery{},
+		&domain.PushDeliveryLog{},
+		&domain.CaptainAssistant{},
+		&domain.CaptainKnowledgeDoc{},
+		&domain.CaptainDocChunk{},
+		&domain.AIScenario{},
+		&domain.AIUsageQuota{},
+		&domain.CustomRole{},
+		&domain.CallICECandidate{},
+		&domain.SubscriptionPlan{},
+		&domain.AccountSubscription{},
 	)
 }

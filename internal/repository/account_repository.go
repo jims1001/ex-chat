@@ -70,3 +70,43 @@ func (r *AccountRepository) ListMembers(accountID uint) ([]domain.AccountUser, e
 	err := r.db.Preload("User").Where("account_id = ?", accountID).Find(&members).Error
 	return members, err
 }
+
+func (r *AccountRepository) UpdateMember(member *domain.AccountUser) error {
+	return r.db.Save(member).Error
+}
+
+func (r *AccountRepository) RemoveMember(accountID, userID uint) error {
+	return r.db.Where("account_id = ? AND user_id = ?", accountID, userID).Delete(&domain.AccountUser{}).Error
+}
+
+func (r *AccountRepository) ListCustomRoles(accountID uint) ([]domain.CustomRole, error) {
+	var roles []domain.CustomRole
+	err := r.db.Where("account_id = ?", accountID).Order("id ASC").Find(&roles).Error
+	return roles, err
+}
+
+func (r *AccountRepository) CreateCustomRole(role *domain.CustomRole) error {
+	return r.db.Create(role).Error
+}
+
+func (r *AccountRepository) GetCustomRole(accountID, id uint) (*domain.CustomRole, error) {
+	var role domain.CustomRole
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&role).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &role, nil
+}
+
+func (r *AccountRepository) UpdateCustomRole(role *domain.CustomRole) error {
+	return r.db.Save(role).Error
+}
+
+func (r *AccountRepository) DeleteCustomRole(accountID, id uint) error {
+	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.CustomRole{}).Error
+}
+
+

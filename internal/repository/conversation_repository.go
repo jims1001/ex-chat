@@ -16,6 +16,10 @@ func NewConversationRepository(db *gorm.DB) *ConversationRepository {
 	return &ConversationRepository{db: db}
 }
 
+func (r *ConversationRepository) GetDB() *gorm.DB {
+	return r.db
+}
+
 func (r *ConversationRepository) Create(c *domain.Conversation) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var maxDisplayID uint
@@ -26,7 +30,7 @@ func (r *ConversationRepository) Create(c *domain.Conversation) error {
 		_ = row.Scan(&maxDisplayID)
 
 		c.DisplayID = maxDisplayID + 1
-		c.LastActivityAt = time.Now()
+		c.LastActivityAt = time.Now().UTC()
 
 		return tx.Create(c).Error
 	})
@@ -101,7 +105,7 @@ func (r *ConversationRepository) UpdateStatus(accountID, id uint, status string,
 	updates := map[string]any{
 		"status":           status,
 		"snoozed_until":    snoozedUntil,
-		"last_activity_at": time.Now(),
+		"last_activity_at": time.Now().UTC(),
 	}
 	return r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND id = ?", accountID, id).
@@ -109,16 +113,41 @@ func (r *ConversationRepository) UpdateStatus(accountID, id uint, status string,
 }
 
 func (r *ConversationRepository) Assign(accountID, id uint, assigneeID *uint) error {
+	updates := map[string]any{
+		"assignee_id":      assigneeID,
+		"last_activity_at": time.Now().UTC(),
+	}
 	return r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(map[string]any{
-			"assignee_id":      assigneeID,
-			"last_activity_at": time.Now(),
-		}).Error
+		Updates(updates).Error
+}
+
+func (r *ConversationRepository) AssignWithTeam(accountID, id uint, assigneeID, teamID *uint) error {
+	updates := map[string]any{
+		"last_activity_at": time.Now().UTC(),
+	}
+	if assigneeID != nil {
+		updates["assignee_id"] = assigneeID
+	}
+	if teamID != nil {
+		updates["team_id"] = teamID
+	}
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(updates).Error
 }
 
 func (r *ConversationRepository) TouchActivity(accountID, id uint) error {
 	return r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND id = ?", accountID, id).
-		Update("last_activity_at", time.Now()).Error
+		Update("last_activity_at", time.Now().UTC()).Error
+}
+
+func (r *ConversationRepository) UpdatePriority(accountID, id uint, priority string) error {
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(map[string]any{
+			"priority":         priority,
+			"last_activity_at": time.Now().UTC(),
+		}).Error
 }
