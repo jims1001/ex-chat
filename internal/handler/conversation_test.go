@@ -14,6 +14,8 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/handler"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,8 +35,11 @@ func TestConversation_FullLifecycle(t *testing.T) {
 	contactRepo := repository.NewContactRepository(db)
 	convRepo := repository.NewConversationRepository(db)
 	msgRepo := repository.NewMessageRepository(db)
+	hub := ws.NewHub()
+	go hub.Run()
+	routingService := service.NewRoutingService(db, convRepo, hub)
 
-	convHandler := handler.NewConversationHandler(convRepo, msgRepo, inboxRepo, contactRepo)
+	convHandler := handler.NewConversationHandler(convRepo, msgRepo, inboxRepo, contactRepo, routingService, hub)
 
 	r := gin.New()
 

@@ -7,15 +7,19 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
 type ConversationHandler struct {
-	convRepo    *repository.ConversationRepository
-	msgRepo     *repository.MessageRepository
-	inboxRepo   *repository.InboxRepository
-	contactRepo *repository.ContactRepository
+	convRepo       *repository.ConversationRepository
+	msgRepo        *repository.MessageRepository
+	inboxRepo      *repository.InboxRepository
+	contactRepo    *repository.ContactRepository
+	routingService *service.RoutingService
+	hub            *ws.Hub
 }
 
 func NewConversationHandler(
@@ -23,12 +27,16 @@ func NewConversationHandler(
 	msgRepo *repository.MessageRepository,
 	inboxRepo *repository.InboxRepository,
 	contactRepo *repository.ContactRepository,
+	routingService *service.RoutingService,
+	hub *ws.Hub,
 ) *ConversationHandler {
 	return &ConversationHandler{
-		convRepo:    convRepo,
-		msgRepo:     msgRepo,
-		inboxRepo:   inboxRepo,
-		contactRepo: contactRepo,
+		convRepo:       convRepo,
+		msgRepo:        msgRepo,
+		inboxRepo:      inboxRepo,
+		contactRepo:    contactRepo,
+		routingService: routingService,
+		hub:            hub,
 	}
 }
 
@@ -366,6 +374,19 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 	if err := h.msgRepo.Create(&msg); err != nil {
 		response.InternalError(c, "Failed to create initial message")
 		return
+	}
+
+	if h.routingService != nil {
+		_, _ = h.routingService.AutoAssign(&conv)
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      inbox.AccountID,
+			ConversationID: conv.ID,
+			Data:           msg,
+		})
 	}
 
 	fullConv, _ := h.convRepo.FindByID(inbox.AccountID, conv.ID)
