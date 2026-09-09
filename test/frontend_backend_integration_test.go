@@ -518,4 +518,107 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 			t.Fatalf("unexpected message payload from ws: %s", string(msgBytes))
 		}
 	})
+
+	// -------------------------------------------------------------
+	// Frontend CRUD & Persistence Verification
+	// -------------------------------------------------------------
+	t.Run("Frontend_CRUD_Persistence_Verification", func(t *testing.T) {
+		// 1. Company CRUD
+		compBody, _ := json.Marshal(map[string]any{
+			"name":        "清屿生活科技有限公司",
+			"domain":      "qingyu.example.com",
+			"description": "新零售重点客户",
+		})
+		wCreateComp := httptest.NewRecorder()
+		reqCreateComp, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/companies", accountID), bytes.NewBuffer(compBody))
+		reqCreateComp.Header.Set("Authorization", authHeader)
+		reqCreateComp.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wCreateComp, reqCreateComp)
+		if wCreateComp.Code != http.StatusCreated && wCreateComp.Code != http.StatusOK {
+			t.Fatalf("POST companies failed: %d, body: %s", wCreateComp.Code, wCreateComp.Body.String())
+		}
+
+		var compResp struct {
+			Data struct {
+				ID   uint   `json:"id"`
+				Name string `json:"name"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(wCreateComp.Body.Bytes(), &compResp)
+		if compResp.Data.ID == 0 {
+			t.Fatalf("expected non-zero company ID, got: %s", wCreateComp.Body.String())
+		}
+
+		// Company List Check
+		wListComp := httptest.NewRecorder()
+		reqListComp, _ := http.NewRequest("GET", fmt.Sprintf("/api/v1/accounts/%d/companies", accountID), nil)
+		reqListComp.Header.Set("Authorization", authHeader)
+		engine.ServeHTTP(wListComp, reqListComp)
+		if wListComp.Code != http.StatusOK {
+			t.Fatalf("GET companies failed: %d", wListComp.Code)
+		}
+		if !strings.Contains(wListComp.Body.String(), "清屿生活科技有限公司") {
+			t.Fatalf("expected list to contain company name, got: %s", wListComp.Body.String())
+		}
+
+		// Company Edit via PUT
+		updateCompBody, _ := json.Marshal(map[string]any{
+			"name":        "清屿生活集团",
+			"domain":      "qingyu-group.example.com",
+			"description": "战略升级客户",
+		})
+		wPutComp := httptest.NewRecorder()
+		reqPutComp, _ := http.NewRequest("PUT", fmt.Sprintf("/api/v1/accounts/%d/companies/%d", accountID, compResp.Data.ID), bytes.NewBuffer(updateCompBody))
+		reqPutComp.Header.Set("Authorization", authHeader)
+		reqPutComp.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wPutComp, reqPutComp)
+		if wPutComp.Code != http.StatusOK {
+			t.Fatalf("PUT companies failed: %d, body: %s", wPutComp.Code, wPutComp.Body.String())
+		}
+
+		var dbComp domain.Company
+		if err := db.Where("account_id = ? AND id = ?", accountID, compResp.Data.ID).First(&dbComp).Error; err != nil {
+			t.Fatalf("failed to query updated company from db: %v", err)
+		}
+		if dbComp.Name != "清屿生活集团" {
+			t.Fatalf("expected company name '清屿生活集团', got '%s'", dbComp.Name)
+		}
+
+		// 2. Canned Response CRUD
+		cannedBody, _ := json.Marshal(map[string]any{
+			"short_code": "/delay_info",
+			"content":    "您的包裹目前处于派送中，请耐心等待。",
+		})
+		wCanned := httptest.NewRecorder()
+		reqCanned, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/canned_responses", accountID), bytes.NewBuffer(cannedBody))
+		reqCanned.Header.Set("Authorization", authHeader)
+		reqCanned.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wCanned, reqCanned)
+		if wCanned.Code != http.StatusCreated && wCanned.Code != http.StatusOK {
+			t.Fatalf("POST canned_responses failed: %d, body: %s", wCanned.Code, wCanned.Body.String())
+		}
+
+		// 3. Custom Attribute Definition CRUD
+		attrBody, _ := json.Marshal(map[string]any{
+			"attribute_display_name": "会员积分等级",
+			"attribute_key":          "vip_points_tier",
+			"attribute_model":        "contact_attribute",
+			"attribute_display_type": "text",
+		})
+		wAttr := httptest.NewRecorder()
+		reqAttr, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/custom_attribute_definitions", accountID), bytes.NewBuffer(attrBody))
+		reqAttr.Header.Set("Authorization", authHeader)
+		reqAttr.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wAttr, reqAttr)
+		if wAttr.Code != http.StatusCreated && wAttr.Code != http.StatusOK {
+			t.Fatalf("POST custom_attribute_definitions failed: %d, body: %s", wAttr.Code, wAttr.Body.String())
+		}
+
+		// Verify in DB
+		var dbAttr domain.CustomAttributeDefinition
+		if err := db.Where("account_id = ? AND attribute_key = ?", accountID, "vip_points_tier").First(&dbAttr).Error; err != nil {
+			t.Fatalf("custom attribute not found in DB: %v", err)
+		}
+	})
 }
+
