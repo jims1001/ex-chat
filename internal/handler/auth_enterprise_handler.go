@@ -2,7 +2,6 @@ package handler
 
 import (
 	"crypto/rand"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,18 +14,24 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthEnterpriseHandler struct {
-	repo        repository.ChannelAuthEnterpriseRepository
-	userRepo    *repository.UserRepository
-	accountRepo *repository.AccountRepository
-	portalRepo  *repository.PortalRepository
-	contactRepo *repository.ContactRepository
-	cfg         *config.Config
+	repo             repository.ChannelAuthEnterpriseRepository
+	userRepo         *repository.UserRepository
+	accountRepo      *repository.AccountRepository
+	portalRepo       *repository.PortalRepository
+	contactRepo      *repository.ContactRepository
+	migrationService *service.MigrationService
+	cfg              *config.Config
+}
+
+func (h *AuthEnterpriseHandler) SetMigrationService(ms *service.MigrationService) {
+	h.migrationService = ms
 }
 
 func NewAuthEnterpriseHandler(
@@ -399,7 +404,7 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 
 	var req struct {
 		SourceProvider string `json:"source_provider"` // csv, json
-		ImportType     string `json:"import_type"`     // contacts, conversations
+		ImportType     string `json:"import_type"`     // contacts, conversations, messages, attachments
 		RawData        string `json:"raw_data"`
 		TotalRecords   int    `json:"total_records"`
 	}
@@ -433,161 +438,40 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 	}
 	_ = h.repo.CreateDataImport(imp)
 
-	processed := 0
+	migService := h.migrationService
+	if migService == nil {
+		migService = service.NewMigrationService(h.repo.GetDB())
+	}
+
+	trimmed := strings.TrimSpace(rawData)
+	if trimmed != "" && (provider == "json" || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
+		var js any
+		if err := json.Unmarshal([]byte(trimmed), &js); err != nil {
+			imp.Status = "failed"
+			imp.TotalRecords = 0
+			imp.ProcessedRecords = 0
+			imp.ErrorsJSON = fmt.Sprintf(`[{"error": "Invalid JSON: %s"}]`, err.Error())
+			_ = h.repo.UpdateDataImport(imp)
+			response.BadRequest(c, "Invalid JSON data: "+err.Error())
+			return
+		}
+	}
+
+	var stats *service.MigrationStats
+	var migErr error
+	if trimmed != "" && migService != nil {
+		stats, migErr = migService.Migrate(c.Request.Context(), uint(accountID), importType, trimmed)
+	}
+
 	total := 0
-	db := h.repo.GetDB()
-
-	if rawData != "" {
-		trimmed := strings.TrimSpace(rawData)
-		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") || provider == "json" {
-			var jsonItems []map[string]any
-			var singleItem map[string]any
-			err := json.Unmarshal([]byte(trimmed), &jsonItems)
-			if err != nil {
-				if err2 := json.Unmarshal([]byte(trimmed), &singleItem); err2 == nil {
-					jsonItems = []map[string]any{singleItem}
-					err = nil
-				}
-			}
-			if err != nil {
-				imp.Status = "failed"
-				imp.TotalRecords = 0
-				imp.ProcessedRecords = 0
-				imp.ErrorsJSON = fmt.Sprintf(`[{"error": "Invalid JSON: %s"}]`, err.Error())
-				_ = h.repo.UpdateDataImport(imp)
-				response.BadRequest(c, "Invalid JSON data: "+err.Error())
-				return
-			}
-			total = len(jsonItems)
-			for _, item := range jsonItems {
-				email, _ := item["email"].(string)
-				name, _ := item["name"].(string)
-				phone, _ := item["phone_number"].(string)
-				if phone == "" {
-					phone, _ = item["phone"].(string)
-				}
-				identifier, _ := item["identifier"].(string)
-
-				if name == "" && email != "" {
-					name = strings.Split(email, "@")[0]
-				}
-				if name == "" {
-					name = "Imported Contact"
-				}
-
-				var contact domain.Contact
-				query := db.Where("account_id = ?", accountID)
-				if email != "" && identifier != "" {
-					query = query.Where("email = ? OR identifier = ?", email, identifier)
-				} else if email != "" {
-					query = query.Where("email = ?", email)
-				} else if identifier != "" {
-					query = query.Where("identifier = ?", identifier)
-				} else {
-					query = query.Where("name = ?", name)
-				}
-
-				err := query.First(&contact).Error
-				if err != nil {
-					contact = domain.Contact{
-						AccountID:   uint(accountID),
-						Name:        name,
-						Email:       email,
-						PhoneNumber: phone,
-						Identifier:  identifier,
-						CreatedAt:   time.Now().UTC(),
-					}
-					if err := db.Create(&contact).Error; err == nil {
-						processed++
-					}
-				} else {
-					contact.Name = name
-					if phone != "" {
-						contact.PhoneNumber = phone
-					}
-					_ = db.Save(&contact).Error
-					processed++
-				}
-			}
-		} else {
-			// CSV parsing
-			reader := csv.NewReader(strings.NewReader(trimmed))
-			records, err := reader.ReadAll()
-			if err != nil {
-				imp.Status = "failed"
-				imp.TotalRecords = 0
-				imp.ProcessedRecords = 0
-				imp.ErrorsJSON = fmt.Sprintf(`[{"error": "Invalid CSV: %s"}]`, err.Error())
-				_ = h.repo.UpdateDataImport(imp)
-				response.BadRequest(c, "Invalid CSV data: "+err.Error())
-				return
-			}
-			if len(records) > 0 {
-				header := records[0]
-				colMap := make(map[string]int)
-				for idx, col := range header {
-					colMap[strings.ToLower(strings.TrimSpace(col))] = idx
-				}
-
-				total = len(records) - 1
-				for i := 1; i < len(records); i++ {
-					row := records[i]
-					getVal := func(keys ...string) string {
-						for _, k := range keys {
-							if idx, ok := colMap[k]; ok && idx < len(row) {
-								return strings.TrimSpace(row[idx])
-							}
-						}
-						return ""
-					}
-
-					name := getVal("name", "full_name")
-					email := getVal("email", "email_address")
-					phone := getVal("phone", "phone_number", "mobile")
-					identifier := getVal("identifier", "id", "customer_id")
-
-					if name == "" && email != "" {
-						name = strings.Split(email, "@")[0]
-					}
-					if name == "" {
-						name = "Imported Contact"
-					}
-
-					var contact domain.Contact
-					query := db.Where("account_id = ?", accountID)
-					if email != "" && identifier != "" {
-						query = query.Where("email = ? OR identifier = ?", email, identifier)
-					} else if email != "" {
-						query = query.Where("email = ?", email)
-					} else if identifier != "" {
-						query = query.Where("identifier = ?", identifier)
-					} else {
-						query = query.Where("name = ?", name)
-					}
-
-					err := query.First(&contact).Error
-					if err != nil {
-						contact = domain.Contact{
-							AccountID:   uint(accountID),
-							Name:        name,
-							Email:       email,
-							PhoneNumber: phone,
-							Identifier:  identifier,
-							CreatedAt:   time.Now().UTC(),
-						}
-						if err := db.Create(&contact).Error; err == nil {
-							processed++
-						}
-					} else {
-						contact.Name = name
-						if phone != "" {
-							contact.PhoneNumber = phone
-						}
-						_ = db.Save(&contact).Error
-						processed++
-					}
-				}
-			}
+	processed := 0
+	if stats != nil {
+		processed = stats.TotalProcessed()
+		total = processed
+		if len(stats.Errors) > 0 {
+			total += len(stats.Errors)
+			errBytes, _ := json.Marshal(stats.Errors)
+			imp.ErrorsJSON = string(errBytes)
 		}
 	} else if req.TotalRecords > 0 {
 		total = req.TotalRecords
@@ -596,8 +480,17 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 
 	imp.TotalRecords = total
 	imp.ProcessedRecords = processed
-	if imp.Status == "processing" {
+	if processed > 0 {
 		imp.Status = "completed"
+	} else {
+		imp.Status = "failed"
+		if imp.ErrorsJSON == "" {
+			if migErr != nil {
+				imp.ErrorsJSON = fmt.Sprintf(`[{"error": "%s"}]`, migErr.Error())
+			} else {
+				imp.ErrorsJSON = `[{"error": "No valid records imported"}]`
+			}
+		}
 	}
 	_ = h.repo.UpdateDataImport(imp)
 
@@ -660,41 +553,49 @@ func (h *AuthEnterpriseHandler) CreateMigrationJob(c *gin.Context) {
 		dataPayload = req.RawData
 	}
 
-	db := h.repo.GetDB()
-	synced := 0
-
-	if dataPayload != "" {
-		var records []map[string]any
-		if err := json.Unmarshal([]byte(dataPayload), &records); err == nil {
-			for _, rec := range records {
-				name, _ := rec["name"].(string)
-				email, _ := rec["email"].(string)
-				phone, _ := rec["phone"].(string)
-				if name != "" || email != "" {
-					c := domain.Contact{
-						AccountID:   uint(accountID),
-						Name:        name,
-						Email:       email,
-						PhoneNumber: phone,
-						CreatedAt:   time.Now().UTC(),
-					}
-					if err := db.Create(&c).Error; err == nil {
-						synced++
-					}
-				}
-			}
-		}
+	migService := h.migrationService
+	if migService == nil {
+		migService = service.NewMigrationService(h.repo.GetDB())
 	}
 
+	synced := 0
+	var stats *service.MigrationStats
+	trimmed := strings.TrimSpace(dataPayload)
+	if trimmed != "" && migService != nil {
+		stats, _ = migService.Migrate(c.Request.Context(), uint(accountID), jobType, trimmed)
+	}
+	if stats != nil {
+		synced = stats.TotalProcessed()
+	}
+
+	status := "completed"
 	logMsg := fmt.Sprintf("Migrated %d records successfully from %s with verified integrity", synced, source)
+	if stats != nil && (stats.ContactsCount > 0 || stats.ConversationsCount > 0 || stats.MessagesCount > 0 || stats.AttachmentsCount > 0) {
+		parts := make([]string, 0)
+		if stats.ContactsCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d contacts", stats.ContactsCount))
+		}
+		if stats.ConversationsCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d conversations", stats.ConversationsCount))
+		}
+		if stats.MessagesCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d messages", stats.MessagesCount))
+		}
+		if stats.AttachmentsCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d attachments", stats.AttachmentsCount))
+		}
+		logMsg = fmt.Sprintf("Migrated %s successfully from %s with verified integrity", strings.Join(parts, ", "), source)
+	}
+
 	if synced == 0 {
+		status = "failed"
 		logMsg = fmt.Sprintf("No records migrated from %s", source)
 	}
 
 	job := &domain.MigrationJob{
 		AccountID:     uint(accountID),
 		JobType:       jobType,
-		Status:        "completed",
+		Status:        status,
 		SourceSystem:  source,
 		SyncedRecords: synced,
 		Logs:          logMsg,

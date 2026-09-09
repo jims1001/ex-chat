@@ -125,6 +125,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	}
 	channelDriverHandler := handler.NewChannelDriverHandler(channelEnterpriseRepo, inboxRepo, contactRepo, convRepo, msgRepo)
 	authEnterpriseHandler := handler.NewAuthEnterpriseHandler(channelEnterpriseRepo, userRepo, accountRepo, portalRepo, contactRepo, cfg)
+	migrationService := service.NewMigrationService(db)
+	authEnterpriseHandler.SetMigrationService(migrationService)
 	authHandler.SetEnterpriseRepo(channelEnterpriseRepo)
 	copilotHandler := handler.NewCopilotHandler(db, convRepo, msgRepo, portalRepo, cannedRepo)
 	searchHandler := handler.NewSearchHandler(db)
