@@ -311,7 +311,7 @@ func TestSLA_AccountEvaluation_BusinessHours_BreachAndNoBreach(t *testing.T) {
 	_ = db.Model(&convA).Update("created_at", friday1630).Error
 
 	// Verify deadline calculation for convA
-	frtDue, resDue, isFRT, isRes, p := slaService.GetConversationSLADeadlines(&convA)
+	frtDue, _, resDue, isFRT, _, isRes, p := slaService.GetConversationSLADeadlines(&convA)
 	if p == nil || p.ID != slaPolicy.ID {
 		t.Fatalf("expected resolved policy to match %d", slaPolicy.ID)
 	}

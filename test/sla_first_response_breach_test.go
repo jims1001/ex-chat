@@ -260,7 +260,7 @@ func TestSLAFirstResponseBreach_LateReplyAndScan(t *testing.T) {
 			t.Errorf("expected sla_status 'active', got '%s'", refreshedConv.SLAStatus)
 		}
 
-		_, _, isFRT, _, _ := slaService.GetConversationSLADeadlines(refreshedConv)
+		_, _, _, isFRT, _, _, _ := slaService.GetConversationSLADeadlines(refreshedConv)
 		if isFRT {
 			t.Errorf("GetConversationSLADeadlines returned isFRTBreached=true for on-time reply")
 		}

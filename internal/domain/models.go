@@ -220,6 +220,7 @@ type Conversation struct {
 	UnreadCount        int        `gorm:"default:0" json:"unread_count"`
 	Muted              bool       `gorm:"default:false" json:"muted"`
 	FirstResponseDueAt *time.Time `json:"first_response_due_at,omitempty"`
+	NextResponseDueAt  *time.Time `json:"next_response_due_at,omitempty"`
 	ResolutionDueAt    *time.Time `json:"resolution_due_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
@@ -699,6 +700,7 @@ type SLAPolicy struct {
 	Name                        string    `gorm:"size:255;not null" json:"name"`
 	Description                 string    `gorm:"type:text" json:"description"`
 	FirstResponseTimeThreshold int       `gorm:"default:3600" json:"first_response_time_threshold"` // in seconds
+	NextResponseTimeThreshold  int       `gorm:"default:0" json:"next_response_time_threshold"`     // in seconds
 	ResolutionTimeThreshold    int       `gorm:"default:86400" json:"resolution_time_threshold"`   // in seconds
 	OnlyDuringBusinessHours     bool      `gorm:"default:true" json:"only_during_business_hours"`
 	CreatedAt                   time.Time `json:"created_at"`

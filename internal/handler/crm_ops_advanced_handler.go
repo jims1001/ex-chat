@@ -359,6 +359,7 @@ type CreateSLAReq struct {
 	Name                        string `json:"name" binding:"required"`
 	Description                 string `json:"description"`
 	FirstResponseTimeThreshold int    `json:"first_response_time_threshold"`
+	NextResponseTimeThreshold  int    `json:"next_response_time_threshold"`
 	ResolutionTimeThreshold    int    `json:"resolution_time_threshold"`
 	OnlyDuringBusinessHours     *bool  `json:"only_during_business_hours"`
 }
@@ -381,6 +382,7 @@ func (h *AdvancedHandler) CreateSLAPolicy(c *gin.Context) {
 		Name:                        req.Name,
 		Description:                 req.Description,
 		FirstResponseTimeThreshold: req.FirstResponseTimeThreshold,
+		NextResponseTimeThreshold:  req.NextResponseTimeThreshold,
 		ResolutionTimeThreshold:    req.ResolutionTimeThreshold,
 		OnlyDuringBusinessHours:     onlyDuringBiz,
 	}
@@ -454,6 +456,9 @@ func (h *AdvancedHandler) UpdateSLAPolicy(c *gin.Context) {
 	if req.FirstResponseTimeThreshold > 0 {
 		sla.FirstResponseTimeThreshold = req.FirstResponseTimeThreshold
 	}
+	if req.NextResponseTimeThreshold > 0 {
+		sla.NextResponseTimeThreshold = req.NextResponseTimeThreshold
+	}
 	if req.ResolutionTimeThreshold > 0 {
 		sla.ResolutionTimeThreshold = req.ResolutionTimeThreshold
 	}
@@ -506,16 +511,23 @@ func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
 		return
 	}
 
-	frtDue, resDue, isFRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(&conv)
+	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(&conv)
 	now := time.Now().UTC()
 
-	var frtRemainingSec, resRemainingSec *int
+	var frtRemainingSec, nrtRemainingSec, resRemainingSec *int
 	if frtDue != nil {
 		rem := int(frtDue.Sub(now).Seconds())
 		if rem < 0 {
 			rem = 0
 		}
 		frtRemainingSec = &rem
+	}
+	if nrtDue != nil {
+		rem := int(nrtDue.Sub(now).Seconds())
+		if rem < 0 {
+			rem = 0
+		}
+		nrtRemainingSec = &rem
 	}
 	if resDue != nil {
 		rem := int(resDue.Sub(now).Seconds())
@@ -532,6 +544,9 @@ func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
 		"first_response_due_at":        frtDue,
 		"first_response_breached":      isFRTBreached,
 		"first_response_remaining_sec": frtRemainingSec,
+		"next_response_due_at":         nrtDue,
+		"next_response_breached":       isNRTBreached,
+		"next_response_remaining_sec":  nrtRemainingSec,
 		"resolution_due_at":            resDue,
 		"resolution_breached":          isResBreached,
 		"resolution_remaining_sec":     resRemainingSec,

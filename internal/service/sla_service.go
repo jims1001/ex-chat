@@ -55,17 +55,95 @@ func (s *SLAService) CalculateBusinessSeconds(inbox *domain.Inbox, startTime, en
 	return CalculateBusinessSeconds(inbox, startTime, endTime)
 }
 
+// EvaluateNextResponse analyzes conversation message history to calculate next response deadline and breach status
+func (s *SLAService) EvaluateNextResponse(conv *domain.Conversation, effectiveInbox *domain.Inbox, threshold int, now time.Time) (nrtDeadline *time.Time, isNRTBreached bool, actualSec int, breachTime time.Time) {
+	if threshold <= 0 || conv == nil {
+		return nil, false, 0, time.Time{}
+	}
+
+	var messages []domain.Message
+	_ = s.db.Where("conversation_id = ?", conv.ID).
+		Order("created_at ASC, id ASC").
+		Find(&messages).Error
+
+	type turnMsg struct {
+		isCustomer bool
+		createdAt  time.Time
+	}
+	var seq []turnMsg
+	for _, m := range messages {
+		if m.MessageType == domain.MessageTypeIncoming || strings.EqualFold(m.SenderType, "contact") {
+			seq = append(seq, turnMsg{isCustomer: true, createdAt: m.CreatedAt})
+		} else if m.MessageType == domain.MessageTypeOutgoing && !m.Private && m.ContentType != "activity" && m.ContentType != "internal_note" && !strings.EqualFold(m.SenderType, "contact") {
+			seq = append(seq, turnMsg{isCustomer: false, createdAt: m.CreatedAt})
+		}
+	}
+
+	firstAgentIdx := -1
+	for i, item := range seq {
+		if !item.isCustomer {
+			firstAgentIdx = i
+			break
+		}
+	}
+
+	// If no agent reply has occurred yet, Next Response Time does not apply (First Response Time is active)
+	if firstAgentIdx == -1 {
+		return nil, false, 0, time.Time{}
+	}
+
+	var pendingCustomerMsgTime *time.Time
+
+	for _, item := range seq[firstAgentIdx+1:] {
+		if item.isCustomer {
+			if pendingCustomerMsgTime == nil {
+				t := item.createdAt
+				pendingCustomerMsgTime = &t
+			}
+		} else {
+			// Agent replied
+			if pendingCustomerMsgTime != nil {
+				turnStart := *pendingCustomerMsgTime
+				turnDeadline := s.CalculateDeadline(effectiveInbox, turnStart, threshold)
+				turnSec := s.CalculateBusinessSeconds(effectiveInbox, turnStart, item.createdAt)
+				if item.createdAt.After(turnDeadline) || turnSec > threshold {
+					isNRTBreached = true
+					actualSec = turnSec
+					breachTime = item.createdAt
+				}
+				pendingCustomerMsgTime = nil
+			}
+		}
+	}
+
+	if pendingCustomerMsgTime != nil {
+		turnStart := *pendingCustomerMsgTime
+		due := s.CalculateDeadline(effectiveInbox, turnStart, threshold)
+		nrtDeadline = &due
+		elapsed := s.CalculateBusinessSeconds(effectiveInbox, turnStart, now)
+		if !now.Before(due) || elapsed > threshold {
+			isNRTBreached = true
+			if actualSec == 0 || elapsed > actualSec {
+				actualSec = elapsed
+				breachTime = now
+			}
+		}
+	}
+
+	return nrtDeadline, isNRTBreached, actualSec, breachTime
+}
+
 // GetConversationSLADeadlines computes deadlines and current breach status for a single conversation
-func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frtDeadline, resDeadline *time.Time, isFRTBreached, isResBreached bool, policy *domain.SLAPolicy) {
+func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frtDeadline, nrtDeadline, resDeadline *time.Time, isFRTBreached, isNRTBreached, isResBreached bool, policy *domain.SLAPolicy) {
 	if conv == nil {
-		return nil, nil, false, false, nil
+		return nil, nil, nil, false, false, false, nil
 	}
 
 	var policies []domain.SLAPolicy
 	_ = s.db.Where("account_id = ?", conv.AccountID).Find(&policies).Error
 	applicablePolicy := s.resolvePolicy(conv, policies)
 	if applicablePolicy.ID == 0 {
-		return nil, nil, false, false, nil
+		return nil, nil, nil, false, false, false, nil
 	}
 	policy = &applicablePolicy
 
@@ -123,7 +201,21 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		}
 	}
 
-	// 2. Resolution Deadline
+	// 2. Next Response Deadline
+	if applicablePolicy.NextResponseTimeThreshold > 0 {
+		var existingNRTBreach int64
+		_ = s.db.Model(&domain.SLABreachLog{}).
+			Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "next_response").
+			Count(&existingNRTBreach).Error
+
+		nDue, breached, _, _ := s.EvaluateNextResponse(conv, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
+		nrtDeadline = nDue
+		if existingNRTBreach > 0 || breached {
+			isNRTBreached = true
+		}
+	}
+
+	// 3. Resolution Deadline
 	if applicablePolicy.ResolutionTimeThreshold > 0 {
 		rDue := s.CalculateDeadline(effectiveInbox, conv.CreatedAt, applicablePolicy.ResolutionTimeThreshold)
 		resDeadline = &rDue
@@ -147,7 +239,7 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		}
 	}
 
-	return frtDeadline, resDeadline, isFRTBreached, isResBreached, policy
+	return frtDeadline, nrtDeadline, resDeadline, isFRTBreached, isNRTBreached, isResBreached, policy
 }
 
 // EvaluateConversation evaluates SLA breaches for a single conversation and records logs/updates status
@@ -257,7 +349,43 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 		}
 	}
 
-	// 2. Resolution Time Evaluation
+	// 2. Next Response Time Evaluation
+	if applicablePolicy.NextResponseTimeThreshold > 0 {
+		nDue, isNRTBreached, actualNRTSec, nrtBreachTime := s.EvaluateNextResponse(conv, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
+		updates["next_response_due_at"] = nDue
+
+		if isNRTBreached {
+			var existing int64
+			_ = s.db.Model(&domain.SLABreachLog{}).
+				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "next_response").
+				Count(&existing).Error
+
+			if existing == 0 {
+				breach := domain.SLABreachLog{
+					AccountID:        conv.AccountID,
+					ConversationID:   conv.ID,
+					SLAPolicyID:      applicablePolicy.ID,
+					BreachType:       "next_response",
+					ThresholdSeconds: applicablePolicy.NextResponseTimeThreshold,
+					ActualSeconds:    actualNRTSec,
+					CreatedAt:        nrtBreachTime,
+				}
+				if err := s.db.Create(&breach).Error; err == nil {
+					breaches = append(breaches, breach)
+					updates["sla_status"] = "breached"
+				}
+			} else {
+				updates["sla_status"] = "breached"
+				if actualNRTSec > 0 {
+					_ = s.db.Model(&domain.SLABreachLog{}).
+						Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "next_response").
+						Update("actual_seconds", actualNRTSec).Error
+				}
+			}
+		}
+	}
+
+	// 3. Resolution Time Evaluation
 	if applicablePolicy.ResolutionTimeThreshold > 0 {
 		isResBreached := false
 		var actualResSec int
