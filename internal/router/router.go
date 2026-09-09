@@ -86,6 +86,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	captainRepo := repository.NewCaptainRepository(db)
 	aiCustomToolRepo := repository.NewAICustomToolRepository(db)
 	widgetRepo := repository.NewWidgetRepository(db)
+	publicRepo := repository.NewPublicRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -128,6 +129,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	enterpriseHandler := handler.NewEnterpriseHandler(enterpriseRepo)
 	platformHandler := handler.NewPlatformHandler(platformRepo, userRepo)
 	publicHandler := handler.NewPublicHandler(db, inboxRepo, contactRepo, convRepo, msgRepo)
+	publicHandler.SetPublicRepository(publicRepo)
 	publicHandler.SetAutomationAndWebhook(automationService, webhookService)
 	publicHandler.SetPushAndHub(pushService, hub)
 	deviceHandler := handler.NewDeviceHandler(deviceRepo)
@@ -257,10 +259,29 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	publicGroup := r.Group("/public/api/v1")
 	{
 		publicGroup.GET("/inboxes/:identifier", publicHandler.GetPublicInbox)
+
+		// 客户联系人详情与更新
 		publicGroup.POST("/inboxes/:identifier/contacts", publicHandler.CreateContact)
+		publicGroup.GET("/inboxes/:identifier/contacts/:contact_id", publicHandler.GetContact)
+		publicGroup.PATCH("/inboxes/:identifier/contacts/:contact_id", publicHandler.UpdateContact)
+		publicGroup.PUT("/inboxes/:identifier/contacts/:contact_id", publicHandler.UpdateContact)
+
+		// 会话列表与单条会话详情
+		publicGroup.GET("/inboxes/:identifier/contacts/:contact_id/conversations", publicHandler.ListConversations)
 		publicGroup.POST("/inboxes/:identifier/contacts/:contact_id/conversations", publicHandler.CreateConversation)
+		publicGroup.GET("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id", publicHandler.GetConversation)
+
+		// 历史消息读取与发送
+		publicGroup.GET("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id/messages", publicHandler.ListMessages)
 		publicGroup.POST("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id/messages", publicHandler.CreateMessage)
 		publicGroup.POST("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id/update_last_seen", publicHandler.UpdateLastSeen)
+
+		// 会话状态切换、打字指示与自定义属性更新
+		publicGroup.POST("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id/toggle_status", publicHandler.ToggleConversationStatus)
+		publicGroup.POST("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id/toggle_typing", publicHandler.ToggleTyping)
+		publicGroup.PATCH("/inboxes/:identifier/contacts/:contact_id/conversations/:conversation_id/custom_attributes", publicHandler.UpdateConversationCustomAttributes)
+
+		// 外部满意度调查与 Webhook 驱动
 		publicGroup.POST("/csat_survey/:id", macroHandler.SubmitCSAT)
 		publicGroup.GET("/channels/facebook/webhook", channelDriverHandler.VerifyFacebookWebhook)
 		publicGroup.POST("/channels/facebook/webhook", channelDriverHandler.HandleFacebookWebhook)
