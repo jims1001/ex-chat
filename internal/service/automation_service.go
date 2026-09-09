@@ -554,7 +554,20 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 				CreatedAt:      time.Now().UTC(),
 				UpdatedAt:      time.Now().UTC(),
 			}
-			_ = s.msgRepo.Create(&reply)
+			if err := s.msgRepo.Create(&reply); err != nil {
+				logger.WithComponent("automation").Error("failed to send automation reply message",
+					"conversation_id", conv.ID,
+					"account_id", conv.AccountID,
+					"error", err.Error(),
+				)
+			} else {
+				logger.WithComponent("automation").Info("automation rule sent reply message",
+					"conversation_id", conv.ID,
+					"account_id", conv.AccountID,
+					"message_id", reply.ID,
+					"private", isPrivate,
+				)
+			}
 		}
 	case "add_label", "add_labels":
 		var labelsToAdd []string

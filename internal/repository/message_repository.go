@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -19,6 +20,14 @@ func NewMessageRepository(db *gorm.DB) *MessageRepository {
 func (r *MessageRepository) Create(msg *domain.Message) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(msg).Error; err != nil {
+			logger.WithComponent("message").Error("failed to persist message",
+				"account_id", msg.AccountID,
+				"conversation_id", msg.ConversationID,
+				"sender_type", msg.SenderType,
+				"sender_id", msg.SenderID,
+				"message_type", msg.MessageType,
+				"error", err.Error(),
+			)
 			return err
 		}
 
@@ -29,9 +38,24 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 			updates["unread_count"] = gorm.Expr("unread_count + 1")
 		}
 
-		return tx.Model(&domain.Conversation{}).
+		if err := tx.Model(&domain.Conversation{}).
 			Where("account_id = ? AND id = ?", msg.AccountID, msg.ConversationID).
-			Updates(updates).Error
+			Updates(updates).Error; err != nil {
+			return err
+		}
+
+		logger.WithComponent("message").Info("message persisted",
+			"message_id", msg.ID,
+			"account_id", msg.AccountID,
+			"conversation_id", msg.ConversationID,
+			"sender_type", msg.SenderType,
+			"sender_id", msg.SenderID,
+			"message_type", msg.MessageType,
+			"content_type", msg.ContentType,
+			"private", msg.Private,
+		)
+
+		return nil
 	})
 }
 

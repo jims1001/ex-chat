@@ -580,9 +580,22 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 	}
 
 	if err := h.msgRepo.Create(&msg); err != nil {
+		logger.WithComponent("message").Error("failed to create initial widget message",
+			"conversation_id", conv.ID,
+			"account_id", inbox.AccountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create initial message")
 		return
 	}
+
+	logger.WithComponent("message").Info("initial widget message created",
+		"message_id", msg.ID,
+		"conversation_id", conv.ID,
+		"account_id", inbox.AccountID,
+		"sender_type", msg.SenderType,
+		"sender_id", msg.SenderID,
+	)
 
 	if h.routingService != nil {
 		_, _ = h.routingService.AutoAssign(&conv)
@@ -684,9 +697,22 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 	}
 
 	if err := h.msgRepo.Create(&msg); err != nil {
+		logger.WithComponent("message").Error("failed to send widget message",
+			"conversation_id", conv.ID,
+			"account_id", inbox.AccountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to send message")
 		return
 	}
+
+	logger.WithComponent("message").Info("widget message sent",
+		"message_id", msg.ID,
+		"conversation_id", conv.ID,
+		"account_id", inbox.AccountID,
+		"sender_type", msg.SenderType,
+		"sender_id", msg.SenderID,
+	)
 
 	// Re-open conversation if it was resolved
 	if conv.Status == domain.ConversationStatusResolved {

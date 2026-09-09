@@ -11,6 +11,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -217,9 +218,23 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 	}
 
 	if err := h.msgRepo.Create(&msg); err != nil {
+		logger.WithComponent("message").Error("failed to create public message",
+			"conversation_id", conv.ID,
+			"account_id", conv.AccountID,
+			"contact_id", contactID,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("message").Info("public message created",
+		"message_id", msg.ID,
+		"conversation_id", conv.ID,
+		"account_id", conv.AccountID,
+		"contact_id", contactID,
+		"echo_id", msg.EchoID,
+	)
 
 	// Re-open conversation if it was resolved
 	if conv.Status == domain.ConversationStatusResolved {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -241,7 +242,14 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 							CreatedAt:      time.Now().UTC(),
 							UpdatedAt:      time.Now().UTC(),
 						}
-						_ = tx.Create(&msg)
+						if err := tx.Create(&msg).Error; err == nil {
+							logger.WithComponent("macro").Info("macro sent message",
+								"account_id", accountID,
+								"conversation_id", conv.ID,
+								"message_id", msg.ID,
+								"private", isPrivate,
+							)
+						}
 					}
 				}
 			}
