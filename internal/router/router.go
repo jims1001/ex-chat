@@ -530,6 +530,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			// 自定义筛选器 (OPS / Custom Filters)
 			tenant.GET("/custom_filters", advancedHandler.ListCustomFilters)
 			tenant.POST("/custom_filters", advancedHandler.CreateCustomFilter)
+			tenant.GET("/custom_filters/:id", advancedHandler.GetCustomFilter)
+			tenant.PUT("/custom_filters/:id", advancedHandler.UpdateCustomFilter)
+			tenant.PATCH("/custom_filters/:id", advancedHandler.UpdateCustomFilter)
 			tenant.DELETE("/custom_filters/:id", advancedHandler.DeleteCustomFilter)
 
 			// 坐席容量策略兼容 (ACC / Legacy Capacity Policies)

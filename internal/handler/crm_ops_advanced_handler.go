@@ -669,65 +669,6 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 	response.Created(c, att)
 }
 
-// ----------------- Custom Filters -----------------
-
-type CreateCustomFilterReq struct {
-	Name       string `json:"name" binding:"required"`
-	FilterType string `json:"filter_type" binding:"required"`
-	Query      string `json:"query" binding:"required"`
-}
-
-func (h *AdvancedHandler) CreateCustomFilter(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-
-	var req CreateCustomFilterReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	filter := domain.CustomFilter{
-		AccountID:  uint(accID),
-		UserID:     userID,
-		Name:       req.Name,
-		FilterType: req.FilterType,
-		Query:      req.Query,
-	}
-
-	if err := h.db.WithContext(c.Request.Context()).Create(&filter).Error; err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	response.Created(c, filter)
-}
-
-func (h *AdvancedHandler) ListCustomFilters(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-
-	var filters []domain.CustomFilter
-	err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND user_id = ?", accID, userID).
-		Find(&filters).Error
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	response.Success(c, filters)
-}
-
-func (h *AdvancedHandler) DeleteCustomFilter(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-
-	h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND id = ?", accID, id).
-		Delete(&domain.CustomFilter{})
-	response.Success(c, gin.H{"deleted": true})
-}
-
 // ----------------- Draft Messages -----------------
 
 type SaveDraftReq struct {
