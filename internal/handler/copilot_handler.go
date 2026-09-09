@@ -11,6 +11,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -133,6 +134,12 @@ func (h *CopilotHandler) ReplySuggestions(c *gin.Context) {
 		)
 	}
 
+	logger.WithComponent("copilot").Info("generated reply suggestions",
+		"account_id", accID,
+		"conversation_id", convID,
+		"suggestions_count", len(suggestions),
+	)
+
 	response.Success(c, gin.H{
 		"conversation_id": convID,
 		"suggestions":     suggestions,
@@ -148,49 +155,43 @@ func (h *CopilotHandler) SummarizeConversation(c *gin.Context) {
 		return
 	}
 
-	messages, _, _ := h.msgRepo.ListByConversation(uint(accID), uint(convID), true, 1, 50)
-	if len(messages) == 0 {
+	messages, _, err := h.msgRepo.ListByConversation(uint(accID), uint(convID), false, 1, 50)
+	if err != nil || len(messages) == 0 {
 		response.Success(c, gin.H{
-			"summary":     "尚无历史会话记录",
-			"sentiment":   "neutral",
-			"key_points":  []string{},
-			"status":      "no_messages",
+			"conversation_id": convID,
+			"summary":         "该会话暂无充分消息进行AI提炼与摘要。",
+			"sentiment":       "neutral",
+			"key_points":      []string{},
 		})
 		return
 	}
 
-	var allText strings.Builder
+	// Heuristic summarization & Sentiment analysis based on message history
+	sentiment := "neutral"
+	keyPoints := []string{}
+	var fullText strings.Builder
 	for _, m := range messages {
-		allText.WriteString(m.Content + " ")
-	}
-	content := strings.ToLower(allText.String())
-
-	sentiment := domain.SentimentNeutral
-	sentimentRules := map[string][]string{
-		domain.SentimentFrustrated: {"生气", "投诉", "退款", "糟糕", "慢", "不满意", "差评"},
-		domain.SentimentPositive:   {"谢谢", "感谢", "满意", "好的", "棒", "赞"},
-	}
-	for cat, keywords := range sentimentRules {
-		matched := false
-		for _, kw := range keywords {
-			if strings.Contains(content, kw) {
-				sentiment = cat
-				matched = true
-				break
-			}
-		}
-		if matched {
-			break
+		fullText.WriteString(m.Content + " ")
+		if len(m.Content) > 10 && len(keyPoints) < 3 {
+			keyPoints = append(keyPoints, m.Content)
 		}
 	}
-
-	keyPoints := []string{
-		fmt.Sprintf("累计交互 %d 条消息", len(messages)),
-		fmt.Sprintf("客户近期关注要点：%s", messages[0].Content),
+	contentLower := strings.ToLower(fullText.String())
+	if strings.Contains(contentLower, "urgent") || strings.Contains(contentLower, "投诉") || strings.Contains(contentLower, "差评") || strings.Contains(contentLower, "退款") {
+		sentiment = "negative"
+	} else if strings.Contains(contentLower, "感谢") || strings.Contains(contentLower, "thank") || strings.Contains(contentLower, "好评") || strings.Contains(contentLower, "满意") {
+		sentiment = "positive"
 	}
 
 	summaryText := fmt.Sprintf("会话共计 %d 条消息沟通。客户情绪评估为【%s】，最新诉求为：“%s”。目前正处于处理链路中。",
 		len(messages), sentiment, messages[0].Content)
+
+	logger.WithComponent("copilot").Info("summarized conversation",
+		"account_id", accID,
+		"conversation_id", convID,
+		"messages_count", len(messages),
+		"sentiment", sentiment,
+	)
 
 	response.Success(c, gin.H{
 		"conversation_id": convID,
@@ -226,6 +227,12 @@ func (h *CopilotHandler) RephraseText(c *gin.Context) {
 	default:
 		rephrased = fmt.Sprintf("您好：%s", req.Text)
 	}
+
+	logger.WithComponent("copilot").Info("rephrased text with tone",
+		"tone", req.Tone,
+		"input_len", len(req.Text),
+		"output_len", len(rephrased),
+	)
 
 	response.Success(c, gin.H{
 		"original":  req.Text,

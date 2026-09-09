@@ -12,6 +12,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -144,6 +145,12 @@ func (h *ContactHandler) CreateContact(c *gin.Context) {
 	}
 
 	if err := h.contactRepo.Create(&contact); err != nil {
+		logger.WithComponent("contact").Error("failed to create contact",
+			"account_id", accountID,
+			"name", req.Name,
+			"email", req.Email,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create contact")
 		return
 	}
@@ -156,6 +163,13 @@ func (h *ContactHandler) CreateContact(c *gin.Context) {
 	if fresh != nil {
 		contact = *fresh
 	}
+
+	logger.WithComponent("contact").Info("contact created",
+		"account_id", accountID,
+		"contact_id", contact.ID,
+		"name", contact.Name,
+		"email", contact.Email,
+	)
 
 	response.Created(c, contact)
 }
@@ -232,6 +246,11 @@ func (h *ContactHandler) UpdateContact(c *gin.Context) {
 	}
 
 	if err := h.contactRepo.Update(contact); err != nil {
+		logger.WithComponent("contact").Error("failed to update contact",
+			"account_id", accountID,
+			"contact_id", contact.ID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update contact")
 		return
 	}
@@ -244,6 +263,11 @@ func (h *ContactHandler) UpdateContact(c *gin.Context) {
 	if fresh != nil {
 		contact = fresh
 	}
+
+	logger.WithComponent("contact").Info("contact updated",
+		"account_id", accountID,
+		"contact_id", contact.ID,
+	)
 
 	response.Success(c, contact)
 }
@@ -259,9 +283,19 @@ func (h *ContactHandler) DeleteContact(c *gin.Context) {
 	}
 
 	if err := h.contactRepo.Delete(accountID, uint(contactID)); err != nil {
+		logger.WithComponent("contact").Error("failed to delete contact",
+			"account_id", accountID,
+			"contact_id", contactID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete contact")
 		return
 	}
+
+	logger.WithComponent("contact").Info("contact deleted",
+		"account_id", accountID,
+		"contact_id", contactID,
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -294,9 +328,21 @@ func (h *ContactHandler) MergeContact(c *gin.Context) {
 	}
 
 	if err := h.contactRepo.MergeContacts(accountID, req.BaseContactID, req.MergeeContactID); err != nil {
+		logger.WithComponent("contact").Error("failed to merge contacts",
+			"account_id", accountID,
+			"base_contact_id", req.BaseContactID,
+			"mergee_contact_id", req.MergeeContactID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to merge contacts")
 		return
 	}
+
+	logger.WithComponent("contact").Info("contacts merged successfully",
+		"account_id", accountID,
+		"base_contact_id", req.BaseContactID,
+		"mergee_contact_id", req.MergeeContactID,
+	)
 
 	response.Success(c, baseContact)
 }
@@ -581,6 +627,14 @@ func (h *ContactHandler) ExportContacts(c *gin.Context) {
 	writer.Flush()
 
 	csvContent := buf.String()
+
+	logger.WithComponent("contact").Info("contacts exported",
+		"account_id", accountID,
+		"count", len(contacts),
+		"format", format,
+		"search", search,
+		"label", label,
+	)
 
 	if strings.ToLower(format) == "json" || (c.GetHeader("Accept") == "application/json" && c.Query("download") != "1") {
 		c.JSON(http.StatusOK, gin.H{

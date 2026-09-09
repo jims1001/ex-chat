@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -74,10 +75,13 @@ func (s *EmailService) GetFromEmail() string {
 
 // SendTranscript formats and sends conversation transcript email and records EmailLog audit
 func (s *EmailService) SendTranscript(ctx context.Context, accountID uint, conv *domain.Conversation, messages []domain.Message, toEmail string) error {
+	log := logger.WithComponent("email")
 	if toEmail == "" {
+		log.Warn("transcript email skipped: recipient email is required", "account_id", accountID)
 		return errors.New("recipient email is required")
 	}
 	if conv == nil {
+		log.Warn("transcript email skipped: conversation is required", "account_id", accountID)
 		return errors.New("conversation is required")
 	}
 
@@ -89,6 +93,13 @@ func (s *EmailService) SendTranscript(ctx context.Context, accountID uint, conv 
 	subject := fmt.Sprintf("[#%d] 会话记录", displayID)
 	htmlContent := s.RenderTranscriptHTML(conv, messages)
 	textContent := s.RenderTranscriptText(conv, messages)
+
+	log.Info("sending conversation transcript email",
+		"account_id", accountID,
+		"conversation_id", conv.ID,
+		"to_email", toEmail,
+		"message_count", len(messages),
+	)
 
 	var sendErr error
 	if s.sender != nil {
@@ -112,6 +123,18 @@ func (s *EmailService) SendTranscript(ctx context.Context, accountID uint, conv 
 	if sendErr != nil {
 		emailLog.Status = "failed"
 		emailLog.Error = sendErr.Error()
+		log.Error("failed to deliver transcript email",
+			"account_id", accountID,
+			"conversation_id", conv.ID,
+			"to_email", toEmail,
+			"error", sendErr.Error(),
+		)
+	} else {
+		log.Info("transcript email delivered successfully",
+			"account_id", accountID,
+			"conversation_id", conv.ID,
+			"to_email", toEmail,
+		)
 	}
 
 	if s.db != nil {

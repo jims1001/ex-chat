@@ -10,6 +10,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -212,6 +213,13 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 	campaign.Status = "completed"
 	_ = s.db.Save(&campaign)
 
+	logger.WithComponent("campaign").Info("campaign triggered and completed",
+		"campaign_id", campaign.ID,
+		"account_id", accountID,
+		"audience_count", len(contacts),
+		"sent_count", sentCount,
+	)
+
 	return sentCount, nil
 }
 
@@ -247,5 +255,11 @@ func (s *CampaignService) ProcessScheduledCampaigns() int {
 			triggered++
 		}
 	}
+
+	logger.WithComponent("campaign").Info("processed scheduled campaigns",
+		"scheduled_count", len(scheduled),
+		"triggered_count", triggered,
+	)
+
 	return triggered
 }

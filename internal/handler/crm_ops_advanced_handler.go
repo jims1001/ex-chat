@@ -17,6 +17,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -620,6 +621,12 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 
 	if file != nil {
 		if file.Size > 25*1024*1024 {
+			logger.WithComponent("attachment").Warn("file upload rejected: size exceeds 25MB",
+				"account_id", accID,
+				"conv_id", convIDStr,
+				"filename", file.Filename,
+				"size", file.Size,
+			)
 			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
 			return
 		}
@@ -630,6 +637,11 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		cleanFilename := filepath.Base(file.Filename)
 		uploadDir := filepath.Join("uploads", fmt.Sprintf("account_%d", accID), fmt.Sprintf("conv_%s", convIDStr))
 		if err := os.MkdirAll(uploadDir, 0755); err != nil {
+			logger.WithComponent("attachment").Error("failed to create upload directory",
+				"account_id", accID,
+				"upload_dir", uploadDir,
+				"error", err.Error(),
+			)
 			response.InternalError(c, "Failed to create upload directory: "+err.Error())
 			return
 		}
@@ -637,6 +649,11 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		destFilename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), cleanFilename)
 		destPath := filepath.Join(uploadDir, destFilename)
 		if err := c.SaveUploadedFile(file, destPath); err != nil {
+			logger.WithComponent("attachment").Error("failed to save attachment file",
+				"account_id", accID,
+				"dest_path", destPath,
+				"error", err.Error(),
+			)
 			response.InternalError(c, "Failed to save attachment file: "+err.Error())
 			return
 		}
@@ -656,9 +673,24 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		}
 
 		if err := h.attachmentRepo.Create(c.Request.Context(), &att); err != nil {
+			logger.WithComponent("attachment").Error("failed to record attachment in database",
+				"account_id", accID,
+				"data_url", dataURL,
+				"error", err.Error(),
+			)
 			response.InternalError(c, "Failed to record attachment: "+err.Error())
 			return
 		}
+
+		logger.WithComponent("attachment").Info("file uploaded successfully",
+			"account_id", accID,
+			"conv_id", convIDStr,
+			"attachment_id", att.ID,
+			"filename", cleanFilename,
+			"size", file.Size,
+			"file_type", fileType,
+			"url", dataURL,
+		)
 
 		response.Created(c, att)
 		return
@@ -1388,9 +1420,22 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 		}
 
 	default:
+		logger.WithComponent("bulk_actions").Warn("unsupported bulk action type",
+			"account_id", accID,
+			"action_type", req.Type,
+			"user_id", userID,
+		)
 		response.BadRequest(c, "Unsupported bulk action type")
 		return
 	}
+
+	logger.WithComponent("bulk_actions").Info("bulk action executed successfully",
+		"account_id", accID,
+		"action_type", req.Type,
+		"target_count", len(req.IDs),
+		"updated_count", updatedCount,
+		"user_id", userID,
+	)
 
 	response.Success(c, gin.H{"status": "ok", "updated_count": updatedCount})
 }

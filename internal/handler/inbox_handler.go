@@ -8,6 +8,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -110,9 +111,22 @@ func (h *InboxHandler) CreateInbox(c *gin.Context) {
 	}
 
 	if err := h.inboxRepo.Create(&inbox); err != nil {
+		logger.WithComponent("inbox").Error("failed to create inbox",
+			"account_id", accountID,
+			"name", req.Name,
+			"channel_type", channelType,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create inbox")
 		return
 	}
+
+	logger.WithComponent("inbox").Info("inbox created",
+		"account_id", accountID,
+		"inbox_id", inbox.ID,
+		"name", inbox.Name,
+		"channel_type", inbox.ChannelType,
+	)
 
 	response.Created(c, inbox)
 }
@@ -184,9 +198,20 @@ func (h *InboxHandler) UpdateInbox(c *gin.Context) {
 	}
 
 	if err := h.inboxRepo.Update(inbox); err != nil {
+		logger.WithComponent("inbox").Error("failed to update inbox",
+			"account_id", accountID,
+			"inbox_id", inbox.ID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update inbox")
 		return
 	}
+
+	logger.WithComponent("inbox").Info("inbox updated",
+		"account_id", accountID,
+		"inbox_id", inbox.ID,
+		"name", inbox.Name,
+	)
 
 	response.Success(c, inbox)
 }
@@ -222,9 +247,21 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 	}
 
 	if err := h.inboxRepo.BindAssignmentPolicy(accountID, uint(inboxID), policyID); err != nil {
+		logger.WithComponent("inbox").Error("failed to bind assignment policy",
+			"account_id", accountID,
+			"inbox_id", inboxID,
+			"policy_id", policyID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to bind assignment policy: "+err.Error())
 		return
 	}
+
+	logger.WithComponent("inbox").Info("assignment policy bound to inbox",
+		"account_id", accountID,
+		"inbox_id", inboxID,
+		"policy_id", policyID,
+	)
 
 	updated, _ := h.inboxRepo.FindByID(accountID, uint(inboxID))
 	response.Success(c, updated)
@@ -241,9 +278,19 @@ func (h *InboxHandler) DeleteInbox(c *gin.Context) {
 	}
 
 	if err := h.inboxRepo.Delete(accountID, uint(inboxID)); err != nil {
+		logger.WithComponent("inbox").Error("failed to delete inbox",
+			"account_id", accountID,
+			"inbox_id", inboxID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete inbox")
 		return
 	}
+
+	logger.WithComponent("inbox").Info("inbox deleted",
+		"account_id", accountID,
+		"inbox_id", inboxID,
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -280,6 +327,11 @@ func (h *InboxHandler) AddInboxMembers(c *gin.Context) {
 	for _, uid := range req.UserIDs {
 		_ = h.inboxRepo.AddMember(uint(inboxID), uid)
 	}
+
+	logger.WithComponent("inbox").Info("inbox members added",
+		"inbox_id", inboxID,
+		"user_ids", req.UserIDs,
+	)
 
 	members, _ := h.inboxRepo.ListMembers(uint(inboxID))
 	response.Success(c, members)

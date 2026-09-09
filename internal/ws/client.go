@@ -1,9 +1,9 @@
 package ws
 
 import (
-	"log"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/gorilla/websocket"
 )
 
@@ -53,7 +53,13 @@ func (c *Client) ReadPump() {
 		_, _, err := c.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("websocket error: %v", err)
+				logger.WithComponent("websocket").Warn("unexpected websocket close error",
+					"error", err.Error(),
+					"account_id", c.AccountID,
+					"user_id", c.UserID,
+					"conversation_id", c.ConversationID,
+					"is_agent", c.IsAgent,
+				)
 			}
 			break
 		}

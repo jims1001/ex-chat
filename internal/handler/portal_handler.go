@@ -7,6 +7,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -102,9 +103,22 @@ func (h *PortalHandler) CreatePortal(c *gin.Context) {
 	}
 
 	if err := h.portalRepo.CreatePortal(&portal); err != nil {
+		logger.WithComponent("portal").Error("failed to create portal",
+			"account_id", accountID,
+			"name", req.Name,
+			"slug", portal.Slug,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create portal (slug may already exist)")
 		return
 	}
+
+	logger.WithComponent("portal").Info("portal created",
+		"account_id", accountID,
+		"portal_id", portal.ID,
+		"name", portal.Name,
+		"slug", portal.Slug,
+	)
 
 	response.Created(c, portal)
 }
@@ -151,9 +165,22 @@ func (h *PortalHandler) CreateCategory(c *gin.Context) {
 	}
 
 	if err := h.portalRepo.CreateCategory(&category); err != nil {
+		logger.WithComponent("portal").Error("failed to create category",
+			"account_id", accountID,
+			"portal_id", portalID,
+			"name", req.Name,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create category")
 		return
 	}
+
+	logger.WithComponent("portal").Info("portal category created",
+		"account_id", accountID,
+		"portal_id", portalID,
+		"category_id", category.ID,
+		"name", category.Name,
+	)
 
 	response.Created(c, category)
 }
@@ -220,9 +247,23 @@ func (h *PortalHandler) CreateArticle(c *gin.Context) {
 	}
 
 	if err := h.portalRepo.CreateArticle(&article); err != nil {
+		logger.WithComponent("portal").Error("failed to create article",
+			"account_id", accountID,
+			"portal_id", portalID,
+			"title", req.Title,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create article")
 		return
 	}
+
+	logger.WithComponent("portal").Info("portal article created",
+		"account_id", accountID,
+		"portal_id", portalID,
+		"article_id", article.ID,
+		"title", article.Title,
+		"status", article.Status,
+	)
 
 	response.Created(c, article)
 }
@@ -286,9 +327,18 @@ func (h *PortalHandler) DeletePortal(c *gin.Context) {
 		return
 	}
 	if err := h.portalRepo.DeletePortal(uint(portalID)); err != nil {
+		logger.WithComponent("portal").Error("failed to delete portal",
+			"portal_id", portalID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete portal")
 		return
 	}
+
+	logger.WithComponent("portal").Info("portal deleted",
+		"portal_id", portalID,
+	)
+
 	response.Success(c, gin.H{"deleted": true})
 }
 
@@ -403,9 +453,20 @@ func (h *PortalHandler) UpdateArticle(c *gin.Context) {
 		article.Status = req.Status
 	}
 	if err := h.portalRepo.UpdateArticle(article); err != nil {
+		logger.WithComponent("portal").Error("failed to update article",
+			"article_id", artID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update article")
 		return
 	}
+
+	logger.WithComponent("portal").Info("portal article updated",
+		"article_id", artID,
+		"title", article.Title,
+		"status", article.Status,
+	)
+
 	response.Success(c, article)
 }
 
@@ -416,9 +477,18 @@ func (h *PortalHandler) DeleteArticle(c *gin.Context) {
 		return
 	}
 	if err := h.portalRepo.DeleteArticle(uint(artID)); err != nil {
+		logger.WithComponent("portal").Error("failed to delete article",
+			"article_id", artID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete article")
 		return
 	}
+
+	logger.WithComponent("portal").Info("portal article deleted",
+		"article_id", artID,
+	)
+
 	response.Success(c, gin.H{"deleted": true})
 }
 

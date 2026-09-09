@@ -6,6 +6,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -64,9 +65,20 @@ func (h *TeamHandler) CreateTeam(c *gin.Context) {
 	}
 
 	if err := h.teamRepo.Create(&team); err != nil {
+		logger.WithComponent("team").Error("failed to create team",
+			"account_id", accountID,
+			"name", req.Name,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create team")
 		return
 	}
+
+	logger.WithComponent("team").Info("team created",
+		"account_id", accountID,
+		"team_id", team.ID,
+		"name", team.Name,
+	)
 
 	response.Created(c, team)
 }
@@ -123,9 +135,20 @@ func (h *TeamHandler) UpdateTeam(c *gin.Context) {
 	}
 
 	if err := h.teamRepo.Update(team); err != nil {
+		logger.WithComponent("team").Error("failed to update team",
+			"account_id", accountID,
+			"team_id", team.ID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update team")
 		return
 	}
+
+	logger.WithComponent("team").Info("team updated",
+		"account_id", accountID,
+		"team_id", team.ID,
+		"name", team.Name,
+	)
 
 	response.Success(c, team)
 }
@@ -141,9 +164,19 @@ func (h *TeamHandler) DeleteTeam(c *gin.Context) {
 	}
 
 	if err := h.teamRepo.Delete(accountID, uint(id)); err != nil {
+		logger.WithComponent("team").Error("failed to delete team",
+			"account_id", accountID,
+			"team_id", id,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete team")
 		return
 	}
+
+	logger.WithComponent("team").Info("team deleted",
+		"account_id", accountID,
+		"team_id", id,
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -164,6 +197,11 @@ func (h *TeamHandler) AddMembers(c *gin.Context) {
 	for _, uid := range req.UserIDs {
 		_ = h.teamRepo.AddMember(uint(id), uid)
 	}
+
+	logger.WithComponent("team").Info("team members added",
+		"team_id", id,
+		"user_ids", req.UserIDs,
+	)
 
 	members, _ := h.teamRepo.ListMembers(uint(id))
 	response.Success(c, members)
@@ -198,5 +236,11 @@ func (h *TeamHandler) RemoveMember(c *gin.Context) {
 	}
 
 	_ = h.teamRepo.RemoveMember(uint(id), uint(memberID))
+
+	logger.WithComponent("team").Info("team member removed",
+		"team_id", id,
+		"member_id", memberID,
+	)
+
 	response.Success(c, gin.H{"deleted": true})
 }

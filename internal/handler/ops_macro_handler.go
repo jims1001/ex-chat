@@ -9,6 +9,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -62,9 +63,21 @@ func (h *MacroNotificationHandler) CreateMacro(c *gin.Context) {
 	}
 
 	if err := h.macroRepo.Create(c.Request.Context(), &macro); err != nil {
+		logger.WithComponent("macro").Error("failed to create macro",
+			"account_id", accID,
+			"name", req.Name,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("macro").Info("macro created",
+		"account_id", accID,
+		"macro_id", macro.ID,
+		"name", macro.Name,
+		"visibility", macro.Visibility,
+	)
 
 	response.Created(c, macro)
 }
@@ -105,9 +118,21 @@ func (h *MacroNotificationHandler) ExecuteMacro(c *gin.Context) {
 
 	res, err := h.macroRepo.Execute(c.Request.Context(), uint(accID), uint(macroID), convIDs)
 	if err != nil {
+		logger.WithComponent("macro").Error("failed to execute macro",
+			"account_id", accID,
+			"macro_id", macroID,
+			"conversation_ids", convIDs,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("macro").Info("macro executed successfully",
+		"account_id", accID,
+		"macro_id", macroID,
+		"conversation_count", len(convIDs),
+	)
 
 	response.Success(c, res)
 }
@@ -117,9 +142,20 @@ func (h *MacroNotificationHandler) DeleteMacro(c *gin.Context) {
 	macroID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
 	if err := h.macroRepo.Delete(c.Request.Context(), uint(accID), uint(macroID)); err != nil {
+		logger.WithComponent("macro").Error("failed to delete macro",
+			"account_id", accID,
+			"macro_id", macroID,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("macro").Info("macro deleted",
+		"account_id", accID,
+		"macro_id", macroID,
+	)
+
 	response.Success(c, gin.H{"deleted": true})
 }
 
@@ -466,9 +502,21 @@ func (h *MacroNotificationHandler) SubmitCSAT(c *gin.Context) {
 	}
 
 	if err := h.csatRepo.Create(c.Request.Context(), &survey); err != nil {
+		logger.WithComponent("csat").Error("failed to submit csat survey",
+			"account_id", req.AccountID,
+			"conversation_id", convID,
+			"rating", req.Rating,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("csat").Info("csat survey submitted",
+		"account_id", req.AccountID,
+		"conversation_id", convID,
+		"rating", req.Rating,
+	)
 
 	response.Created(c, survey)
 }

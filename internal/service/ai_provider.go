@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 )
 
 var globalAIHTTPClient *http.Client
@@ -71,6 +73,12 @@ func (p *LocalHeuristicProvider) GenerateCompletion(ctx context.Context, req AIC
 	if totalTokens < 10 {
 		totalTokens = 10
 	}
+
+	logger.WithComponent("ai_provider").Info("generated local heuristic completion",
+		"provider", p.Name(),
+		"model", "local-heuristic-v1",
+		"total_tokens", totalTokens,
+	)
 
 	return &AICompletionResponse{
 		Content:      reply,
@@ -138,6 +146,10 @@ func (p *OpenAIProvider) GenerateCompletion(ctx context.Context, req AICompletio
 
 	if apiKey == "" && client == nil {
 		reply := fmt.Sprintf("[OpenAI %s] 针对您的问题：“%s”，建议方案如下：请检查用户网络环境与账户状态，并指导其重新尝试。", model, userPrompt)
+		logger.WithComponent("ai_provider").Info("generated fallback openai completion",
+			"provider", p.Name(),
+			"model", model,
+		)
 		return &AICompletionResponse{
 			Content:      reply,
 			Model:        model,
@@ -189,6 +201,11 @@ func (p *OpenAIProvider) GenerateCompletion(ctx context.Context, req AICompletio
 
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
+		logger.WithComponent("ai_provider").Error("openai request failed",
+			"provider", p.Name(),
+			"model", model,
+			"error", err.Error(),
+		)
 		return nil, fmt.Errorf("openai request failed: %w", err)
 	}
 	defer httpResp.Body.Close()
@@ -199,6 +216,12 @@ func (p *OpenAIProvider) GenerateCompletion(ctx context.Context, req AICompletio
 	}
 
 	if httpResp.StatusCode >= 400 {
+		logger.WithComponent("ai_provider").Error("openai api returned error status",
+			"provider", p.Name(),
+			"model", model,
+			"status_code", httpResp.StatusCode,
+			"error", string(bodyBytes),
+		)
 		return nil, fmt.Errorf("openai api returned error status %d: %s", httpResp.StatusCode, string(bodyBytes))
 	}
 
@@ -235,6 +258,14 @@ func (p *OpenAIProvider) GenerateCompletion(ctx context.Context, req AICompletio
 	if usedModel == "" {
 		usedModel = model
 	}
+
+	logger.WithComponent("ai_provider").Info("openai completion generated successfully",
+		"provider", p.Name(),
+		"model", usedModel,
+		"prompt_tokens", openAIResp.Usage.PromptTokens,
+		"completion_tokens", openAIResp.Usage.CompletionTokens,
+		"total_tokens", totalTokens,
+	)
 
 	return &AICompletionResponse{
 		Content:      content,
@@ -297,6 +328,10 @@ func (p *GeminiProvider) GenerateCompletion(ctx context.Context, req AICompletio
 
 	if apiKey == "" && client == nil {
 		reply := fmt.Sprintf("[Gemini %s] 针对您的问题：“%s”，系统建议如下：请核对客户订单及付款信息。", model, userPrompt)
+		logger.WithComponent("ai_provider").Info("generated fallback gemini completion",
+			"provider", p.Name(),
+			"model", model,
+		)
 		return &AICompletionResponse{
 			Content:      reply,
 			Model:        model,
@@ -361,6 +396,11 @@ func (p *GeminiProvider) GenerateCompletion(ctx context.Context, req AICompletio
 
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
+		logger.WithComponent("ai_provider").Error("gemini request failed",
+			"provider", p.Name(),
+			"model", model,
+			"error", err.Error(),
+		)
 		return nil, fmt.Errorf("gemini request failed: %w", err)
 	}
 	defer httpResp.Body.Close()
@@ -371,6 +411,12 @@ func (p *GeminiProvider) GenerateCompletion(ctx context.Context, req AICompletio
 	}
 
 	if httpResp.StatusCode >= 400 {
+		logger.WithComponent("ai_provider").Error("gemini api returned error status",
+			"provider", p.Name(),
+			"model", model,
+			"status_code", httpResp.StatusCode,
+			"error", string(bodyBytes),
+		)
 		return nil, fmt.Errorf("gemini api returned error status %d: %s", httpResp.StatusCode, string(bodyBytes))
 	}
 
@@ -404,6 +450,14 @@ func (p *GeminiProvider) GenerateCompletion(ctx context.Context, req AICompletio
 	if totTok == 0 {
 		totTok = promptTok + compTok
 	}
+
+	logger.WithComponent("ai_provider").Info("gemini completion generated successfully",
+		"provider", p.Name(),
+		"model", model,
+		"prompt_tokens", promptTok,
+		"completion_tokens", compTok,
+		"total_tokens", totTok,
+	)
 
 	return &AICompletionResponse{
 		Content:      content,

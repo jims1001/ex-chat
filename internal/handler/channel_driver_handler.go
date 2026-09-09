@@ -10,6 +10,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -58,6 +59,10 @@ func (h *ChannelDriverHandler) HandleWhatsAppWebhook(c *gin.Context) {
 		response.BadRequest(c, "Account ID must be numeric")
 		return
 	}
+
+	logger.WithComponent("channel_whatsapp").Info("received whatsapp webhook",
+		"account_id", accountID,
+	)
 
 	var payload struct {
 		Object string `json:"object"`
@@ -276,6 +281,13 @@ func (h *ChannelDriverHandler) HandleTwilioWebhook(c *gin.Context) {
 		return
 	}
 
+	logger.WithComponent("channel_twilio").Info("received twilio webhook",
+		"account_id", accountID,
+		"from", from,
+		"to", to,
+		"message_sid", messageSID,
+	)
+
 	// Find or create Contact
 	contact, err := h.contactRepo.FindByIdentifier(uint(accountID), from)
 	if err != nil || contact == nil {
@@ -338,6 +350,10 @@ func (h *ChannelDriverHandler) HandleFacebookWebhook(c *gin.Context) {
 	if accountID == 0 {
 		accountID = 1
 	}
+
+	logger.WithComponent("channel_facebook").Info("received facebook webhook",
+		"account_id", accountID,
+	)
 
 	var payload struct {
 		Object string `json:"object"`
@@ -477,6 +493,13 @@ func (h *ChannelDriverHandler) InitiateContactCall(c *gin.Context) {
 		return
 	}
 
+	logger.WithComponent("call").Info("call initiated",
+		"call_id", call.ID,
+		"account_id", accountID,
+		"contact_id", contactID,
+		"inbox_id", req.InboxID,
+	)
+
 	response.Created(c, call)
 }
 
@@ -567,6 +590,13 @@ func (h *ChannelDriverHandler) EndCall(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	logger.WithComponent("call").Info("call ended",
+		"call_id", call.ID,
+		"account_id", accountID,
+		"status", call.Status,
+		"duration", call.Duration,
+	)
 
 	response.Success(c, call)
 }
