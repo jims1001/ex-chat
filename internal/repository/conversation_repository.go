@@ -151,3 +151,67 @@ func (r *ConversationRepository) UpdatePriority(accountID, id uint, priority str
 			"last_activity_at": time.Now().UTC(),
 		}).Error
 }
+
+// UpdateLastSeen updates agent read position and clears unread count
+func (r *ConversationRepository) UpdateLastSeen(accountID, id, userID uint, seenAt time.Time) error {
+	var conv domain.Conversation
+	if err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&conv).Error; err != nil {
+		return err
+	}
+
+	updates := map[string]any{
+		"agent_last_seen_at": seenAt,
+		"unread_count":       0,
+	}
+	if conv.AssigneeID != nil && *conv.AssigneeID == userID {
+		updates["assignee_last_seen_at"] = seenAt
+	}
+
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(updates).Error
+}
+
+// MarkUnread rewinds the agent's read position before the latest incoming message
+func (r *ConversationRepository) MarkUnread(accountID, id uint) error {
+	var latestMsg domain.Message
+	err := r.db.Where("account_id = ? AND conversation_id = ? AND message_type = ?", accountID, id, domain.MessageTypeIncoming).
+		Order("created_at DESC, id DESC").
+		First(&latestMsg).Error
+
+	updates := map[string]any{}
+	if err == nil {
+		seenAt := latestMsg.CreatedAt.Add(-1 * time.Second)
+		var unreadCount int64
+		_ = r.db.Model(&domain.Message{}).
+			Where("account_id = ? AND conversation_id = ? AND message_type = ? AND created_at > ?", accountID, id, domain.MessageTypeIncoming, seenAt).
+			Count(&unreadCount)
+		if unreadCount < 1 {
+			unreadCount = 1
+		}
+		updates["agent_last_seen_at"] = seenAt
+		updates["unread_count"] = int(unreadCount)
+	} else {
+		updates["agent_last_seen_at"] = nil
+		updates["unread_count"] = 1
+	}
+
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(updates).Error
+}
+
+// UpdateContactLastSeen updates the customer's read position
+func (r *ConversationRepository) UpdateContactLastSeen(accountID, id uint, seenAt time.Time) error {
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Update("contact_last_seen_at", seenAt).Error
+}
+
+// ToggleMute updates conversation mute state
+func (r *ConversationRepository) ToggleMute(accountID, id uint, muted bool) error {
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Update("muted", muted).Error
+}
+

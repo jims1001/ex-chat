@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -20,6 +21,7 @@ type ConversationHandler struct {
 	msgRepo           *repository.MessageRepository
 	inboxRepo         *repository.InboxRepository
 	contactRepo       *repository.ContactRepository
+	notificationRepo  *repository.NotificationRepository
 	routingService    *service.RoutingService
 	automationService *service.AutomationService
 	webhookService    *service.WebhookService
@@ -52,6 +54,10 @@ func (h *ConversationHandler) SetAutomationAndWebhook(as *service.AutomationServ
 
 func (h *ConversationHandler) SetPushService(ps *service.PushService) {
 	h.pushService = ps
+}
+
+func (h *ConversationHandler) SetNotificationRepo(nr *repository.NotificationRepository) {
+	h.notificationRepo = nr
 }
 
 type CreateConversationRequest struct {
@@ -226,6 +232,19 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 	if err != nil || conv == nil {
 		response.NotFound(c, "Conversation not found")
 		return
+	}
+
+	if rawUserID, exists := c.Get(middleware.ContextUserID); exists && rawUserID != nil {
+		if userID, ok := rawUserID.(uint); ok && userID > 0 {
+			now := time.Now()
+			_ = h.convRepo.UpdateLastSeen(accountID, conv.ID, userID, now)
+			if h.notificationRepo != nil {
+				_ = h.notificationRepo.MarkConversationNotificationsRead(c.Request.Context(), accountID, userID, conv.ID)
+			}
+			if updatedConv, err := h.convRepo.FindByID(accountID, conv.ID); err == nil && updatedConv != nil {
+				conv = updatedConv
+			}
+		}
 	}
 
 	response.Success(c, conv)
@@ -635,3 +654,561 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 
 	response.Created(c, msg)
 }
+
+// UpdateLastSeen updates agent read position and clears unread count
+func (h *ConversationHandler) UpdateLastSeen(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	var req struct {
+		AgentLastSeenAt *time.Time `json:"agent_last_seen_at"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	seenAt := time.Now()
+	if req.AgentLastSeenAt != nil && !req.AgentLastSeenAt.IsZero() {
+		seenAt = *req.AgentLastSeenAt
+	}
+
+	var userID uint
+	if rawUserID, exists := c.Get(middleware.ContextUserID); exists && rawUserID != nil {
+		if uid, ok := rawUserID.(uint); ok {
+			userID = uid
+		}
+	}
+
+	if err := h.convRepo.UpdateLastSeen(accountID, uint(id), userID, seenAt); err != nil {
+		response.InternalError(c, "Failed to update last seen: "+err.Error())
+		return
+	}
+
+	if h.notificationRepo != nil && userID > 0 {
+		_ = h.notificationRepo.MarkConversationNotificationsRead(c.Request.Context(), accountID, userID, uint(id))
+	}
+
+	conv, _ := h.convRepo.FindByID(accountID, uint(id))
+	response.Success(c, conv)
+}
+
+// MarkUnread marks a conversation as unread by rewinding read position
+func (h *ConversationHandler) MarkUnread(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	if err := h.convRepo.MarkUnread(accountID, uint(id)); err != nil {
+		response.InternalError(c, "Failed to mark unread: "+err.Error())
+		return
+	}
+
+	conv, _ := h.convRepo.FindByID(accountID, uint(id))
+	response.Success(c, conv)
+}
+
+// MuteConversation mutes notifications/events for the conversation
+func (h *ConversationHandler) MuteConversation(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	if err := h.convRepo.ToggleMute(accountID, uint(id), true); err != nil {
+		response.InternalError(c, "Failed to mute conversation")
+		return
+	}
+
+	response.Success(c, gin.H{"id": uint(id), "muted": true})
+}
+
+// UnmuteConversation unmutes the conversation
+func (h *ConversationHandler) UnmuteConversation(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	if err := h.convRepo.ToggleMute(accountID, uint(id), false); err != nil {
+		response.InternalError(c, "Failed to unmute conversation")
+		return
+	}
+
+	response.Success(c, gin.H{"id": uint(id), "muted": false})
+}
+
+// ToggleTypingStatus broadcasts agent typing indicator via websocket
+func (h *ConversationHandler) ToggleTypingStatus(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	var req struct {
+		TypingStatus string `json:"typing_status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "typing_status is required ('on' or 'off')")
+		return
+	}
+
+	var userID uint
+	if rawUserID, exists := c.Get(middleware.ContextUserID); exists && rawUserID != nil {
+		if uid, ok := rawUserID.(uint); ok {
+			userID = uid
+		}
+	}
+
+	var userName string
+	if userID > 0 {
+		var user domain.User
+		if err := h.convRepo.GetDB().Where("id = ?", userID).First(&user).Error; err == nil {
+			userName = user.Name
+		}
+	}
+
+	eventName := "conversation.typing_on"
+	if req.TypingStatus == "off" {
+		eventName = "conversation.typing_off"
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           eventName,
+			AccountID:      accountID,
+			ConversationID: conv.ID,
+			Data: gin.H{
+				"conversation_id": conv.ID,
+				"user": gin.H{
+					"id":   userID,
+					"name": userName,
+				},
+				"typing_status": req.TypingStatus,
+			},
+		})
+	}
+
+	response.Success(c, gin.H{"status": "ok", "typing_status": req.TypingStatus})
+}
+
+// SendTranscript sends a transcript of the conversation to an email address
+func (h *ConversationHandler) SendTranscript(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	targetEmail := req.Email
+	if targetEmail == "" && conv.Contact != nil {
+		targetEmail = conv.Contact.Email
+	}
+	if targetEmail == "" {
+		response.BadRequest(c, "Email is required to send transcript")
+		return
+	}
+
+	messages, _, _ := h.msgRepo.ListByConversation(accountID, conv.ID, true, 1, 200)
+
+	response.Success(c, gin.H{
+		"message":        "Transcript sent successfully",
+		"email":          targetEmail,
+		"messages_count": len(messages),
+	})
+}
+
+// WidgetUpdateLastSeen updates the contact's read position from web widget
+func (h *ConversationHandler) WidgetUpdateLastSeen(c *gin.Context) {
+	websiteToken := c.Query("website_token")
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Auth-Token")
+	}
+
+	var req struct {
+		WebsiteToken   string     `json:"website_token"`
+		SourceID       string     `json:"source_id"`
+		ConversationID uint       `json:"conversation_id"`
+		LastSeenAt     *time.Time `json:"last_seen_at"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if websiteToken == "" {
+		websiteToken = req.WebsiteToken
+	}
+
+	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
+	if err != nil || inbox == nil {
+		response.NotFound(c, "Invalid website token")
+		return
+	}
+
+	convID := req.ConversationID
+	if convID == 0 {
+		if cid, err := strconv.ParseUint(c.Query("conversation_id"), 10, 64); err == nil {
+			convID = uint(cid)
+		}
+	}
+	if convID == 0 {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(inbox.AccountID, convID)
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	seenAt := time.Now()
+	if req.LastSeenAt != nil && !req.LastSeenAt.IsZero() {
+		seenAt = *req.LastSeenAt
+	}
+
+	if err := h.convRepo.UpdateContactLastSeen(inbox.AccountID, conv.ID, seenAt); err != nil {
+		response.InternalError(c, "Failed to update contact last seen")
+		return
+	}
+
+	response.Success(c, gin.H{
+		"id":                   conv.ID,
+		"contact_last_seen_at": seenAt,
+	})
+}
+
+// WidgetToggleTyping broadcasts typing status from the widget visitor
+func (h *ConversationHandler) WidgetToggleTyping(c *gin.Context) {
+	websiteToken := c.Query("website_token")
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Auth-Token")
+	}
+
+	var req struct {
+		WebsiteToken   string `json:"website_token"`
+		SourceID       string `json:"source_id"`
+		ConversationID uint   `json:"conversation_id"`
+		TypingStatus   string `json:"typing_status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+	if websiteToken == "" {
+		websiteToken = req.WebsiteToken
+	}
+
+	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
+	if err != nil || inbox == nil {
+		response.NotFound(c, "Invalid website token")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	var contactName string
+	if req.SourceID != "" {
+		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, req.SourceID)
+		if contact != nil {
+			contactName = contact.Name
+		}
+	}
+
+	eventName := "conversation.typing_on"
+	if req.TypingStatus == "off" {
+		eventName = "conversation.typing_off"
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           eventName,
+			AccountID:      inbox.AccountID,
+			ConversationID: conv.ID,
+			Data: gin.H{
+				"conversation_id": conv.ID,
+				"contact": gin.H{
+					"source_id": req.SourceID,
+					"name":      contactName,
+				},
+				"typing_status": req.TypingStatus,
+			},
+		})
+	}
+
+	response.Success(c, gin.H{"status": "ok", "typing_status": req.TypingStatus})
+}
+
+// WidgetSendTranscript sends transcript from the widget visitor
+func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
+	websiteToken := c.Query("website_token")
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Auth-Token")
+	}
+
+	var req struct {
+		WebsiteToken   string `json:"website_token"`
+		ConversationID uint   `json:"conversation_id"`
+		Email          string `json:"email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+	if websiteToken == "" {
+		websiteToken = req.WebsiteToken
+	}
+
+	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
+	if err != nil || inbox == nil {
+		response.NotFound(c, "Invalid website token")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	targetEmail := req.Email
+	if targetEmail == "" && conv.Contact != nil {
+		targetEmail = conv.Contact.Email
+	}
+	if targetEmail == "" {
+		response.BadRequest(c, "Email is required to send transcript")
+		return
+	}
+
+	messages, _, _ := h.msgRepo.ListByConversation(inbox.AccountID, conv.ID, false, 1, 100)
+
+	response.Success(c, gin.H{
+		"message":        "Transcript sent successfully",
+		"email":          targetEmail,
+		"messages_count": len(messages),
+	})
+}
+
+// UpdateMessage edits an existing message's content
+func (h *ConversationHandler) UpdateMessage(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	convID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	msgID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid message ID")
+		return
+	}
+
+	var req struct {
+		Content string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	if strings.TrimSpace(req.Content) == "" {
+		response.BadRequest(c, "Message content cannot be empty")
+		return
+	}
+
+	msg, err := h.msgRepo.FindByIDAndConversation(accountID, uint(convID), uint(msgID))
+	if err != nil || msg == nil {
+		response.NotFound(c, "Message not found in this conversation")
+		return
+	}
+
+	if msg.Deleted {
+		response.BadRequest(c, "Cannot edit a deleted message")
+		return
+	}
+
+	updatedMsg, err := h.msgRepo.UpdateContent(accountID, uint(convID), uint(msgID), req.Content)
+	if err != nil {
+		response.InternalError(c, "Failed to update message: "+err.Error())
+		return
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageUpdated,
+			AccountID:      accountID,
+			ConversationID: uint(convID),
+			Data:           updatedMsg,
+		})
+	}
+
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "message_updated", updatedMsg)
+	}
+
+	response.Success(c, updatedMsg)
+}
+
+// DeleteMessage soft-deletes a message from a conversation
+func (h *ConversationHandler) DeleteMessage(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	convID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	msgID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid message ID")
+		return
+	}
+
+	msg, err := h.msgRepo.FindByIDAndConversation(accountID, uint(convID), uint(msgID))
+	if err != nil || msg == nil || msg.Deleted {
+		response.NotFound(c, "Message not found in this conversation")
+		return
+	}
+
+	deletedMsg, err := h.msgRepo.DeleteMessage(accountID, uint(convID), uint(msgID))
+	if err != nil {
+		response.InternalError(c, "Failed to delete message: "+err.Error())
+		return
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageDeleted,
+			AccountID:      accountID,
+			ConversationID: uint(convID),
+			Data:           deletedMsg,
+		})
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageUpdated,
+			AccountID:      accountID,
+			ConversationID: uint(convID),
+			Data:           deletedMsg,
+		})
+	}
+
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "message_deleted", deletedMsg)
+	}
+
+	response.Success(c, deletedMsg)
+}
+
+// RetryMessage re-attempts delivery of a failed message
+func (h *ConversationHandler) RetryMessage(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	convID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	msgID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid message ID")
+		return
+	}
+
+	msg, err := h.msgRepo.FindByIDAndConversation(accountID, uint(convID), uint(msgID))
+	if err != nil || msg == nil {
+		response.NotFound(c, "Message not found in this conversation")
+		return
+	}
+
+	if msg.Deleted {
+		response.BadRequest(c, "Cannot retry a deleted message")
+		return
+	}
+
+	if msg.Status != domain.MessageStatusFailed {
+		response.BadRequest(c, "Only failed messages can be retried")
+		return
+	}
+
+	retriedMsg, err := h.msgRepo.RetryMessage(accountID, uint(convID), uint(msgID))
+	if err != nil {
+		response.InternalError(c, "Failed to retry message: "+err.Error())
+		return
+	}
+
+	conv, _ := h.convRepo.FindByID(accountID, uint(convID))
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageUpdated,
+			AccountID:      accountID,
+			ConversationID: uint(convID),
+			Data:           retriedMsg,
+		})
+	}
+
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "message_created", retriedMsg)
+	}
+
+	if h.pushService != nil && conv != nil && conv.AssigneeID != nil {
+		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, accountID, service.PushPayload{
+			Title:        "Customer Message Retried",
+			Body:         retriedMsg.Content,
+			AccountID:    accountID,
+			ResourceID:   conv.ID,
+			ResourceType: "conversation",
+		})
+	}
+
+	response.Success(c, retriedMsg)
+}
+
+

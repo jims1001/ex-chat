@@ -40,6 +40,33 @@ const (
 	PriorityUrgent = "urgent"
 )
 
+// Strategy type constants
+const (
+	StrategyRoundRobin  = "round_robin"
+	StrategyLeastActive = "least_active"
+)
+
+// Sentiment constants
+const (
+	SentimentNeutral    = "neutral"
+	SentimentPositive   = "positive"
+	SentimentFrustrated = "frustrated"
+)
+
+// Automation event and action constants
+const (
+	EventConversationCreated = "conversation_created"
+	EventConversationUpdated = "conversation_updated"
+	EventMessageCreated      = "message_created"
+
+	ActionAssignTeam  = "assign_team"
+	ActionAssignAgent = "assign_agent"
+	ActionSendMessage = "send_message"
+	ActionAddLabel    = "add_label"
+	ActionResolveConv = "resolve_conversation"
+	ActionMuteConv    = "mute_conversation"
+)
+
 // Message type constants
 const (
 	MessageTypeIncoming = "incoming"
@@ -98,13 +125,15 @@ type AccountUser struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
 	AccountID    uint      `gorm:"index;not null" json:"account_id"`
 	UserID       uint      `gorm:"index;not null" json:"user_id"`
-	Role         string    `gorm:"size:50;default:'agent'" json:"role"`
-	Availability string    `gorm:"size:50;default:'online'" json:"availability"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Role                  string               `gorm:"size:50;default:'agent'" json:"role"`
+	Availability          string               `gorm:"size:50;default:'online'" json:"availability"`
+	AgentCapacityPolicyID *uint                `gorm:"index" json:"agent_capacity_policy_id"`
+	CreatedAt             time.Time            `json:"created_at"`
+	UpdatedAt             time.Time            `json:"updated_at"`
 
-	Account *Account `gorm:"foreignKey:AccountID" json:"account,omitempty"`
-	User    *User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Account             *Account             `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	User                *User                `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	AgentCapacityPolicy *AgentCapacityPolicy `gorm:"foreignKey:AgentCapacityPolicyID" json:"agent_capacity_policy,omitempty"`
 }
 
 // Inbox represents a communication channel for customer interactions
@@ -120,10 +149,12 @@ type Inbox struct {
 	OutOfOfficeMessage  string    `gorm:"type:text" json:"out_of_office_message"`
 	Timezone            string    `gorm:"size:100;default:'UTC'" json:"timezone"`
 	WorkingHours        string    `gorm:"type:text" json:"working_hours"` // JSON array of WorkingHourConfig
+	AssignmentPolicyID  *uint     `gorm:"index" json:"assignment_policy_id"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 
-	Members []User `gorm:"many2many:inbox_members;" json:"members,omitempty"`
+	Members          []User            `gorm:"many2many:inbox_members;" json:"members,omitempty"`
+	AssignmentPolicy *AssignmentPolicy `gorm:"foreignKey:AssignmentPolicyID" json:"assignment_policy,omitempty"`
 }
 
 // InboxMember links an agent to an inbox
@@ -150,6 +181,7 @@ type Contact struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 
 	Company *Company `gorm:"foreignKey:CompanyID" json:"company,omitempty"`
+	Labels  []Label  `gorm:"many2many:contact_labels;" json:"labels,omitempty"`
 }
 
 // ContactInbox maps a contact's identity in a specific channel
@@ -180,10 +212,17 @@ type Conversation struct {
 	SLAStatus        string     `gorm:"size:50;default:'active'" json:"sla_status"`
 	CustomAttributes string     `gorm:"type:text" json:"custom_attributes"`
 	ObjectVersion    int        `gorm:"default:1" json:"object_version"`
-	SnoozedUntil     *time.Time `json:"snoozed_until"`
-	LastActivityAt   time.Time  `gorm:"index" json:"last_activity_at"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	SnoozedUntil       *time.Time `json:"snoozed_until"`
+	LastActivityAt     time.Time  `gorm:"index" json:"last_activity_at"`
+	AgentLastSeenAt    *time.Time `json:"agent_last_seen_at"`
+	ContactLastSeenAt  *time.Time `json:"contact_last_seen_at"`
+	AssigneeLastSeenAt *time.Time `json:"assignee_last_seen_at"`
+	UnreadCount        int        `gorm:"default:0" json:"unread_count"`
+	Muted              bool       `gorm:"default:false" json:"muted"`
+	FirstResponseDueAt *time.Time `json:"first_response_due_at,omitempty"`
+	ResolutionDueAt    *time.Time `json:"resolution_due_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 
 	Contact  *Contact `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
 	Inbox    *Inbox   `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
@@ -203,10 +242,13 @@ type Message struct {
 	ContentType    string    `gorm:"size:50;default:'text'" json:"content_type"`
 	Content        string    `gorm:"type:text;not null" json:"content"`
 	Private        bool      `gorm:"default:false" json:"private"`
-	Status         string    `gorm:"size:50;default:'sent'" json:"status"`
-	EchoID         string    `gorm:"size:255;index" json:"echo_id"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Status         string     `gorm:"size:50;default:'sent'" json:"status"`
+	EchoID         string     `gorm:"size:255;index" json:"echo_id"`
+	Deleted        bool       `gorm:"default:false;index" json:"deleted"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+	EditedAt       *time.Time `json:"edited_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 
 	Sender any `gorm:"-" json:"sender,omitempty"`
 }
@@ -226,6 +268,12 @@ type Label struct {
 type ConversationLabel struct {
 	ConversationID uint `gorm:"primaryKey" json:"conversation_id"`
 	LabelID        uint `gorm:"primaryKey" json:"label_id"`
+}
+
+// ContactLabel join table between contacts and labels
+type ContactLabel struct {
+	ContactID uint `gorm:"primaryKey" json:"contact_id"`
+	LabelID   uint `gorm:"primaryKey" json:"label_id"`
 }
 
 // CannedResponse represents a quick reply shortcut for agents
@@ -267,6 +315,54 @@ type CapacityPolicy struct {
 	ConversationLimit int       `gorm:"default:10" json:"conversation_limit"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// AgentCapacityPolicy represents an enterprise-grade agent capacity policy with per-inbox limits
+type AgentCapacityPolicy struct {
+	ID             uint                 `gorm:"primaryKey" json:"id"`
+	AccountID      uint                 `gorm:"index;not null" json:"account_id"`
+	Name           string               `gorm:"size:255;not null" json:"name"`
+	Description    string               `gorm:"type:text" json:"description"`
+	ExclusionRules string               `gorm:"type:text" json:"exclusion_rules"` // JSON config for older than hours, excluded labels
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+
+	InboxCapacityLimits []InboxCapacityLimit `gorm:"foreignKey:AgentCapacityPolicyID" json:"inbox_capacity_limits,omitempty"`
+	AccountUsers        []AccountUser        `gorm:"foreignKey:AgentCapacityPolicyID" json:"account_users,omitempty"`
+	UsersCount          int                  `gorm:"-" json:"users_count,omitempty"`
+}
+
+// InboxCapacityLimit defines a specific conversation limit for an inbox under a capacity policy
+type InboxCapacityLimit struct {
+	ID                    uint      `gorm:"primaryKey" json:"id"`
+	AgentCapacityPolicyID uint      `gorm:"uniqueIndex:idx_cap_policy_inbox;not null" json:"agent_capacity_policy_id"`
+	InboxID               uint      `gorm:"uniqueIndex:idx_cap_policy_inbox;not null" json:"inbox_id"`
+	ConversationLimit     int       `gorm:"not null;default:0" json:"conversation_limit"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+
+	Inbox               *Inbox               `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
+	AgentCapacityPolicy *AgentCapacityPolicy `gorm:"foreignKey:AgentCapacityPolicyID" json:"agent_capacity_policy,omitempty"`
+}
+
+// AssignmentPolicy defines an independent conversation routing and distribution strategy
+type AssignmentPolicy struct {
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	AccountID          uint      `gorm:"index;not null" json:"account_id"`
+	Name               string    `gorm:"size:255;not null" json:"name"`
+	Description        string    `gorm:"size:500" json:"description"`
+	StrategyType       string    `gorm:"size:50;not null;default:'round_robin'" json:"strategy_type"` // round_robin, least_active, workload
+	Enabled            bool      `gorm:"default:true" json:"enabled"`
+	WorkingHoursOnly   bool      `gorm:"default:false" json:"working_hours_only"`
+	AgentCapacityLimit int       `gorm:"default:0" json:"agent_capacity_limit"` // 0 = unlimited or fallback to user capacity
+	FallbackAssigneeID *uint     `gorm:"index" json:"fallback_assignee_id"`
+	FallbackTeamID     *uint     `gorm:"index" json:"fallback_team_id"`
+	RuleConfig         string    `gorm:"type:text" json:"rule_config"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+
+	FallbackAssignee   *User     `gorm:"foreignKey:FallbackAssigneeID" json:"fallback_assignee,omitempty"`
+	FallbackTeam       *Team     `gorm:"foreignKey:FallbackTeamID" json:"fallback_team,omitempty"`
 }
 
 // CustomAttributeDefinition defines custom fields for Contact or Conversation
@@ -492,8 +588,33 @@ type Notification struct {
 	SecondaryActorType string     `gorm:"size:50" json:"secondary_actor_type"`
 	SecondaryActorID   uint       `json:"secondary_actor_id"`
 	ReadAt             *time.Time `json:"read_at"`
+	SnoozedUntil       *time.Time `gorm:"index" json:"snoozed_until,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+const (
+	NotificationTypeConversationAssignment = "conversation_assignment"
+	NotificationTypeConversationMention    = "conversation_mention"
+	NotificationTypeConversationCreation   = "conversation_creation"
+	NotificationTypeSLABreach              = "sla_breach"
+	NotificationTypeSystemAlert            = "system_alert"
+)
+
+// NotificationSetting records user notification preferences and channel subscriptions
+type NotificationSetting struct {
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	AccountID          uint      `gorm:"uniqueIndex:idx_notif_acc_user;not null" json:"account_id"`
+	UserID             uint      `gorm:"uniqueIndex:idx_notif_acc_user;not null" json:"user_id"`
+	SelectedEmailFlags string    `gorm:"type:text" json:"selected_email_flags"`   // JSON array e.g. ["conversation_assignment", "sla_breach"]
+	SelectedPushFlags  string    `gorm:"type:text" json:"selected_push_flags"`    // JSON array
+	SelectedInAppFlags string    `gorm:"type:text" json:"selected_in_app_flags"`  // JSON array
+	Muted              bool      `gorm:"default:false" json:"muted"`
+	QuietHoursEnabled  bool      `gorm:"default:false" json:"quiet_hours_enabled"`
+	QuietHoursStart    string    `gorm:"size:10;default:'22:00'" json:"quiet_hours_start"`
+	QuietHoursEnd      string    `gorm:"size:10;default:'08:00'" json:"quiet_hours_end"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // ----------------- RPT / CSAT 满意度问卷 -----------------
@@ -540,14 +661,15 @@ type NotificationSubscription struct {
 
 // Company represents a customer organization or corporate account
 type Company struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	AccountID   uint      `gorm:"index;not null" json:"account_id"`
-	Name        string    `gorm:"size:255;not null" json:"name"`
-	Domain      string    `gorm:"size:255" json:"domain"`
-	Industry    string    `gorm:"size:100" json:"industry"`
-	Description string    `gorm:"type:text" json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	AccountID     uint      `gorm:"index;not null" json:"account_id"`
+	Name          string    `gorm:"size:255;not null" json:"name"`
+	Domain        string    `gorm:"size:255" json:"domain"`
+	Industry      string    `gorm:"size:100" json:"industry"`
+	Description   string    `gorm:"type:text" json:"description"`
+	ContactsCount int64     `gorm:"-" json:"contacts_count,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // ----------------- OPS 营销与触达活动 -----------------
@@ -578,6 +700,7 @@ type SLAPolicy struct {
 	Description                 string    `gorm:"type:text" json:"description"`
 	FirstResponseTimeThreshold int       `gorm:"default:3600" json:"first_response_time_threshold"` // in seconds
 	ResolutionTimeThreshold    int       `gorm:"default:86400" json:"resolution_time_threshold"`   // in seconds
+	OnlyDuringBusinessHours     bool      `gorm:"default:true" json:"only_during_business_hours"`
 	CreatedAt                   time.Time `json:"created_at"`
 	UpdatedAt                   time.Time `json:"updated_at"`
 }
@@ -826,15 +949,43 @@ type EmailChannelMigration struct {
 
 // CaptainAssistant defines an AI Copilot / Captain assistant bot
 type CaptainAssistant struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	AccountID    uint      `gorm:"index;not null" json:"account_id"`
-	Name         string    `gorm:"size:255;not null" json:"name"`
-	Description  string    `gorm:"type:text" json:"description"`
-	SystemPrompt string    `gorm:"type:text" json:"system_prompt"`
-	Model        string    `gorm:"size:100;default:'local-heuristic'" json:"model"`
-	Status       string    `gorm:"size:50;default:'active'" json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	AccountID          uint      `gorm:"index;not null" json:"account_id"`
+	Name               string    `gorm:"size:255;not null" json:"name"`
+	Description        string    `gorm:"type:text" json:"description"`
+	SystemPrompt       string    `gorm:"type:text" json:"system_prompt"`
+	Model              string    `gorm:"size:100;default:'local-heuristic'" json:"model"`
+	Status             string    `gorm:"size:50;default:'active'" json:"status"`
+	Config             string    `gorm:"type:text" json:"config"`
+	ResponseGuidelines string    `gorm:"type:text" json:"response_guidelines"`
+	Guardrails         string    `gorm:"type:text" json:"guardrails"`
+	Inboxes            []Inbox   `gorm:"many2many:captain_inboxes;" json:"inboxes,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// CaptainInbox defines the binding relationship between CaptainAssistant and Inbox
+type CaptainInbox struct {
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	AccountID          uint      `gorm:"index;not null" json:"account_id"`
+	CaptainAssistantID uint      `gorm:"index;not null" json:"captain_assistant_id"`
+	InboxID            uint      `gorm:"index;not null" json:"inbox_id"`
+	Inbox              *Inbox    `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// CaptainAssistantResponse defines FAQ / Q&A pairs for Captain & Copilot
+type CaptainAssistantResponse struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	AccountID   uint      `gorm:"index;not null" json:"account_id"`
+	AssistantID uint      `gorm:"index;not null" json:"assistant_id"`
+	DocumentID  *uint     `gorm:"index" json:"document_id,omitempty"`
+	Question    string    `gorm:"size:500;not null" json:"question"`
+	Answer      string    `gorm:"type:text;not null" json:"answer"`
+	Status      string    `gorm:"size:50;default:'active'" json:"status"` // active, inactive, draft
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // CaptainKnowledgeDoc defines knowledge base documents for Captain & Copilot
@@ -936,10 +1087,49 @@ type AccountSubscription struct {
 
 // WorkingHourConfig item for daily business hours schedule
 type WorkingHourConfig struct {
-	DayOfWeek   int  `json:"day_of_week"` // 0=Sunday, 1=Monday, ..., 6=Saturday
-	OpenHour    int  `json:"open_hour"`
-	OpenMinute  int  `json:"open_minute"`
-	CloseHour   int  `json:"close_hour"`
-	CloseMinute int  `json:"close_minute"`
-	Closed      bool `json:"closed"`
+	DayOfWeek    int  `json:"day_of_week"` // 0=Sunday, 1=Monday, ..., 6=Saturday
+	OpenHour     int  `json:"open_hour"`
+	OpenMinute   int  `json:"open_minute"`
+	OpenMinutes  int  `json:"open_minutes,omitempty"`
+	CloseHour    int  `json:"close_hour"`
+	CloseMinute  int  `json:"close_minute"`
+	CloseMinutes int  `json:"close_minutes,omitempty"`
+	Closed       bool `json:"closed"`
+	ClosedAllDay bool `json:"closed_all_day,omitempty"`
+	OpenAllDay   bool `json:"open_all_day,omitempty"`
 }
+
+// GetOpenMinute returns the open minute regardless of JSON field naming
+func (w *WorkingHourConfig) GetOpenMinute() int {
+	if w.OpenMinutes > 0 {
+		return w.OpenMinutes
+	}
+	return w.OpenMinute
+}
+
+// GetCloseMinute returns the close minute regardless of JSON field naming
+func (w *WorkingHourConfig) GetCloseMinute() int {
+	if w.CloseMinutes > 0 {
+		return w.CloseMinutes
+	}
+	return w.CloseMinute
+}
+
+// IsClosed returns true if the day is configured as closed
+func (w *WorkingHourConfig) IsClosed() bool {
+	return w.Closed || w.ClosedAllDay
+}
+
+// IsOpenAllDay returns true if the day is configured as open 24 hours
+func (w *WorkingHourConfig) IsOpenAllDay() bool {
+	if w.OpenAllDay {
+		return true
+	}
+	if w.OpenHour == 0 && w.GetOpenMinute() == 0 {
+		if w.CloseHour == 24 || (w.CloseHour == 23 && w.GetCloseMinute() == 59) {
+			return true
+		}
+	}
+	return false
+}
+

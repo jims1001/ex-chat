@@ -65,10 +65,7 @@ func (p *LocalHeuristicProvider) GenerateCompletion(ctx context.Context, req AIC
 		}
 	}
 
-	reply := fmt.Sprintf("感谢您的咨询。关于您提到的“%s”，我们的客服人员正在为您全力跟进处理中。", userPrompt)
-	if strings.Contains(userPrompt, "退款") || strings.Contains(userPrompt, "订单") {
-		reply = "您好，如需查询退款或订单进度，请提供订单号，我们将第一时间为您核对并处理。"
-	}
+	reply := fmt.Sprintf("感谢您的咨询。关于您提到的“%s”，系统已接入并通知客服人员跟进处理。", userPrompt)
 
 	totalTokens := (len(userPrompt) + len(reply)) / 4
 	if totalTokens < 10 {

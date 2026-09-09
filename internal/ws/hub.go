@@ -8,9 +8,12 @@ import (
 // Event names following Chatwoot standards
 const (
 	EventMessageCreated      = "message.created"
-	EventConversationUpdated = "conversation.updated"
-	EventConversationStatus  = "conversation.status_changed"
-	EventPresenceUpdate      = "presence.update"
+	EventMessageUpdated      = "message.updated"
+	EventMessageDeleted      = "message.deleted"
+	EventConversationUpdated  = "conversation.updated"
+	EventConversationStatus   = "conversation.status_changed"
+	EventConversationAssigned = "conversation.assigned"
+	EventPresenceUpdate       = "presence.update"
 )
 
 type Event struct {

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,21 +16,29 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type AdvancedHandler struct {
-	db              *gorm.DB
-	companyRepo     *repository.CompanyRepository
-	campaignRepo    *repository.CampaignRepository
-	slaRepo         *repository.SLARepository
-	agentBotRepo    *repository.AgentBotRepository
-	attachmentRepo  *repository.AttachmentRepository
-	campaignService *service.CampaignService
-	slaService      *service.SLAService
-	httpClient      *http.Client
+	db                *gorm.DB
+	companyRepo       *repository.CompanyRepository
+	campaignRepo      *repository.CampaignRepository
+	slaRepo           *repository.SLARepository
+	agentBotRepo      *repository.AgentBotRepository
+	attachmentRepo    *repository.AttachmentRepository
+	campaignService   *service.CampaignService
+	slaService        *service.SLAService
+	httpClient        *http.Client
+	convRepo          *repository.ConversationRepository
+	routingService    *service.RoutingService
+	automationService *service.AutomationService
+	webhookService    *service.WebhookService
+	pushService       *service.PushService
+	notificationRepo  *repository.NotificationRepository
+	hub               *ws.Hub
 }
 
 func NewAdvancedHandler(
@@ -57,6 +66,24 @@ func (h *AdvancedHandler) SetHTTPClient(client *http.Client) {
 func (h *AdvancedHandler) SetServices(cs *service.CampaignService, ss *service.SLAService) {
 	h.campaignService = cs
 	h.slaService = ss
+}
+
+func (h *AdvancedHandler) SetEventServices(
+	convRepo *repository.ConversationRepository,
+	routingService *service.RoutingService,
+	autoService *service.AutomationService,
+	webhookService *service.WebhookService,
+	pushService *service.PushService,
+	notifRepo *repository.NotificationRepository,
+	hub *ws.Hub,
+) {
+	h.convRepo = convRepo
+	h.routingService = routingService
+	h.automationService = autoService
+	h.webhookService = webhookService
+	h.pushService = pushService
+	h.notificationRepo = notifRepo
+	h.hub = hub
 }
 
 // ----------------- Company Handlers -----------------
@@ -94,12 +121,22 @@ func (h *AdvancedHandler) CreateCompany(c *gin.Context) {
 
 func (h *AdvancedHandler) ListCompanies(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	companies, err := h.companyRepo.List(c.Request.Context(), uint(accID))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "25"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	search := strings.TrimSpace(c.Query("q"))
+
+	companies, total, err := h.companyRepo.ListPaginated(c.Request.Context(), uint(accID), page, pageSize, search)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	response.Success(c, companies)
+	response.Paginated(c, companies, total, page, pageSize)
 }
 
 func (h *AdvancedHandler) GetCompany(c *gin.Context) {
@@ -165,6 +202,106 @@ func (h *AdvancedHandler) DeleteCompany(c *gin.Context) {
 	response.Success(c, gin.H{"deleted": true})
 }
 
+func (h *AdvancedHandler) ListCompanyContacts(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	companyID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	comp, err := h.companyRepo.GetByID(c.Request.Context(), uint(accID), uint(companyID))
+	if err != nil || comp == nil {
+		response.NotFound(c, "Company not found")
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "25"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	search := strings.TrimSpace(c.Query("q"))
+
+	contacts, total, err := h.companyRepo.ListCompanyContacts(c.Request.Context(), uint(accID), comp.ID, page, pageSize, search)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Paginated(c, contacts, total, page, pageSize)
+}
+
+type AddCompanyContactsReq struct {
+	ContactIDs []uint `json:"contact_ids"`
+	ContactID  *uint  `json:"contact_id"`
+}
+
+func (h *AdvancedHandler) AddCompanyContacts(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	companyID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	comp, err := h.companyRepo.GetByID(c.Request.Context(), uint(accID), uint(companyID))
+	if err != nil || comp == nil {
+		response.NotFound(c, "Company not found")
+		return
+	}
+
+	var req AddCompanyContactsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	ids := req.ContactIDs
+	if len(ids) == 0 && req.ContactID != nil && *req.ContactID > 0 {
+		ids = []uint{*req.ContactID}
+	}
+
+	if len(ids) == 0 {
+		response.BadRequest(c, "No contact IDs provided")
+		return
+	}
+
+	if err := h.companyRepo.AssociateContacts(c.Request.Context(), uint(accID), comp.ID, ids); err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var updatedContacts []domain.Contact
+	_ = h.db.WithContext(c.Request.Context()).Preload("Company").Preload("Labels").
+		Where("account_id = ? AND id IN ?", accID, ids).
+		Find(&updatedContacts).Error
+
+	response.Success(c, updatedContacts)
+}
+
+func (h *AdvancedHandler) RemoveCompanyContact(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	companyID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	contactID, _ := strconv.ParseUint(c.Param("contact_id"), 10, 32)
+
+	comp, err := h.companyRepo.GetByID(c.Request.Context(), uint(accID), uint(companyID))
+	if err != nil || comp == nil {
+		response.NotFound(c, "Company not found")
+		return
+	}
+
+	var contact domain.Contact
+	if err := h.db.WithContext(c.Request.Context()).
+		Where("account_id = ? AND id = ? AND company_id = ?", accID, contactID, comp.ID).
+		First(&contact).Error; err != nil {
+		response.NotFound(c, "Contact not associated with this company")
+		return
+	}
+
+	if err := h.companyRepo.DisassociateContact(c.Request.Context(), uint(accID), comp.ID, uint(contactID)); err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"unlinked": true})
+}
+
 // ----------------- Campaign Handlers -----------------
 
 type CreateCampaignReq struct {
@@ -223,6 +360,7 @@ type CreateSLAReq struct {
 	Description                 string `json:"description"`
 	FirstResponseTimeThreshold int    `json:"first_response_time_threshold"`
 	ResolutionTimeThreshold    int    `json:"resolution_time_threshold"`
+	OnlyDuringBusinessHours     *bool  `json:"only_during_business_hours"`
 }
 
 func (h *AdvancedHandler) CreateSLAPolicy(c *gin.Context) {
@@ -233,12 +371,18 @@ func (h *AdvancedHandler) CreateSLAPolicy(c *gin.Context) {
 		return
 	}
 
+	onlyDuringBiz := true
+	if req.OnlyDuringBusinessHours != nil {
+		onlyDuringBiz = *req.OnlyDuringBusinessHours
+	}
+
 	sla := domain.SLAPolicy{
 		AccountID:                   uint(accID),
 		Name:                        req.Name,
 		Description:                 req.Description,
 		FirstResponseTimeThreshold: req.FirstResponseTimeThreshold,
 		ResolutionTimeThreshold:    req.ResolutionTimeThreshold,
+		OnlyDuringBusinessHours:     onlyDuringBiz,
 	}
 	if sla.FirstResponseTimeThreshold == 0 {
 		sla.FirstResponseTimeThreshold = 3600
@@ -263,6 +407,22 @@ func (h *AdvancedHandler) ListSLAPolicies(c *gin.Context) {
 		return
 	}
 	response.Success(c, policies)
+}
+
+func (h *AdvancedHandler) GetSLAPolicy(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "Invalid SLA policy ID")
+		return
+	}
+
+	sla, err := h.slaRepo.GetByID(c.Request.Context(), uint(accID), uint(id))
+	if err != nil || sla == nil {
+		response.NotFound(c, "SLA policy not found")
+		return
+	}
+	response.Success(c, sla)
 }
 
 func (h *AdvancedHandler) UpdateSLAPolicy(c *gin.Context) {
@@ -297,6 +457,9 @@ func (h *AdvancedHandler) UpdateSLAPolicy(c *gin.Context) {
 	if req.ResolutionTimeThreshold > 0 {
 		sla.ResolutionTimeThreshold = req.ResolutionTimeThreshold
 	}
+	if req.OnlyDuringBusinessHours != nil {
+		sla.OnlyDuringBusinessHours = *req.OnlyDuringBusinessHours
+	}
 
 	if err := h.slaRepo.Update(c.Request.Context(), sla); err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
@@ -304,6 +467,75 @@ func (h *AdvancedHandler) UpdateSLAPolicy(c *gin.Context) {
 	}
 
 	response.Success(c, sla)
+}
+
+func (h *AdvancedHandler) DeleteSLAPolicy(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "Invalid SLA policy ID")
+		return
+	}
+
+	if err := h.slaRepo.Delete(c.Request.Context(), uint(accID), uint(id)); err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
+func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	convID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	var conv domain.Conversation
+	if err := h.db.Preload("Inbox").Where("account_id = ? AND id = ?", accID, convID).First(&conv).Error; err != nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	if h.slaService == nil {
+		response.Success(c, gin.H{
+			"conversation_id": conv.ID,
+			"sla_status":      conv.SLAStatus,
+		})
+		return
+	}
+
+	frtDue, resDue, isFRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(&conv)
+	now := time.Now().UTC()
+
+	var frtRemainingSec, resRemainingSec *int
+	if frtDue != nil {
+		rem := int(frtDue.Sub(now).Seconds())
+		if rem < 0 {
+			rem = 0
+		}
+		frtRemainingSec = &rem
+	}
+	if resDue != nil {
+		rem := int(resDue.Sub(now).Seconds())
+		if rem < 0 {
+			rem = 0
+		}
+		resRemainingSec = &rem
+	}
+
+	response.Success(c, gin.H{
+		"conversation_id":              conv.ID,
+		"sla_status":                   conv.SLAStatus,
+		"applied_policy":               policy,
+		"first_response_due_at":        frtDue,
+		"first_response_breached":      isFRTBreached,
+		"first_response_remaining_sec": frtRemainingSec,
+		"resolution_due_at":            resDue,
+		"resolution_breached":          isResBreached,
+		"resolution_remaining_sec":     resRemainingSec,
+	})
 }
 
 // ----------------- AgentBot Handlers -----------------
@@ -502,7 +734,7 @@ func (h *AdvancedHandler) DeleteCustomFilter(c *gin.Context) {
 // ----------------- Draft Messages -----------------
 
 type SaveDraftReq struct {
-	Message string `json:"message" binding:"required"`
+	Message string `json:"message"`
 }
 
 func (h *AdvancedHandler) SaveDraft(c *gin.Context) {
@@ -513,6 +745,15 @@ func (h *AdvancedHandler) SaveDraft(c *gin.Context) {
 	var req SaveDraftReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+
+	// When message is empty, clear the draft
+	if strings.TrimSpace(req.Message) == "" {
+		_ = h.db.WithContext(c.Request.Context()).
+			Where("account_id = ? AND conversation_id = ? AND user_id = ?", accID, convID, userID).
+			Delete(&domain.DraftMessage{}).Error
+		response.Success(c, gin.H{"status": "cleared", "message": ""})
 		return
 	}
 
@@ -535,6 +776,18 @@ func (h *AdvancedHandler) SaveDraft(c *gin.Context) {
 	}
 
 	response.Success(c, draft)
+}
+
+func (h *AdvancedHandler) DeleteDraft(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	convID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	userID := c.GetUint("user_id")
+
+	_ = h.db.WithContext(c.Request.Context()).
+		Where("account_id = ? AND conversation_id = ? AND user_id = ?", accID, convID, userID).
+		Delete(&domain.DraftMessage{}).Error
+
+	response.Success(c, gin.H{"status": "deleted", "message": ""})
 }
 
 func (h *AdvancedHandler) GetDraft(c *gin.Context) {
@@ -591,10 +844,23 @@ type CreateContactNoteReq struct {
 	Content string `json:"content" binding:"required"`
 }
 
+type UpdateContactNoteReq struct {
+	Content string `json:"content" binding:"required"`
+}
+
 func (h *AdvancedHandler) CreateContactNote(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
+
+	// Verify contact belongs to this account if contact exists
+	var contact domain.Contact
+	if err := h.db.WithContext(c.Request.Context()).Where("id = ?", contactID).First(&contact).Error; err == nil {
+		if contact.AccountID != uint(accID) {
+			response.NotFound(c, "Contact not found")
+			return
+		}
+	}
 
 	var req CreateContactNoteReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -614,6 +880,8 @@ func (h *AdvancedHandler) CreateContactNote(c *gin.Context) {
 		return
 	}
 
+	_ = h.db.WithContext(c.Request.Context()).Preload("User").First(&note, note.ID).Error
+
 	response.Created(c, note)
 }
 
@@ -621,11 +889,79 @@ func (h *AdvancedHandler) ListContactNotes(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
+	// Verify contact belongs to this account if contact exists
+	var contact domain.Contact
+	if err := h.db.WithContext(c.Request.Context()).Where("id = ?", contactID).First(&contact).Error; err == nil {
+		if contact.AccountID != uint(accID) {
+			response.NotFound(c, "Contact not found")
+			return
+		}
+	}
+
 	var notes []domain.ContactNote
 	h.db.WithContext(c.Request.Context()).
+		Preload("User").
 		Where("account_id = ? AND contact_id = ?", accID, contactID).
+		Order("id DESC").
 		Find(&notes)
 	response.Success(c, notes)
+}
+
+func (h *AdvancedHandler) UpdateContactNote(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	noteID, _ := strconv.ParseUint(c.Param("note_id"), 10, 32)
+
+	var note domain.ContactNote
+	if err := h.db.WithContext(c.Request.Context()).
+		Where("account_id = ? AND contact_id = ? AND id = ?", accID, contactID, noteID).
+		First(&note).Error; err != nil {
+		response.NotFound(c, "Contact note not found")
+		return
+	}
+
+	var req UpdateContactNoteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if strings.TrimSpace(req.Content) == "" {
+		response.BadRequest(c, "Content cannot be empty")
+		return
+	}
+
+	note.Content = req.Content
+	note.UpdatedAt = time.Now()
+
+	if err := h.db.WithContext(c.Request.Context()).Save(&note).Error; err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	_ = h.db.WithContext(c.Request.Context()).Preload("User").First(&note, note.ID).Error
+	response.Success(c, note)
+}
+
+func (h *AdvancedHandler) DeleteContactNote(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	noteID, _ := strconv.ParseUint(c.Param("note_id"), 10, 32)
+
+	var note domain.ContactNote
+	if err := h.db.WithContext(c.Request.Context()).
+		Where("account_id = ? AND contact_id = ? AND id = ?", accID, contactID, noteID).
+		First(&note).Error; err != nil {
+		response.NotFound(c, "Contact note not found")
+		return
+	}
+
+	if err := h.db.WithContext(c.Request.Context()).Delete(&note).Error; err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"deleted": true})
 }
 
 // ----------------- Agent Capacity Policies -----------------
@@ -667,12 +1003,18 @@ func (h *AdvancedHandler) ListCapacityPolicies(c *gin.Context) {
 // ----------------- Bulk Actions -----------------
 
 type BulkActionReq struct {
-	Type   string   `json:"type" binding:"required"` // update_status, assign_agent
-	IDs    []uint   `json:"ids" binding:"required"`
+	Type   string `json:"type" binding:"required"` // update_status, assign_agent, assign_team, add_labels
+	IDs    []uint `json:"ids" binding:"required"`
 	Fields struct {
-		Status     string `json:"status"`
-		AssigneeID *uint  `json:"assignee_id"`
+		Status       string     `json:"status"`
+		AssigneeID   *uint      `json:"assignee_id"`
+		TeamID       *uint      `json:"team_id"`
+		SnoozedUntil *time.Time `json:"snoozed_until"`
 	} `json:"fields"`
+	Labels struct {
+		Add    []string `json:"add"`
+		Remove []string `json:"remove"`
+	} `json:"labels"`
 }
 
 func (h *AdvancedHandler) BulkActions(c *gin.Context) {
@@ -683,20 +1025,301 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 		return
 	}
 
-	switch req.Type {
-	case "update_status":
-		h.db.WithContext(c.Request.Context()).
-			Model(&domain.Conversation{}).
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Update("status", req.Fields.Status)
-	case "assign_agent":
-		h.db.WithContext(c.Request.Context()).
-			Model(&domain.Conversation{}).
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Update("assignee_id", req.Fields.AssigneeID)
+	if len(req.IDs) == 0 {
+		response.BadRequest(c, "IDs list cannot be empty")
+		return
+	}
+	if len(req.IDs) > 500 {
+		response.BadRequest(c, "Cannot process more than 500 records in a single batch")
+		return
 	}
 
-	response.Success(c, gin.H{"status": "ok", "updated_count": len(req.IDs)})
+	userID := c.GetUint("user_id")
+	var updatedCount int64 = 0
+
+	switch req.Type {
+	case "update_status":
+		validStatuses := map[string]bool{
+			domain.ConversationStatusOpen:     true,
+			domain.ConversationStatusResolved: true,
+			domain.ConversationStatusPending:  true,
+			domain.ConversationStatusSnoozed:  true,
+		}
+		if !validStatuses[req.Fields.Status] {
+			response.BadRequest(c, "Invalid conversation status: must be open, resolved, pending, or snoozed")
+			return
+		}
+
+		var conversations []domain.Conversation
+		if err := h.db.WithContext(c.Request.Context()).
+			Preload("Inbox").
+			Preload("Assignee").
+			Where("account_id = ? AND id IN ?", accID, req.IDs).
+			Find(&conversations).Error; err != nil {
+			response.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		now := time.Now().UTC()
+		for _, conv := range conversations {
+			updates := map[string]any{
+				"status":           req.Fields.Status,
+				"updated_at":       now,
+				"last_activity_at": now,
+			}
+			if req.Fields.Status == domain.ConversationStatusSnoozed && req.Fields.SnoozedUntil != nil {
+				updates["snoozed_until"] = req.Fields.SnoozedUntil
+			} else if req.Fields.Status != domain.ConversationStatusSnoozed {
+				updates["snoozed_until"] = nil
+			}
+
+			if err := h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error; err == nil {
+				updatedCount++
+				conv.Status = req.Fields.Status
+				conv.UpdatedAt = now
+				conv.LastActivityAt = now
+				if req.Fields.Status == domain.ConversationStatusSnoozed {
+					conv.SnoozedUntil = req.Fields.SnoozedUntil
+				} else {
+					conv.SnoozedUntil = nil
+				}
+
+				// 1. Automation Pipeline
+				if h.automationService != nil {
+					h.automationService.HandleConversationUpdated(&conv)
+				}
+
+				// 2. Webhook Event Dispatching
+				if h.webhookService != nil {
+					h.webhookService.Dispatch(uint(accID), "conversation_status_changed", &conv)
+					h.webhookService.Dispatch(uint(accID), "conversation_updated", &conv)
+				}
+
+				// 3. Real-time WebSocket Broadcast
+				if h.hub != nil {
+					h.hub.Broadcast(&ws.Event{
+						Name:           ws.EventConversationStatus,
+						AccountID:      uint(accID),
+						ConversationID: conv.ID,
+						Data:           conv,
+					})
+					h.hub.Broadcast(&ws.Event{
+						Name:           ws.EventConversationUpdated,
+						AccountID:      uint(accID),
+						ConversationID: conv.ID,
+						Data:           conv,
+					})
+				}
+			}
+		}
+
+	case "assign_agent":
+		var targetAgent *domain.User
+		if req.Fields.AssigneeID != nil && *req.Fields.AssigneeID > 0 {
+			var agent domain.User
+			err := h.db.Joins("JOIN account_users ON account_users.user_id = users.id").
+				Where("account_users.account_id = ? AND users.id = ?", accID, *req.Fields.AssigneeID).
+				First(&agent).Error
+			if err != nil {
+				response.BadRequest(c, "Assignee does not belong to account")
+				return
+			}
+			targetAgent = &agent
+		}
+
+		var conversations []domain.Conversation
+		if err := h.db.WithContext(c.Request.Context()).
+			Preload("Inbox").
+			Preload("Assignee").
+			Where("account_id = ? AND id IN ?", accID, req.IDs).
+			Find(&conversations).Error; err != nil {
+			response.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		now := time.Now().UTC()
+		for _, conv := range conversations {
+			// Check capacity limit if assigning to an agent
+			if targetAgent != nil && h.routingService != nil {
+				hasCapacity, _ := h.routingService.CheckAgentCapacity(uint(accID), conv.InboxID, targetAgent.ID, nil, conv.ID)
+				if !hasCapacity {
+					response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
+					return
+				}
+			}
+
+			updates := map[string]any{
+				"assignee_id":      req.Fields.AssigneeID,
+				"updated_at":       now,
+				"last_activity_at": now,
+			}
+			if err := h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error; err == nil {
+				updatedCount++
+				conv.AssigneeID = req.Fields.AssigneeID
+				conv.Assignee = targetAgent
+				conv.UpdatedAt = now
+				conv.LastActivityAt = now
+
+				// 1. In-App Notification Center
+				if h.notificationRepo != nil && targetAgent != nil {
+					notif := domain.Notification{
+						AccountID:          uint(accID),
+						UserID:             targetAgent.ID,
+						NotificationType:   domain.NotificationTypeConversationAssignment,
+						PrimaryActorType:   "Conversation",
+						PrimaryActorID:     conv.ID,
+						SecondaryActorType: "User",
+						SecondaryActorID:   userID,
+						CreatedAt:          now,
+					}
+					_ = h.notificationRepo.Create(c.Request.Context(), &notif)
+				}
+
+				// 2. Push Notification Dispatch
+				if h.pushService != nil && targetAgent != nil {
+					go h.pushService.Dispatch(context.Background(), targetAgent.ID, uint(accID), service.PushPayload{
+						Title:        "Conversation Assigned",
+						Body:         fmt.Sprintf("Conversation #%d has been assigned to you", conv.ID),
+						AccountID:    uint(accID),
+						ResourceID:   conv.ID,
+						ResourceType: "conversation",
+					})
+				}
+
+				// 3. Automation Pipeline
+				if h.automationService != nil {
+					h.automationService.HandleConversationUpdated(&conv)
+				}
+
+				// 4. Webhook Event Dispatching
+				if h.webhookService != nil {
+					h.webhookService.Dispatch(uint(accID), "conversation_updated", &conv)
+				}
+
+				// 5. Real-time WebSocket Broadcast
+				if h.hub != nil {
+					h.hub.Broadcast(&ws.Event{
+						Name:           ws.EventConversationAssigned,
+						AccountID:      uint(accID),
+						ConversationID: conv.ID,
+						Data: map[string]any{
+							"id":          conv.ID,
+							"assignee_id": req.Fields.AssigneeID,
+							"assignee":    targetAgent,
+						},
+					})
+					h.hub.Broadcast(&ws.Event{
+						Name:           ws.EventConversationUpdated,
+						AccountID:      uint(accID),
+						ConversationID: conv.ID,
+						Data:           conv,
+					})
+				}
+			}
+		}
+
+	case "assign_team":
+		var targetTeam *domain.Team
+		if req.Fields.TeamID != nil && *req.Fields.TeamID > 0 {
+			var team domain.Team
+			if err := h.db.Where("account_id = ? AND id = ?", accID, *req.Fields.TeamID).First(&team).Error; err != nil {
+				response.BadRequest(c, "Team does not belong to account")
+				return
+			}
+			targetTeam = &team
+		}
+
+		var conversations []domain.Conversation
+		if err := h.db.WithContext(c.Request.Context()).
+			Where("account_id = ? AND id IN ?", accID, req.IDs).
+			Find(&conversations).Error; err != nil {
+			response.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		now := time.Now().UTC()
+		for _, conv := range conversations {
+			updates := map[string]any{
+				"team_id":          req.Fields.TeamID,
+				"updated_at":       now,
+				"last_activity_at": now,
+			}
+			if err := h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error; err == nil {
+				updatedCount++
+				conv.TeamID = req.Fields.TeamID
+				conv.Team = targetTeam
+				conv.UpdatedAt = now
+				conv.LastActivityAt = now
+
+				if h.automationService != nil {
+					h.automationService.HandleConversationUpdated(&conv)
+				}
+				if h.webhookService != nil {
+					h.webhookService.Dispatch(uint(accID), "conversation_updated", &conv)
+				}
+				if h.hub != nil {
+					h.hub.Broadcast(&ws.Event{
+						Name:           ws.EventConversationUpdated,
+						AccountID:      uint(accID),
+						ConversationID: conv.ID,
+						Data:           conv,
+					})
+				}
+			}
+		}
+
+	case "add_labels":
+		if len(req.Labels.Add) == 0 {
+			response.BadRequest(c, "labels.add cannot be empty")
+			return
+		}
+		var conversations []domain.Conversation
+		if err := h.db.WithContext(c.Request.Context()).
+			Where("account_id = ? AND id IN ?", accID, req.IDs).
+			Find(&conversations).Error; err != nil {
+			response.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		now := time.Now().UTC()
+		for _, conv := range conversations {
+			for _, title := range req.Labels.Add {
+				title = strings.TrimSpace(title)
+				if title == "" {
+					continue
+				}
+				var label domain.Label
+				h.db.Where("account_id = ? AND title = ?", accID, title).FirstOrCreate(&label, domain.Label{
+					AccountID: uint(accID),
+					Title:     title,
+				})
+				_ = h.db.Exec("INSERT OR IGNORE INTO conversation_labels (conversation_id, label_id) VALUES (?, ?)", conv.ID, label.ID)
+			}
+			h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]any{"updated_at": now, "last_activity_at": now})
+			updatedCount++
+
+			if h.automationService != nil {
+				h.automationService.HandleConversationUpdated(&conv)
+			}
+			if h.webhookService != nil {
+				h.webhookService.Dispatch(uint(accID), "conversation_updated", &conv)
+			}
+			if h.hub != nil {
+				h.hub.Broadcast(&ws.Event{
+					Name:           ws.EventConversationUpdated,
+					AccountID:      uint(accID),
+					ConversationID: conv.ID,
+					Data:           conv,
+				})
+			}
+		}
+
+	default:
+		response.BadRequest(c, "Unsupported bulk action type")
+		return
+	}
+
+	response.Success(c, gin.H{"status": "ok", "updated_count": updatedCount})
 }
 
 // ----------------- Integration Directory & Lifecycle -----------------
@@ -1042,19 +1665,66 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 	if !calledAPI {
 		queryLower := strings.ToLower(req.Query)
 		confidence = 0.95
-		if strings.Contains(queryLower, "人工") || strings.Contains(queryLower, "转人工") || strings.Contains(queryLower, "agent") {
-			intent = "human_handoff"
-			replyText = "已收到您的需求，正在为您转接人工坐席，请稍候。"
-			handoff = true
-		} else if strings.Contains(queryLower, "订单") || strings.Contains(queryLower, "物流") || strings.Contains(queryLower, "order") {
-			intent = "order_tracking"
-			replyText = "您可以通过输入您的订单号（如 #1001）查询最新的物流与发货状态。"
-		} else if strings.Contains(queryLower, "退款") || strings.Contains(queryLower, "退货") || strings.Contains(queryLower, "refund") {
-			intent = "refund_policy"
-			replyText = "支持 7 天无理由退换货。若需办理退货，请保留原包装并联系客服提交申请。"
+
+		// 1. Query database canned responses for matching short_code or content
+		var canned domain.CannedResponse
+		if err := h.db.WithContext(c.Request.Context()).
+			Where("account_id = ? AND (LOWER(short_code) = ? OR LOWER(content) LIKE ?)", accID, queryLower, "%"+queryLower+"%").
+			First(&canned).Error; err == nil && canned.ID > 0 {
+			intent = canned.ShortCode
+			replyText = canned.Content
+			if canned.ShortCode == "human_handoff" {
+				handoff = true
+			}
 		} else {
-			intent = "default_welcome"
-			replyText = fmt.Sprintf("您好！Dialogflow 智能助理已收到您的消息：“%s”。请问还有什么可以协助您的？", req.Query)
+			// 2. Structured action rules mapped to standard intent keys
+			type botRule struct {
+				intent   string
+				reply    string
+				handoff  bool
+				keywords []string
+			}
+			actionRules := []botRule{
+				{
+					intent:   "human_handoff",
+					reply:    "已收到您的需求，正在为您转接人工坐席，请稍候。",
+					handoff:  true,
+					keywords: []string{"人工", "转人工", "agent", "handoff"},
+				},
+				{
+					intent:   "order_tracking",
+					reply:    "您可以通过输入您的订单号（如 #1001）查询最新的物流与发货状态。",
+					handoff:  false,
+					keywords: []string{"订单", "物流", "order"},
+				},
+				{
+					intent:   "refund_policy",
+					reply:    "支持 7 天无理由退换货。若需办理退货，请保留原包装并联系客服提交申请。",
+					handoff:  false,
+					keywords: []string{"退款", "退货", "refund"},
+				},
+			}
+
+			matchedRule := false
+			for _, rule := range actionRules {
+				for _, kw := range rule.keywords {
+					if strings.Contains(queryLower, kw) {
+						intent = rule.intent
+						replyText = rule.reply
+						handoff = rule.handoff
+						matchedRule = true
+						break
+					}
+				}
+				if matchedRule {
+					break
+				}
+			}
+
+			if !matchedRule {
+				intent = "default_welcome"
+				replyText = fmt.Sprintf("您好！Dialogflow 智能助理已收到您的消息：“%s”。请问还有什么可以协助您的？", req.Query)
+			}
 		}
 	}
 

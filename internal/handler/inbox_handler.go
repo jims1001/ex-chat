@@ -33,6 +33,7 @@ type CreateInboxRequest struct {
 	OutOfOfficeMessage  string `json:"out_of_office_message"`
 	Timezone            string `json:"timezone"`
 	WorkingHours        string `json:"working_hours"`
+	AssignmentPolicyID  *uint  `json:"assignment_policy_id"`
 }
 
 type UpdateInboxRequest struct {
@@ -43,6 +44,7 @@ type UpdateInboxRequest struct {
 	OutOfOfficeMessage  string `json:"out_of_office_message"`
 	Timezone            string `json:"timezone"`
 	WorkingHours        string `json:"working_hours"`
+	AssignmentPolicyID  *uint  `json:"assignment_policy_id"`
 }
 
 type AddInboxMembersRequest struct {
@@ -104,6 +106,7 @@ func (h *InboxHandler) CreateInbox(c *gin.Context) {
 		OutOfOfficeMessage:  req.OutOfOfficeMessage,
 		Timezone:            req.Timezone,
 		WorkingHours:        req.WorkingHours,
+		AssignmentPolicyID:  req.AssignmentPolicyID,
 	}
 
 	if err := h.inboxRepo.Create(&inbox); err != nil {
@@ -176,6 +179,9 @@ func (h *InboxHandler) UpdateInbox(c *gin.Context) {
 	if req.WorkingHours != "" {
 		inbox.WorkingHours = req.WorkingHours
 	}
+	if req.AssignmentPolicyID != nil {
+		inbox.AssignmentPolicyID = req.AssignmentPolicyID
+	}
 
 	if err := h.inboxRepo.Update(inbox); err != nil {
 		response.InternalError(c, "Failed to update inbox")
@@ -183,6 +189,45 @@ func (h *InboxHandler) UpdateInbox(c *gin.Context) {
 	}
 
 	response.Success(c, inbox)
+}
+
+func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	if err != nil || inbox == nil {
+		response.NotFound(c, "Inbox not found")
+		return
+	}
+
+	var req struct {
+		AssignmentPolicyID *uint `json:"assignment_policy_id"`
+		PolicyID           *uint `json:"policy_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	policyID := req.AssignmentPolicyID
+	if policyID == nil && req.PolicyID != nil {
+		policyID = req.PolicyID
+	}
+
+	if err := h.inboxRepo.BindAssignmentPolicy(accountID, uint(inboxID), policyID); err != nil {
+		response.InternalError(c, "Failed to bind assignment policy: "+err.Error())
+		return
+	}
+
+	updated, _ := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	response.Success(c, updated)
 }
 
 func (h *InboxHandler) DeleteInbox(c *gin.Context) {

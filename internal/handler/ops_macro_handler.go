@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
@@ -166,13 +168,31 @@ func (h *MacroNotificationHandler) UpdateMacro(c *gin.Context) {
 func (h *MacroNotificationHandler) ListNotifications(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	userID := c.GetUint("user_id")
+	status := c.Query("status")
+	includeSnoozed := c.Query("include_snoozed") == "true"
 
-	notifications, err := h.notificationRepo.List(c.Request.Context(), uint(accID), userID)
+	notifications, err := h.notificationRepo.ListWithFilter(c.Request.Context(), uint(accID), userID, status, includeSnoozed)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	response.Success(c, notifications)
+}
+
+func (h *MacroNotificationHandler) GetUnreadCount(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+
+	unreadCount, totalCount, snoozedCount, err := h.notificationRepo.GetUnreadCount(c.Request.Context(), uint(accID), userID)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response.Success(c, gin.H{
+		"unread_count":  unreadCount,
+		"count":         totalCount,
+		"snoozed_count": snoozedCount,
+	})
 }
 
 func (h *MacroNotificationHandler) MarkAllNotificationsRead(c *gin.Context) {
@@ -184,6 +204,242 @@ func (h *MacroNotificationHandler) MarkAllNotificationsRead(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"status": "ok"})
+}
+
+func (h *MacroNotificationHandler) MarkNotificationRead(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	if err := h.notificationRepo.MarkRead(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
+	response.Success(c, notif)
+}
+
+func (h *MacroNotificationHandler) MarkNotificationUnread(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	if err := h.notificationRepo.MarkUnread(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
+	response.Success(c, notif)
+}
+
+type SnoozeNotificationRequest struct {
+	SnoozedUntil *time.Time `json:"snoozed_until"`
+	Duration     string     `json:"duration"` // e.g. "20m", "1h", "3h", "tomorrow", "24h"
+}
+
+func (h *MacroNotificationHandler) SnoozeNotification(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	var req SnoozeNotificationRequest
+	_ = c.ShouldBindJSON(&req)
+
+	targetTime := time.Now().UTC()
+	if req.SnoozedUntil != nil && req.SnoozedUntil.After(targetTime) {
+		targetTime = *req.SnoozedUntil
+	} else {
+		switch strings.ToLower(strings.TrimSpace(req.Duration)) {
+		case "20m", "20min", "20_minutes":
+			targetTime = targetTime.Add(20 * time.Minute)
+		case "3h", "3_hours":
+			targetTime = targetTime.Add(3 * time.Hour)
+		case "tomorrow", "24h", "1d":
+			targetTime = targetTime.Add(24 * time.Hour)
+		default:
+			targetTime = targetTime.Add(1 * time.Hour)
+		}
+	}
+
+	if err := h.notificationRepo.Snooze(c.Request.Context(), uint(accID), userID, uint(notifID), &targetTime); err != nil {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
+	response.Success(c, notif)
+}
+
+func (h *MacroNotificationHandler) UnsnoozeNotification(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	if err := h.notificationRepo.Unsnooze(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
+	response.Success(c, notif)
+}
+
+type UpdateNotificationRequest struct {
+	Read         *bool      `json:"read"`
+	ReadAt       *time.Time `json:"read_at"`
+	SnoozedUntil *time.Time `json:"snoozed_until"`
+}
+
+func (h *MacroNotificationHandler) UpdateNotification(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	var req UpdateNotificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	if req.Read != nil {
+		if *req.Read {
+			_ = h.notificationRepo.MarkRead(c.Request.Context(), uint(accID), userID, uint(notifID))
+		} else {
+			_ = h.notificationRepo.MarkUnread(c.Request.Context(), uint(accID), userID, uint(notifID))
+		}
+	} else if req.ReadAt != nil {
+		_ = h.notificationRepo.MarkRead(c.Request.Context(), uint(accID), userID, uint(notifID))
+	}
+
+	if req.SnoozedUntil != nil {
+		_ = h.notificationRepo.Snooze(c.Request.Context(), uint(accID), userID, uint(notifID), req.SnoozedUntil)
+	}
+
+	notif, err := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
+	if err != nil {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	response.Success(c, notif)
+}
+
+func (h *MacroNotificationHandler) DeleteNotification(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	if err := h.notificationRepo.Delete(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	response.Success(c, gin.H{"deleted": true, "id": notifID})
+}
+
+type BatchDeleteNotificationRequest struct {
+	IDs      []uint `json:"ids"`
+	OnlyRead bool   `json:"only_read"`
+}
+
+func (h *MacroNotificationHandler) BatchDeleteNotifications(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+
+	var req BatchDeleteNotificationRequest
+	_ = c.ShouldBindJSON(&req)
+
+	deletedCount, err := h.notificationRepo.BatchDelete(c.Request.Context(), uint(accID), userID, req.IDs, req.OnlyRead)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response.Success(c, gin.H{
+		"deleted_count": deletedCount,
+		"status":        "ok",
+	})
+}
+
+// ----------------- Notification Settings / Preferences -----------------
+
+func (h *MacroNotificationHandler) GetNotificationSettings(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+
+	settings, err := h.notificationRepo.GetNotificationSetting(c.Request.Context(), uint(accID), userID)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response.Success(c, settings)
+}
+
+type UpdateNotificationSettingsRequest struct {
+	SelectedEmailFlags any     `json:"selected_email_flags"`
+	SelectedPushFlags  any     `json:"selected_push_flags"`
+	SelectedInAppFlags any     `json:"selected_in_app_flags"`
+	Muted              *bool   `json:"muted"`
+	QuietHoursEnabled  *bool   `json:"quiet_hours_enabled"`
+	QuietHoursStart    *string `json:"quiet_hours_start"`
+	QuietHoursEnd      *string `json:"quiet_hours_end"`
+}
+
+func formatNotificationFlags(val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return v
+	default:
+		b, err := json.Marshal(v)
+		if err == nil {
+			return string(b)
+		}
+		return "[]"
+	}
+}
+
+func (h *MacroNotificationHandler) UpdateNotificationSettings(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	userID := c.GetUint("user_id")
+
+	var req UpdateNotificationSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	current, err := h.notificationRepo.GetNotificationSetting(c.Request.Context(), uint(accID), userID)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if req.SelectedEmailFlags != nil {
+		current.SelectedEmailFlags = formatNotificationFlags(req.SelectedEmailFlags)
+	}
+	if req.SelectedPushFlags != nil {
+		current.SelectedPushFlags = formatNotificationFlags(req.SelectedPushFlags)
+	}
+	if req.SelectedInAppFlags != nil {
+		current.SelectedInAppFlags = formatNotificationFlags(req.SelectedInAppFlags)
+	}
+	if req.Muted != nil {
+		current.Muted = *req.Muted
+	}
+	if req.QuietHoursEnabled != nil {
+		current.QuietHoursEnabled = *req.QuietHoursEnabled
+	}
+	if req.QuietHoursStart != nil {
+		current.QuietHoursStart = *req.QuietHoursStart
+	}
+	if req.QuietHoursEnd != nil {
+		current.QuietHoursEnd = *req.QuietHoursEnd
+	}
+
+	if err := h.notificationRepo.UpsertNotificationSetting(c.Request.Context(), current); err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, current)
 }
 
 // ----------------- CSAT -----------------

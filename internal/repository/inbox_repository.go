@@ -21,7 +21,7 @@ func (r *InboxRepository) Create(inbox *domain.Inbox) error {
 
 func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 	var inbox domain.Inbox
-	err := r.db.Preload("Members").Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
+	err := r.db.Preload("Members").Preload("AssignmentPolicy").Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -33,7 +33,7 @@ func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 
 func (r *InboxRepository) FindByWebsiteToken(token string) (*domain.Inbox, error) {
 	var inbox domain.Inbox
-	err := r.db.Where("website_token = ?", token).First(&inbox).Error
+	err := r.db.Preload("AssignmentPolicy").Where("website_token = ?", token).First(&inbox).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -45,8 +45,14 @@ func (r *InboxRepository) FindByWebsiteToken(token string) (*domain.Inbox, error
 
 func (r *InboxRepository) ListByAccount(accountID uint) ([]domain.Inbox, error) {
 	var inboxes []domain.Inbox
-	err := r.db.Preload("Members").Where("account_id = ?", accountID).Find(&inboxes).Error
+	err := r.db.Preload("Members").Preload("AssignmentPolicy").Where("account_id = ?", accountID).Find(&inboxes).Error
 	return inboxes, err
+}
+
+func (r *InboxRepository) BindAssignmentPolicy(accountID, inboxID uint, policyID *uint) error {
+	return r.db.Model(&domain.Inbox{}).
+		Where("account_id = ? AND id = ?", accountID, inboxID).
+		Update("assignment_policy_id", policyID).Error
 }
 
 func (r *InboxRepository) Update(inbox *domain.Inbox) error {

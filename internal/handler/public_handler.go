@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -8,17 +9,23 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type PublicHandler struct {
-	db          *gorm.DB
-	inboxRepo   *repository.InboxRepository
-	contactRepo *repository.ContactRepository
-	convRepo    *repository.ConversationRepository
-	msgRepo     *repository.MessageRepository
+	db                *gorm.DB
+	inboxRepo         *repository.InboxRepository
+	contactRepo       *repository.ContactRepository
+	convRepo          *repository.ConversationRepository
+	msgRepo           *repository.MessageRepository
+	automationService *service.AutomationService
+	webhookService    *service.WebhookService
+	pushService       *service.PushService
+	hub               *ws.Hub
 }
 
 func NewPublicHandler(
@@ -35,6 +42,16 @@ func NewPublicHandler(
 		convRepo:    cv,
 		msgRepo:     m,
 	}
+}
+
+func (h *PublicHandler) SetAutomationAndWebhook(as *service.AutomationService, ws *service.WebhookService) {
+	h.automationService = as
+	h.webhookService = ws
+}
+
+func (h *PublicHandler) SetPushAndHub(ps *service.PushService, hub *ws.Hub) {
+	h.pushService = ps
+	h.hub = hub
 }
 
 // GetPublicInbox handles OPEN-01: retrieves public inbox details without admin credentials
@@ -204,5 +221,87 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 		return
 	}
 
+	// Re-open conversation if it was resolved
+	if conv.Status == domain.ConversationStatusResolved {
+		_ = h.convRepo.UpdateStatus(conv.AccountID, conv.ID, domain.ConversationStatusOpen, nil)
+		conv.Status = domain.ConversationStatusOpen
+	} else {
+		_ = h.convRepo.TouchActivity(conv.AccountID, conv.ID)
+	}
+
+	// Trigger automation rules, webhooks, push notifications and WebSocket broadcasts
+	if h.automationService != nil {
+		h.automationService.HandleMessageCreated(&conv, &msg)
+	}
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(conv.AccountID, "message_created", msg)
+	}
+	if h.pushService != nil && conv.AssigneeID != nil {
+		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, conv.AccountID, service.PushPayload{
+			Title:        "New Customer Message",
+			Body:         msg.Content,
+			AccountID:    conv.AccountID,
+			ResourceID:   conv.ID,
+			ResourceType: "conversation",
+		})
+	}
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      conv.AccountID,
+			ConversationID: conv.ID,
+			Data:           msg,
+		})
+	}
+
 	response.Created(c, msg)
 }
+
+// UpdateLastSeen updates contact read position for a public conversation
+func (h *PublicHandler) UpdateLastSeen(c *gin.Context) {
+	identifier := c.Param("identifier")
+	var inbox domain.Inbox
+	if err := h.db.WithContext(c.Request.Context()).Where("website_token = ? OR id = ?", identifier, identifier).First(&inbox).Error; err != nil {
+		response.NotFound(c, "Inbox not found")
+		return
+	}
+
+	contactID, err := strconv.ParseUint(c.Param("contact_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid contact ID")
+		return
+	}
+
+	conversationID, err := strconv.ParseUint(c.Param("conversation_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	var conv domain.Conversation
+	if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", conversationID, inbox.AccountID, inbox.ID, contactID).First(&conv).Error; err != nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	var req struct {
+		ContactLastSeenAt *time.Time `json:"contact_last_seen_at"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	seenAt := time.Now()
+	if req.ContactLastSeenAt != nil && !req.ContactLastSeenAt.IsZero() {
+		seenAt = *req.ContactLastSeenAt
+	}
+
+	if err := h.convRepo.UpdateContactLastSeen(inbox.AccountID, conv.ID, seenAt); err != nil {
+		response.InternalError(c, "Failed to update contact last seen")
+		return
+	}
+
+	response.Success(c, gin.H{
+		"id":                   conv.ID,
+		"contact_last_seen_at": seenAt,
+	})
+}
+

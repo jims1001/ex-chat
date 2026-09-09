@@ -3,6 +3,7 @@ package response
 import (
 	"net/http"
 
+	"github.com/OracleBetX-Projects/ex-chat/pkg/errors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -78,3 +79,19 @@ func NotFound(c *gin.Context, message string) {
 func InternalError(c *gin.Context, message string) {
 	Error(c, http.StatusInternalServerError, message)
 }
+
+// AppError automatically inspects the error and responds with the appropriate HTTP status and message
+func AppError(c *gin.Context, err error) {
+	if err == nil {
+		Success(c, nil)
+		return
+	}
+
+	appErr := errors.FromError(err)
+	c.JSON(appErr.HTTPStatus, Response{
+		Success: false,
+		Error:   appErr.Message,
+		Data:    appErr.Details,
+	})
+}
+
