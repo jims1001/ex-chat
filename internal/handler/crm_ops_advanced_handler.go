@@ -803,38 +803,6 @@ func (h *AdvancedHandler) GetDraft(c *gin.Context) {
 	response.Success(c, draft)
 }
 
-// ----------------- Conversation Participants -----------------
-
-type AddParticipantReq struct {
-	UserIDs []uint `json:"user_ids" binding:"required"`
-}
-
-func (h *AdvancedHandler) AddParticipants(c *gin.Context) {
-	convID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	var req AddParticipantReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	for _, uid := range req.UserIDs {
-		p := domain.ConversationParticipant{
-			ConversationID: uint(convID),
-			UserID:         uid,
-		}
-		h.db.WithContext(c.Request.Context()).Where("conversation_id = ? AND user_id = ?", convID, uid).FirstOrCreate(&p)
-	}
-
-	response.Success(c, gin.H{"status": "ok"})
-}
-
-func (h *AdvancedHandler) ListParticipants(c *gin.Context) {
-	convID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	var parts []domain.ConversationParticipant
-	h.db.WithContext(c.Request.Context()).Where("conversation_id = ?", convID).Find(&parts)
-	response.Success(c, parts)
-}
-
 // ----------------- Contact Notes -----------------
 
 type CreateContactNoteReq struct {

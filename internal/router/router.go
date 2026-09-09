@@ -515,6 +515,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			// 会话协作参与者 (CONV / Participants)
 			tenant.GET("/conversations/:id/participants", advancedHandler.ListParticipants)
 			tenant.POST("/conversations/:id/participants", advancedHandler.AddParticipants)
+			tenant.PUT("/conversations/:id/participants", advancedHandler.UpdateParticipants)
+			tenant.PATCH("/conversations/:id/participants", advancedHandler.UpdateParticipants)
+			tenant.DELETE("/conversations/:id/participants", advancedHandler.RemoveParticipants)
+			tenant.DELETE("/conversations/:id/participants/:user_id", advancedHandler.RemoveParticipant)
 
 			// 联系人内部备注 (CRM / Contact Notes)
 			tenant.GET("/contacts/:id/notes", advancedHandler.ListContactNotes)
