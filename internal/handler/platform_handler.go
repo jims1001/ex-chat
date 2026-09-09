@@ -6,6 +6,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -34,6 +35,10 @@ func (h *PlatformHandler) PlatformAuthMiddleware() gin.HandlerFunc {
 			token = c.Query("api_access_token")
 		}
 		if token == "" {
+			logger.WithComponent("platform").Warn("missing platform api access token",
+				"client_ip", c.ClientIP(),
+				"path", c.Request.URL.Path,
+			)
 			response.Unauthorized(c, "missing platform api access token")
 			c.Abort()
 			return
@@ -41,6 +46,10 @@ func (h *PlatformHandler) PlatformAuthMiddleware() gin.HandlerFunc {
 
 		app, err := h.platformRepo.VerifyPlatformToken(c.Request.Context(), token)
 		if err != nil {
+			logger.WithComponent("platform").Warn("invalid platform api access token",
+				"client_ip", c.ClientIP(),
+				"error", err.Error(),
+			)
 			response.Unauthorized(c, "invalid platform api access token")
 			c.Abort()
 			return
@@ -74,9 +83,18 @@ func (h *PlatformHandler) CreateAccount(c *gin.Context) {
 	}
 
 	if err := h.platformRepo.CreateAccount(c.Request.Context(), &acc); err != nil {
+		logger.WithComponent("platform").Error("failed to create platform account",
+			"name", req.Name,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("platform").Info("platform account created successfully",
+		"account_id", acc.ID,
+		"name", acc.Name,
+	)
 
 	response.Created(c, acc)
 }
@@ -107,6 +125,10 @@ func (h *PlatformHandler) CreateUser(c *gin.Context) {
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		logger.WithComponent("platform").Error("failed to hash password for platform user",
+			"email", req.Email,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, "failed to hash password")
 		return
 	}
@@ -123,9 +145,19 @@ func (h *PlatformHandler) CreateUser(c *gin.Context) {
 	}
 
 	if err := h.userRepo.Create(&user); err != nil {
+		logger.WithComponent("platform").Warn("platform create user email conflict or failure",
+			"email", req.Email,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusConflict, "email already in use")
 		return
 	}
+
+	logger.WithComponent("platform").Info("platform user created successfully",
+		"user_id", user.ID,
+		"email", user.Email,
+		"role", user.Role,
+	)
 
 	response.Created(c, user)
 }
@@ -148,9 +180,21 @@ func (h *PlatformHandler) AddAccountUser(c *gin.Context) {
 	}
 
 	if err := h.platformRepo.AddUserToAccount(c.Request.Context(), uint(accountID), req.UserID, req.Role); err != nil {
+		logger.WithComponent("platform").Error("failed to add user to account via platform api",
+			"account_id", uint(accountID),
+			"user_id", req.UserID,
+			"role", req.Role,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusConflict, err.Error())
 		return
 	}
+
+	logger.WithComponent("platform").Info("added user to account via platform api",
+		"account_id", uint(accountID),
+		"user_id", req.UserID,
+		"role", req.Role,
+	)
 
 	response.Created(c, gin.H{"status": "ok"})
 }

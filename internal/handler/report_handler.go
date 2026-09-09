@@ -8,6 +8,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -54,6 +55,10 @@ func (h *ReportHandler) GetSummary(c *gin.Context) {
 
 	summary, err := h.reportService.GetAccountSummary(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to generate report summary",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to generate report summary")
 		return
 	}
@@ -68,6 +73,10 @@ func (h *ReportHandler) GetAgentMetrics(c *gin.Context) {
 
 	metrics, err := h.reportService.GetAgentMetrics(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to generate agent metrics",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to generate agent metrics")
 		return
 	}
@@ -88,6 +97,11 @@ func (h *ReportHandler) GetTrends(c *gin.Context) {
 
 	trends, err := h.reportService.GetConversationTrends(accountID, days)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to generate conversation trends",
+			"account_id", accountID,
+			"days", days,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to generate conversation trends")
 		return
 	}
@@ -102,6 +116,10 @@ func (h *ReportHandler) GetTeamMetrics(c *gin.Context) {
 
 	metrics, err := h.reportService.GetTeamMetrics(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to generate team metrics",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to generate team metrics")
 		return
 	}
@@ -116,6 +134,10 @@ func (h *ReportHandler) GetInboxMetrics(c *gin.Context) {
 
 	metrics, err := h.reportService.GetInboxMetrics(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to generate inbox metrics",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to generate inbox metrics")
 		return
 	}
@@ -130,6 +152,10 @@ func (h *ReportHandler) GetLabelMetrics(c *gin.Context) {
 
 	metrics, err := h.reportService.GetLabelMetrics(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to generate label metrics",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to generate label metrics")
 		return
 	}
@@ -144,6 +170,10 @@ func (h *ReportHandler) GetFirstResponseDistribution(c *gin.Context) {
 
 	dist, err := h.reportService.GetFirstResponseDistribution(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to calculate first response distribution",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to calculate first response distribution")
 		return
 	}
@@ -158,6 +188,10 @@ func (h *ReportHandler) ExportConversationsCSV(c *gin.Context) {
 
 	convs, err := h.reportService.GetConversationsForExport(accountID, filter)
 	if err != nil {
+		logger.WithComponent("report").Error("failed to export conversations CSV",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to export conversations")
 		return
 	}
@@ -186,5 +220,10 @@ func (h *ReportHandler) ExportConversationsCSV(c *gin.Context) {
 		})
 	}
 	w.Flush()
+
+	logger.WithComponent("report").Info("exported conversations CSV successfully",
+		"account_id", accountID,
+		"exported_count", len(convs),
+	)
 }
 

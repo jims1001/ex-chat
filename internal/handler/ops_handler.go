@@ -7,6 +7,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -56,6 +57,10 @@ func (h *OpsHandler) ListCannedResponses(c *gin.Context) {
 	}
 	list, err := h.cannedRepo.List(accountID, search)
 	if err != nil {
+		logger.WithComponent("canned_response").Error("failed to list canned responses",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list canned responses")
 		return
 	}
@@ -80,9 +85,20 @@ func (h *OpsHandler) CreateCannedResponse(c *gin.Context) {
 	}
 
 	if err := h.cannedRepo.Create(&cr); err != nil {
+		logger.WithComponent("canned_response").Error("failed to create canned response",
+			"account_id", accountID,
+			"short_code", cr.ShortCode,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create canned response")
 		return
 	}
+
+	logger.WithComponent("canned_response").Info("canned response created successfully",
+		"account_id", accountID,
+		"canned_response_id", cr.ID,
+		"short_code", cr.ShortCode,
+	)
 
 	response.Created(c, cr)
 }
@@ -113,9 +129,20 @@ func (h *OpsHandler) UpdateCannedResponse(c *gin.Context) {
 	cr.Content = req.Content
 
 	if err := h.cannedRepo.Update(cr); err != nil {
+		logger.WithComponent("canned_response").Error("failed to update canned response",
+			"account_id", accountID,
+			"canned_response_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update canned response")
 		return
 	}
+
+	logger.WithComponent("canned_response").Info("canned response updated successfully",
+		"account_id", accountID,
+		"canned_response_id", cr.ID,
+		"short_code", cr.ShortCode,
+	)
 
 	response.Success(c, cr)
 }
@@ -131,9 +158,19 @@ func (h *OpsHandler) DeleteCannedResponse(c *gin.Context) {
 	}
 
 	if err := h.cannedRepo.Delete(accountID, uint(id)); err != nil {
+		logger.WithComponent("canned_response").Error("failed to delete canned response",
+			"account_id", accountID,
+			"canned_response_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete canned response")
 		return
 	}
+
+	logger.WithComponent("canned_response").Info("canned response deleted successfully",
+		"account_id", accountID,
+		"canned_response_id", uint(id),
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -146,6 +183,10 @@ func (h *OpsHandler) ListLabels(c *gin.Context) {
 
 	labels, err := h.labelRepo.List(accountID)
 	if err != nil {
+		logger.WithComponent("label").Error("failed to list labels",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list labels")
 		return
 	}
@@ -176,9 +217,21 @@ func (h *OpsHandler) CreateLabel(c *gin.Context) {
 	}
 
 	if err := h.labelRepo.Create(&label); err != nil {
+		logger.WithComponent("label").Error("failed to create label",
+			"account_id", accountID,
+			"title", label.Title,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create label")
 		return
 	}
+
+	logger.WithComponent("label").Info("label created successfully",
+		"account_id", accountID,
+		"label_id", label.ID,
+		"title", label.Title,
+		"color", label.Color,
+	)
 
 	response.Created(c, label)
 }
@@ -216,9 +269,20 @@ func (h *OpsHandler) UpdateLabel(c *gin.Context) {
 	}
 
 	if err := h.labelRepo.Update(label); err != nil {
+		logger.WithComponent("label").Error("failed to update label",
+			"account_id", accountID,
+			"label_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update label")
 		return
 	}
+
+	logger.WithComponent("label").Info("label updated successfully",
+		"account_id", accountID,
+		"label_id", label.ID,
+		"title", label.Title,
+	)
 
 	response.Success(c, label)
 }
@@ -234,9 +298,19 @@ func (h *OpsHandler) DeleteLabel(c *gin.Context) {
 	}
 
 	if err := h.labelRepo.Delete(accountID, uint(id)); err != nil {
+		logger.WithComponent("label").Error("failed to delete label",
+			"account_id", accountID,
+			"label_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete label")
 		return
 	}
+
+	logger.WithComponent("label").Info("label deleted successfully",
+		"account_id", accountID,
+		"label_id", uint(id),
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -266,6 +340,12 @@ func (h *OpsHandler) AttachConversationLabels(c *gin.Context) {
 	for _, labelID := range req.LabelIDs {
 		_ = h.labelRepo.AttachToConversation(conv.ID, labelID)
 	}
+
+	logger.WithComponent("label").Info("attached labels to conversation",
+		"account_id", accountID,
+		"conversation_id", conv.ID,
+		"label_ids", req.LabelIDs,
+	)
 
 	labels, _ := h.labelRepo.GetConversationLabels(conv.ID)
 	response.Success(c, labels)

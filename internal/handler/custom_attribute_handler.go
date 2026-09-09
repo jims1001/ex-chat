@@ -6,6 +6,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -33,6 +34,11 @@ func (h *CustomAttributeHandler) List(c *gin.Context) {
 	model := c.Query("attribute_model")
 	list, err := h.repo.List(accountID, model)
 	if err != nil {
+		logger.WithComponent("custom_attribute").Error("failed to list custom attribute definitions",
+			"account_id", accountID,
+			"model", model,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list custom attribute definitions")
 		return
 	}
@@ -65,9 +71,21 @@ func (h *CustomAttributeHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.repo.Create(&def); err != nil {
+		logger.WithComponent("custom_attribute").Error("failed to create custom attribute definition",
+			"account_id", accountID,
+			"key", req.AttributeKey,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create custom attribute definition")
 		return
 	}
+
+	logger.WithComponent("custom_attribute").Info("custom attribute definition created successfully",
+		"account_id", accountID,
+		"attribute_id", def.ID,
+		"key", def.AttributeKey,
+		"model", def.AttributeModel,
+	)
 
 	response.Created(c, def)
 }
@@ -83,9 +101,19 @@ func (h *CustomAttributeHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.repo.Delete(accountID, uint(id)); err != nil {
+		logger.WithComponent("custom_attribute").Error("failed to delete custom attribute definition",
+			"account_id", accountID,
+			"attribute_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete attribute definition")
 		return
 	}
+
+	logger.WithComponent("custom_attribute").Info("custom attribute definition deleted successfully",
+		"account_id", accountID,
+		"attribute_id", uint(id),
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }

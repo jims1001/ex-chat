@@ -8,6 +8,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +38,10 @@ func (h *WebhookHandler) List(c *gin.Context) {
 
 	list, err := h.repo.List(accountID)
 	if err != nil {
+		logger.WithComponent("webhook").Error("failed to list webhooks",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list webhooks")
 		return
 	}
@@ -63,9 +68,21 @@ func (h *WebhookHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.repo.Create(&webhook); err != nil {
+		logger.WithComponent("webhook").Error("failed to create webhook",
+			"account_id", accountID,
+			"url", req.URL,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create webhook")
 		return
 	}
+
+	logger.WithComponent("webhook").Info("webhook created successfully",
+		"account_id", accountID,
+		"webhook_id", webhook.ID,
+		"url", webhook.URL,
+		"subscriptions_count", len(req.Subscriptions),
+	)
 
 	response.Created(c, webhook)
 }
@@ -81,9 +98,19 @@ func (h *WebhookHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.repo.Delete(accountID, uint(id)); err != nil {
+		logger.WithComponent("webhook").Error("failed to delete webhook",
+			"account_id", accountID,
+			"webhook_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete webhook")
 		return
 	}
+
+	logger.WithComponent("webhook").Info("webhook deleted successfully",
+		"account_id", accountID,
+		"webhook_id", uint(id),
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -122,9 +149,20 @@ func (h *WebhookHandler) Update(c *gin.Context) {
 	}
 
 	if err := h.repo.Update(webhook); err != nil {
+		logger.WithComponent("webhook").Error("failed to update webhook",
+			"account_id", accountID,
+			"webhook_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update webhook")
 		return
 	}
+
+	logger.WithComponent("webhook").Info("webhook updated successfully",
+		"account_id", accountID,
+		"webhook_id", webhook.ID,
+		"url", webhook.URL,
+	)
 
 	response.Success(c, webhook)
 }
@@ -136,9 +174,19 @@ func (h *WebhookHandler) RetryDelivery(c *gin.Context) {
 	idStr := c.Param("id")
 	deliveryID, _ := strconv.ParseUint(idStr, 10, 64)
 
+	logger.WithComponent("webhook").Info("webhook delivery retry requested",
+		"account_id", accountID,
+		"delivery_id", uint(deliveryID),
+	)
+
 	if h.service != nil {
 		del, err := h.service.RetryDelivery(accountID, uint(deliveryID))
 		if err != nil {
+			logger.WithComponent("webhook").Warn("webhook delivery retry failed",
+				"account_id", accountID,
+				"delivery_id", uint(deliveryID),
+				"error", err.Error(),
+			)
 			response.BadRequest(c, err.Error())
 			return
 		}

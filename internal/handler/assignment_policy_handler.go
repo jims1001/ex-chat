@@ -6,6 +6,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -48,6 +49,10 @@ func (h *AssignmentPolicyHandler) List(c *gin.Context) {
 
 	policies, err := h.repo.ListByAccount(accountID)
 	if err != nil {
+		logger.WithComponent("assignment_policy").Error("failed to list assignment policies",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list assignment policies: "+err.Error())
 		return
 	}
@@ -94,9 +99,22 @@ func (h *AssignmentPolicyHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.repo.Create(&policy); err != nil {
+		logger.WithComponent("assignment_policy").Error("failed to create assignment policy",
+			"account_id", accountID,
+			"name", req.Name,
+			"strategy", strategy,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create assignment policy: "+err.Error())
 		return
 	}
+
+	logger.WithComponent("assignment_policy").Info("assignment policy created successfully",
+		"account_id", accountID,
+		"policy_id", policy.ID,
+		"name", policy.Name,
+		"strategy", policy.StrategyType,
+	)
 
 	created, _ := h.repo.FindByID(accountID, policy.ID)
 	response.Created(c, created)
@@ -172,9 +190,20 @@ func (h *AssignmentPolicyHandler) Update(c *gin.Context) {
 	}
 
 	if err := h.repo.Update(policy); err != nil {
+		logger.WithComponent("assignment_policy").Error("failed to update assignment policy",
+			"account_id", accountID,
+			"policy_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update assignment policy: "+err.Error())
 		return
 	}
+
+	logger.WithComponent("assignment_policy").Info("assignment policy updated successfully",
+		"account_id", accountID,
+		"policy_id", policy.ID,
+		"name", policy.Name,
+	)
 
 	updated, _ := h.repo.FindByID(accountID, policy.ID)
 	response.Success(c, updated)
@@ -197,9 +226,19 @@ func (h *AssignmentPolicyHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.repo.Delete(accountID, uint(id)); err != nil {
+		logger.WithComponent("assignment_policy").Error("failed to delete assignment policy",
+			"account_id", accountID,
+			"policy_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete assignment policy: "+err.Error())
 		return
 	}
+
+	logger.WithComponent("assignment_policy").Info("assignment policy deleted successfully",
+		"account_id", accountID,
+		"policy_id", uint(id),
+	)
 
 	response.Success(c, gin.H{"id": uint(id), "deleted": true})
 }

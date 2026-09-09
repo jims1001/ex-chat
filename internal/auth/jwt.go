@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -44,18 +45,41 @@ func GenerateToken(user *domain.User, secret string, expirationHours int) (strin
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(secret))
+	signed, err := token.SignedString([]byte(secret))
+	if err != nil {
+		logger.WithComponent("jwt").Error("failed to sign jwt token",
+			"user_id", user.ID,
+			"email", user.Email,
+			"error", err.Error(),
+		)
+		return "", err
+	}
+
+	logger.WithComponent("jwt").Debug("jwt token generated successfully",
+		"user_id", user.ID,
+		"email", user.Email,
+		"role", user.Role,
+		"expires_at", expirationTime,
+	)
+
+	return signed, nil
 }
 
 func ValidateToken(tokenString string, secret string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			logger.WithComponent("jwt").Warn("unexpected jwt signing method",
+				"alg", token.Header["alg"],
+			)
 			return nil, ErrInvalidToken
 		}
 		return []byte(secret), nil
 	})
 
 	if err != nil {
+		logger.WithComponent("jwt").Warn("jwt token validation failed",
+			"error", err.Error(),
+		)
 		return nil, err
 	}
 
@@ -63,5 +87,6 @@ func ValidateToken(tokenString string, secret string) (*Claims, error) {
 		return claims, nil
 	}
 
+	logger.WithComponent("jwt").Warn("jwt claims invalid or expired")
 	return nil, ErrInvalidToken
 }

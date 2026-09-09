@@ -9,6 +9,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -97,14 +98,30 @@ func (h *AccountHandler) CreateAccount(c *gin.Context) {
 	}
 
 	if err := h.accountRepo.Create(&account); err != nil {
+		logger.WithComponent("account").Error("failed to create account",
+			"creator_user_id", userID,
+			"name", req.Name,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create account")
 		return
 	}
 
 	if err := h.accountRepo.AddMember(account.ID, userID, domain.RoleAdministrator); err != nil {
+		logger.WithComponent("account").Error("failed to link account administrator",
+			"account_id", account.ID,
+			"user_id", userID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to link account administrator")
 		return
 	}
+
+	logger.WithComponent("account").Info("account created successfully",
+		"account_id", account.ID,
+		"account_name", account.Name,
+		"admin_user_id", userID,
+	)
 
 	response.Created(c, account)
 }
@@ -143,9 +160,18 @@ func (h *AccountHandler) UpdateAccount(c *gin.Context) {
 	}
 
 	if err := h.accountRepo.Update(account); err != nil {
+		logger.WithComponent("account").Error("failed to update account",
+			"account_id", account.ID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update account")
 		return
 	}
+
+	logger.WithComponent("account").Info("account updated successfully",
+		"account_id", account.ID,
+		"account_name", account.Name,
+	)
 
 	response.Success(c, account)
 }
@@ -156,6 +182,10 @@ func (h *AccountHandler) ListAgents(c *gin.Context) {
 
 	members, err := h.accountRepo.ListMembers(accountID)
 	if err != nil {
+		logger.WithComponent("agent").Error("failed to list agents",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list agents")
 		return
 	}
@@ -182,6 +212,11 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 
 	user, err := h.userRepo.FindByEmail(req.Email)
 	if err != nil {
+		logger.WithComponent("agent").Error("failed to check user by email",
+			"account_id", accountID,
+			"email", req.Email,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to check user")
 		return
 	}
@@ -193,6 +228,10 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 		}
 		hash, err := auth.HashPassword(pwd)
 		if err != nil {
+			logger.WithComponent("agent").Error("failed to hash agent password",
+				"email", req.Email,
+				"error", err.Error(),
+			)
 			response.InternalError(c, "Failed to process password")
 			return
 		}
@@ -204,6 +243,11 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 			Availability: domain.AvailabilityOnline,
 		}
 		if err := h.userRepo.Create(&newUser); err != nil {
+			logger.WithComponent("agent").Error("failed to create user for agent",
+				"account_id", accountID,
+				"email", req.Email,
+				"error", err.Error(),
+			)
 			response.InternalError(c, "Failed to create user for agent")
 			return
 		}
@@ -218,9 +262,21 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 	}
 
 	if err := h.accountRepo.AddMember(accountID, user.ID, role); err != nil {
+		logger.WithComponent("agent").Error("failed to add agent to account",
+			"account_id", accountID,
+			"user_id", user.ID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to add agent to account")
 		return
 	}
+
+	logger.WithComponent("agent").Info("agent added to account successfully",
+		"account_id", accountID,
+		"user_id", user.ID,
+		"email", user.Email,
+		"role", role,
+	)
 
 	membership, _ := h.accountRepo.GetMembership(accountID, user.ID)
 	membership.User = user
@@ -257,6 +313,11 @@ func (h *AccountHandler) UpdateAgent(c *gin.Context) {
 	}
 
 	if err := h.accountRepo.UpdateMember(membership); err != nil {
+		logger.WithComponent("agent").Error("failed to update agent",
+			"account_id", accountID,
+			"agent_id", uint(agentID),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update agent")
 		return
 	}
@@ -268,6 +329,13 @@ func (h *AccountHandler) UpdateAgent(c *gin.Context) {
 			_ = h.userRepo.Update(user)
 		}
 	}
+
+	logger.WithComponent("agent").Info("agent updated successfully",
+		"account_id", accountID,
+		"agent_id", uint(agentID),
+		"role", membership.Role,
+		"availability", membership.Availability,
+	)
 
 	membership, _ = h.accountRepo.GetMembership(accountID, uint(agentID))
 	response.Success(c, membership)
@@ -284,9 +352,19 @@ func (h *AccountHandler) RemoveAgent(c *gin.Context) {
 	}
 
 	if err := h.accountRepo.RemoveMember(accountID, uint(agentID)); err != nil {
+		logger.WithComponent("agent").Error("failed to remove agent from account",
+			"account_id", accountID,
+			"agent_id", uint(agentID),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to remove agent")
 		return
 	}
+
+	logger.WithComponent("agent").Info("agent removed from account successfully",
+		"account_id", accountID,
+		"agent_id", uint(agentID),
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }
@@ -296,6 +374,10 @@ func (h *AccountHandler) ListCustomRoles(c *gin.Context) {
 	accountID := rawAccountID.(uint)
 	roles, err := h.accountRepo.ListCustomRoles(accountID)
 	if err != nil {
+		logger.WithComponent("role").Error("failed to list custom roles",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to list custom roles")
 		return
 	}
@@ -317,9 +399,21 @@ func (h *AccountHandler) CreateCustomRole(c *gin.Context) {
 		Permissions: formatCustomRolePermissions(req.Permissions),
 	}
 	if err := h.accountRepo.CreateCustomRole(&role); err != nil {
+		logger.WithComponent("role").Error("failed to create custom role",
+			"account_id", accountID,
+			"role_name", req.Name,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create custom role")
 		return
 	}
+
+	logger.WithComponent("role").Info("custom role created successfully",
+		"account_id", accountID,
+		"role_id", role.ID,
+		"role_name", role.Name,
+	)
+
 	response.Created(c, role)
 }
 
@@ -367,9 +461,21 @@ func (h *AccountHandler) UpdateCustomRole(c *gin.Context) {
 		role.Permissions = formatCustomRolePermissions(req.Permissions)
 	}
 	if err := h.accountRepo.UpdateCustomRole(role); err != nil {
+		logger.WithComponent("role").Error("failed to update custom role",
+			"account_id", accountID,
+			"role_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update custom role")
 		return
 	}
+
+	logger.WithComponent("role").Info("custom role updated successfully",
+		"account_id", accountID,
+		"role_id", role.ID,
+		"role_name", role.Name,
+	)
+
 	response.Success(c, role)
 }
 
@@ -382,9 +488,20 @@ func (h *AccountHandler) DeleteCustomRole(c *gin.Context) {
 		return
 	}
 	if err := h.accountRepo.DeleteCustomRole(accountID, uint(id)); err != nil {
+		logger.WithComponent("role").Error("failed to delete custom role",
+			"account_id", accountID,
+			"role_id", uint(id),
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to delete custom role")
 		return
 	}
+
+	logger.WithComponent("role").Info("custom role deleted successfully",
+		"account_id", accountID,
+		"role_id", uint(id),
+	)
+
 	response.Success(c, gin.H{"deleted": true})
 }
 

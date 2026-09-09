@@ -6,6 +6,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -64,9 +65,22 @@ func (h *DeviceHandler) RegisterSubscription(c *gin.Context) {
 	}
 
 	if err := h.deviceRepo.UpsertSubscription(c.Request.Context(), &sub); err != nil {
+		logger.WithComponent("device").Error("failed to upsert notification subscription",
+			"account_id", uint(accID),
+			"user_id", userID,
+			"subscription_type", subType,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("device").Info("notification subscription registered",
+		"account_id", uint(accID),
+		"user_id", userID,
+		"subscription_type", subType,
+		"device_name", req.DeviceName,
+	)
 
 	response.Created(c, sub)
 }
@@ -86,9 +100,19 @@ func (h *DeviceHandler) DeleteSubscription(c *gin.Context) {
 	}
 
 	if err := h.deviceRepo.DeleteSubscription(c.Request.Context(), userID, uint(accID), req.PushToken); err != nil {
+		logger.WithComponent("device").Error("failed to delete notification subscription",
+			"account_id", uint(accID),
+			"user_id", userID,
+			"error", err.Error(),
+		)
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	logger.WithComponent("device").Info("notification subscription deleted",
+		"account_id", uint(accID),
+		"user_id", userID,
+	)
 
 	response.Success(c, gin.H{"deleted": true})
 }

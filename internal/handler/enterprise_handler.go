@@ -3,6 +3,7 @@ package handler
 import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -31,6 +32,10 @@ func (h *EnterpriseHandler) GetAccountFeatures(c *gin.Context) {
 
 	features, err := h.repo.GetAccountFeatures(accountID)
 	if err != nil {
+		logger.WithComponent("enterprise").Error("failed to get account features",
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to get account features")
 		return
 	}
@@ -48,9 +53,21 @@ func (h *EnterpriseHandler) SetAccountFeature(c *gin.Context) {
 	}
 
 	if err := h.repo.SetAccountFeature(accountID, req.FeatureName, req.Enabled); err != nil {
+		logger.WithComponent("enterprise").Error("failed to update account feature",
+			"account_id", accountID,
+			"feature_name", req.FeatureName,
+			"enabled", req.Enabled,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update account feature")
 		return
 	}
+
+	logger.WithComponent("enterprise").Info("account feature updated",
+		"account_id", accountID,
+		"feature_name", req.FeatureName,
+		"enabled", req.Enabled,
+	)
 
 	features, _ := h.repo.GetAccountFeatures(accountID)
 	response.Success(c, features)
@@ -59,6 +76,7 @@ func (h *EnterpriseHandler) SetAccountFeature(c *gin.Context) {
 func (h *EnterpriseHandler) ListSystemConfigs(c *gin.Context) {
 	configs, err := h.repo.ListSystemConfigs()
 	if err != nil {
+		logger.WithComponent("enterprise").Error("failed to list system configs", "error", err.Error())
 		response.InternalError(c, "Failed to list system configurations")
 		return
 	}
@@ -73,9 +91,17 @@ func (h *EnterpriseHandler) SetSystemConfig(c *gin.Context) {
 	}
 
 	if err := h.repo.SetSystemConfig(req.ConfigKey, req.Value); err != nil {
+		logger.WithComponent("enterprise").Error("failed to save system config",
+			"config_key", req.ConfigKey,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to save system configuration")
 		return
 	}
+
+	logger.WithComponent("enterprise").Info("system config saved successfully",
+		"config_key", req.ConfigKey,
+	)
 
 	response.Success(c, gin.H{"updated": true, "key": req.ConfigKey})
 }
