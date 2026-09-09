@@ -68,7 +68,7 @@ func getMacroParamStrings(params any) []string {
 	case string:
 		return []string{p}
 	case map[string]any:
-		for _, key := range []string{"message", "content", "text", "label", "priority", "status", "user_id", "agent_id"} {
+		for _, key := range []string{"message", "content", "text", "label", "priority", "status", "user_id", "agent_id", "team_id", "team_ids", "id"} {
 			if v, ok := p[key]; ok {
 				return []string{fmt.Sprintf("%v", v)}
 			}
@@ -164,7 +164,7 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 							conv.Status = params[0]
 						}
 					}
-				case "assign_agent", "assign_team":
+				case "assign_agent":
 					if len(params) > 0 {
 						var agentID uint
 						fmt.Sscanf(params[0], "%d", &agentID)
@@ -174,6 +174,16 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 					}
 				case "remove_assigned_agent":
 					conv.AssigneeID = nil
+				case "assign_team":
+					if len(params) > 0 {
+						var teamID uint
+						fmt.Sscanf(params[0], "%d", &teamID)
+						if teamID > 0 {
+							conv.TeamID = &teamID
+						}
+					}
+				case "remove_assigned_team":
+					conv.TeamID = nil
 				case "change_priority":
 					if len(params) > 0 {
 						conv.Priority = params[0]
@@ -231,6 +241,7 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 					"status":           conv.Status,
 					"priority":         conv.Priority,
 					"assignee_id":      conv.AssigneeID,
+					"team_id":          conv.TeamID,
 				}).Error
 				results[convID] = "success"
 			}

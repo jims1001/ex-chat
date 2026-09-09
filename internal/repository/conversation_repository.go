@@ -38,7 +38,7 @@ func (r *ConversationRepository) Create(c *domain.Conversation) error {
 
 func (r *ConversationRepository) FindByID(accountID, id uint) (*domain.Conversation, error) {
 	var conv domain.Conversation
-	err := r.db.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").
+	err := r.db.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").Preload("Team").
 		Where("account_id = ? AND id = ?", accountID, id).
 		First(&conv).Error
 	if err != nil {
@@ -89,7 +89,7 @@ func (r *ConversationRepository) List(accountID uint, status, priority string, a
 	}
 
 	offset := (page - 1) * pageSize
-	err := query.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").
+	err := query.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").Preload("Team").
 		Offset(offset).Limit(pageSize).
 		Order("last_activity_at DESC").
 		Find(&conversations).Error
@@ -115,6 +115,16 @@ func (r *ConversationRepository) UpdateStatus(accountID, id uint, status string,
 func (r *ConversationRepository) Assign(accountID, id uint, assigneeID *uint) error {
 	updates := map[string]any{
 		"assignee_id":      assigneeID,
+		"last_activity_at": time.Now().UTC(),
+	}
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(updates).Error
+}
+
+func (r *ConversationRepository) AssignTeam(accountID, id uint, teamID *uint) error {
+	updates := map[string]any{
+		"team_id":          teamID,
 		"last_activity_at": time.Now().UTC(),
 	}
 	return r.db.Model(&domain.Conversation{}).

@@ -227,6 +227,10 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 		if conv.AssigneeID != nil {
 			targetVal = int(*conv.AssigneeID)
 		}
+	case "team_id":
+		if conv.TeamID != nil {
+			targetVal = int(*conv.TeamID)
+		}
 	case "content":
 		if msg != nil {
 			targetVal = msg.Content
@@ -406,34 +410,94 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 		return ""
 	}
 
-	getParamUint := func(key string) uint {
-		if m, ok := action.ActionParams.(map[string]any); ok {
-			if f, ok := m[key].(float64); ok {
-				return uint(f)
+	var parseUintVal func(val any) uint
+	parseUintVal = func(val any) uint {
+		if val == nil {
+			return 0
+		}
+		switch v := val.(type) {
+		case float64:
+			if v > 0 {
+				return uint(v)
 			}
-		} else if arr, ok := action.ActionParams.([]any); ok && len(arr) > 0 {
-			if f, ok := arr[0].(float64); ok {
-				return uint(f)
+		case float32:
+			if v > 0 {
+				return uint(v)
 			}
-		} else if f, ok := action.ActionParams.(float64); ok {
-			return uint(f)
+		case int:
+			if v > 0 {
+				return uint(v)
+			}
+		case int64:
+			if v > 0 {
+				return uint(v)
+			}
+		case uint:
+			return v
+		case string:
+			var u uint
+			if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &u); err == nil && u > 0 {
+				return u
+			}
+		case []any:
+			if len(v) > 0 {
+				return parseUintVal(v[0])
+			}
+		case []string:
+			if len(v) > 0 {
+				return parseUintVal(v[0])
+			}
 		}
 		return 0
 	}
 
-	switch action.ActionName {
-	case "assign_agent", "assign_team":
-		uid := getParamUint("user_id")
-		if uid == 0 {
-			uid = getParamUint("agent_id")
+	getParamUint := func(keys ...string) uint {
+		if m, ok := action.ActionParams.(map[string]any); ok {
+			for _, k := range keys {
+				if v, exists := m[k]; exists {
+					if u := parseUintVal(v); u > 0 {
+						return u
+					}
+				}
+			}
+			return 0
+		} else if arr, ok := action.ActionParams.([]any); ok && len(arr) > 0 {
+			return parseUintVal(arr[0])
+		} else if arrStr, ok := action.ActionParams.([]string); ok && len(arrStr) > 0 {
+			return parseUintVal(arrStr[0])
 		}
+		return parseUintVal(action.ActionParams)
+	}
+
+	switch action.ActionName {
+	case "assign_agent":
+		uid := getParamUint("user_id", "agent_id")
 		if uid > 0 {
 			_ = s.convRepo.Assign(conv.AccountID, conv.ID, &uid)
 			conv.AssigneeID = &uid
+			var agent domain.User
+			if err := s.db.Where("id = ?", uid).First(&agent).Error; err == nil {
+				conv.Assignee = &agent
+			}
 		}
 	case "remove_assigned_agent":
 		_ = s.convRepo.Assign(conv.AccountID, conv.ID, nil)
 		conv.AssigneeID = nil
+		conv.Assignee = nil
+	case "assign_team":
+		tid := getParamUint("team_id", "team_ids", "id")
+		if tid > 0 {
+			_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, &tid)
+			conv.TeamID = &tid
+			var team domain.Team
+			if err := s.db.Where("account_id = ? AND id = ?", conv.AccountID, tid).First(&team).Error; err == nil {
+				conv.Team = &team
+			}
+		}
+	case "remove_assigned_team":
+		_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, nil)
+		conv.TeamID = nil
+		conv.Team = nil
 	case "change_status", "resolve_conversation", "close_conversation", "close", "resolve", "open_conversation":
 		newStatus := "open"
 		if action.ActionName == "resolve_conversation" || action.ActionName == "close_conversation" || action.ActionName == "close" || action.ActionName == "resolve" {
@@ -512,11 +576,21 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 	now := time.Now().UTC()
 	conv.LastActivityAt = now
 	conv.UpdatedAt = now
-	_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]any{
+	updateFields := map[string]any{
 		"last_activity_at": now,
 		"updated_at":       now,
 		"status":           conv.Status,
 		"priority":         conv.Priority,
-		"assignee_id":      conv.AssigneeID,
-	}).Error
+	}
+	if conv.AssigneeID != nil {
+		updateFields["assignee_id"] = conv.AssigneeID
+	} else if action.ActionName == "remove_assigned_agent" {
+		updateFields["assignee_id"] = nil
+	}
+	if conv.TeamID != nil {
+		updateFields["team_id"] = conv.TeamID
+	} else if action.ActionName == "remove_assigned_team" {
+		updateFields["team_id"] = nil
+	}
+	_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updateFields).Error
 }

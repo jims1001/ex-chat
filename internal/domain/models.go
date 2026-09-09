@@ -59,12 +59,14 @@ const (
 	EventConversationUpdated = "conversation_updated"
 	EventMessageCreated      = "message_created"
 
-	ActionAssignTeam  = "assign_team"
-	ActionAssignAgent = "assign_agent"
-	ActionSendMessage = "send_message"
-	ActionAddLabel    = "add_label"
-	ActionResolveConv = "resolve_conversation"
-	ActionMuteConv    = "mute_conversation"
+	ActionAssignTeam          = "assign_team"
+	ActionAssignAgent         = "assign_agent"
+	ActionRemoveAssignedAgent = "remove_assigned_agent"
+	ActionRemoveAssignedTeam  = "remove_assigned_team"
+	ActionSendMessage         = "send_message"
+	ActionAddLabel            = "add_label"
+	ActionResolveConv         = "resolve_conversation"
+	ActionMuteConv            = "mute_conversation"
 )
 
 // Message type constants
