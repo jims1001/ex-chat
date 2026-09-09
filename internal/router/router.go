@@ -84,6 +84,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	appliedSLARepo := repository.NewAppliedSLARepository(db)
 	copilotThreadRepo := repository.NewCopilotThreadRepository(db)
 	captainRepo := repository.NewCaptainRepository(db)
+	aiCustomToolRepo := repository.NewAICustomToolRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -149,6 +150,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	csatHandler := handler.NewCSATHandler(csatExtensionRepo)
 	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService)
 	copilotThreadHandler := handler.NewCopilotThreadHandler(db, copilotThreadRepo, convRepo, msgRepo, captainRepo)
+	aiCustomToolHandler := handler.NewAICustomToolHandler(db, aiCustomToolRepo)
 
 	// 后台周期巡检与调度引擎 (Background Schedulers)
 	campaignService.StartScheduledCampaignWorker(context.Background(), 1*time.Minute)
@@ -692,6 +694,18 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			tenant.DELETE("/captain/scenarios/:id", copilotHandler.DeleteScenario)
 			tenant.POST("/captain/tools/execute", copilotHandler.ExecuteAITool)
 			tenant.GET("/captain/quota", copilotHandler.GetAIQuota)
+
+			// 自定义 AI 工具完整管理与测试流程 (Custom Tools Lifecycle)
+			tenant.GET("/captain/tools", aiCustomToolHandler.ListTools)
+			tenant.POST("/captain/tools", aiCustomToolHandler.CreateTool)
+			tenant.GET("/captain/tools/metrics", aiCustomToolHandler.GetMetrics)
+			tenant.POST("/captain/tools/test", aiCustomToolHandler.TestTool)
+			tenant.GET("/captain/tools/:id", aiCustomToolHandler.GetTool)
+			tenant.PUT("/captain/tools/:id", aiCustomToolHandler.UpdateTool)
+			tenant.PATCH("/captain/tools/:id", aiCustomToolHandler.UpdateTool)
+			tenant.DELETE("/captain/tools/:id", aiCustomToolHandler.DeleteTool)
+			tenant.POST("/captain/tools/:id/test", aiCustomToolHandler.TestTool)
+			tenant.GET("/captain/tools/:id/logs", aiCustomToolHandler.ListExecutionLogs)
 
 			// 变更追踪与审计日志 (LOG / AUD: LOG-01 ~ LOG-08)
 			tenant.GET("/audit_logs", auditHandler.ListAuditLogs)

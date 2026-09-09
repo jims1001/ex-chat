@@ -1187,6 +1187,76 @@ type CopilotThreadMessage struct {
 	Thread *CopilotThread `gorm:"foreignKey:ThreadID" json:"thread,omitempty"`
 }
 
+// Custom AI Tool permission, status and execution constants
+const (
+	AIToolPermissionReadonly           = "readonly"
+	AIToolPermissionWriteConfirm       = "write_confirm"
+	AIToolPermissionWriteStrongConfirm = "write_strong_confirm"
+
+	AIToolStatusActive     = "active"
+	AIToolStatusRestricted = "restricted"
+	AIToolStatusDraft      = "draft"
+	AIToolStatusDeprecated = "deprecated"
+
+	AIToolTypeInternalFunction = "internal_function"
+	AIToolTypeWebhook          = "webhook"
+	AIToolTypeHTTPAPI          = "http_api"
+
+	AIToolExecutionSuccess  = "success"
+	AIToolExecutionFailed   = "failed"
+	AIToolExecutionTimeout  = "timeout"
+	AIToolExecutionRejected = "rejected_by_policy"
+)
+
+// AICustomTool defines a user-configurable tool available for AI assistants and scenarios
+type AICustomTool struct {
+	ID                   uint      `gorm:"primaryKey" json:"id"`
+	AccountID            uint      `gorm:"index;not null" json:"account_id"`
+	Name                 string    `gorm:"size:100;not null;index" json:"name"` // Function name e.g. query_order
+	Title                string    `gorm:"size:255;not null" json:"title"`       // Display name e.g. 查询订单
+	Description          string    `gorm:"type:text;not null" json:"description"` // Prompt definition for LLM
+	Category             string    `gorm:"size:100;default:'custom'" json:"category"` // e.g. 订单插件, 物流插件
+	ToolType             string    `gorm:"size:50;default:'internal_function'" json:"tool_type"` // internal_function, webhook, http_api
+	EndpointURL          string    `gorm:"size:1024" json:"endpoint_url,omitempty"`
+	HTTPMethod           string    `gorm:"size:10;default:'POST'" json:"http_method,omitempty"`
+	Headers              string    `gorm:"type:text" json:"headers,omitempty"` // JSON Headers map
+	InputSchema          string    `gorm:"type:text;not null" json:"input_schema"` // JSON Schema for parameters
+	OutputSchema         string    `gorm:"type:text" json:"output_schema,omitempty"`
+	PermissionLevel      string    `gorm:"size:50;default:'readonly'" json:"permission_level"` // readonly, write_confirm, write_strong_confirm
+	RequiresConfirmation bool      `gorm:"default:false" json:"requires_confirmation"`
+	TimeoutSeconds       int       `gorm:"default:10" json:"timeout_seconds"`
+	Status               string    `gorm:"size:50;default:'active';index" json:"status"` // active, restricted, draft, deprecated
+	Environment          string    `gorm:"size:50;default:'production'" json:"environment"` // production, staging, shadow
+	DailyCalls           int       `gorm:"default:0" json:"daily_calls"`
+	TotalCalls           int64     `gorm:"default:0" json:"total_calls"`
+	SuccessCalls         int64     `gorm:"default:0" json:"success_calls"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+
+	Account              *Account  `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+}
+
+// AIToolExecutionLog records execution and test results of custom AI tools
+type AIToolExecutionLog struct {
+	ID             uint          `gorm:"primaryKey" json:"id"`
+	AccountID      uint          `gorm:"index;not null" json:"account_id"`
+	ToolID         uint          `gorm:"index;not null" json:"tool_id"`
+	ToolName       string        `gorm:"size:100;not null;index" json:"tool_name"`
+	UserID         uint          `gorm:"index;not null" json:"user_id"`
+	ConversationID *uint         `gorm:"index" json:"conversation_id,omitempty"`
+	ExecutionMode  string        `gorm:"size:50;default:'production'" json:"execution_mode"` // test, production, shadow
+	InputParams    string        `gorm:"type:text" json:"input_params"`
+	OutputResult   string        `gorm:"type:text" json:"output_result"`
+	Status         string        `gorm:"size:50;not null;index" json:"status"` // success, failed, timeout, rejected_by_policy
+	ErrorMessage   string        `gorm:"type:text" json:"error_message,omitempty"`
+	LatencyMs      int64         `json:"latency_ms"`
+	TokensConsumed int           `gorm:"default:0" json:"tokens_consumed"`
+	CreatedAt      time.Time     `gorm:"index" json:"created_at"`
+
+	Account        *Account      `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	Tool           *AICustomTool `gorm:"foreignKey:ToolID" json:"tool,omitempty"`
+}
+
 // CustomRole defines custom agent role and granular permissions
 type CustomRole struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
