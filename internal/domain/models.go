@@ -630,14 +630,22 @@ type NotificationSetting struct {
 
 // CSATSurvey records customer satisfaction ratings on resolved conversations
 type CSATSurvey struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	AccountID       uint      `gorm:"index;not null" json:"account_id"`
-	ConversationID  uint      `gorm:"index;not null" json:"conversation_id"`
-	Rating          int       `gorm:"not null" json:"rating"` // 1 - 5
-	FeedbackText    string    `gorm:"type:text" json:"feedback_text"`
-	AssignedAgentID *uint     `gorm:"index" json:"assigned_agent_id"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	AccountID       uint       `gorm:"index;not null" json:"account_id"`
+	ConversationID  uint       `gorm:"index;not null" json:"conversation_id"`
+	Rating          int        `gorm:"not null" json:"rating"` // 1 - 5
+	FeedbackText    string     `gorm:"type:text" json:"feedback_text"`
+	AssignedAgentID *uint      `gorm:"index" json:"assigned_agent_id"`
+	ReviewStatus    string     `gorm:"size:50;default:'pending';index" json:"review_status"` // pending, approved, rejected, flagged
+	ReviewerID      *uint      `gorm:"index" json:"reviewer_id,omitempty"`
+	ReviewNotes     string     `gorm:"type:text" json:"review_notes,omitempty"`
+	ReviewedAt      *time.Time `json:"reviewed_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+
+	Conversation  *Conversation `gorm:"foreignKey:ConversationID" json:"conversation,omitempty"`
+	AssignedAgent *User         `gorm:"foreignKey:AssignedAgentID" json:"assigned_agent,omitempty"`
+	Reviewer      *User         `gorm:"foreignKey:ReviewerID" json:"reviewer,omitempty"`
 }
 
 // ----------------- OPEN 开放平台 -----------------
