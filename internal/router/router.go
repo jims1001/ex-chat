@@ -116,8 +116,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	convHandler.SetNotificationRepo(notificationRepo)
 	convHandler.SetSLAService(slaService)
 	convHandler.SetEmailService(emailService)
-	convHandler.SetCampaignService(campaignService)
 	opsHandler := handler.NewOpsHandler(labelRepo, cannedRepo, convRepo)
+	opsHandler.SetEventServices(automationService, webhookService, hub)
 	macroHandler := handler.NewMacroNotificationHandler(macroRepo, notificationRepo, csatRepo)
 	reportHandler := handler.NewReportHandler(reportService)
 	auditHandler := handler.NewAuditHandler(journalRepo)
@@ -528,6 +528,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			tenant.DELETE("/labels/:id", opsHandler.DeleteLabel)
 			tenant.POST("/conversations/:id/labels", opsHandler.AttachConversationLabels)
 			tenant.GET("/conversations/:id/labels", opsHandler.GetConversationLabels)
+			tenant.DELETE("/conversations/:id/labels/:label_id", opsHandler.DetachConversationLabel)
 
 			// 帮助中心管理 (HELP)
 			tenant.GET("/portals", portalHandler.ListPortals)

@@ -7,15 +7,20 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
 type OpsHandler struct {
-	labelRepo  *repository.LabelRepository
-	cannedRepo *repository.CannedResponseRepository
-	convRepo   *repository.ConversationRepository
+	labelRepo         *repository.LabelRepository
+	cannedRepo        *repository.CannedResponseRepository
+	convRepo          *repository.ConversationRepository
+	automationService *service.AutomationService
+	webhookService    *service.WebhookService
+	hub               *ws.Hub
 }
 
 func NewOpsHandler(
@@ -28,6 +33,12 @@ func NewOpsHandler(
 		cannedRepo: cannedRepo,
 		convRepo:   convRepo,
 	}
+}
+
+func (h *OpsHandler) SetEventServices(as *service.AutomationService, ws *service.WebhookService, hub *ws.Hub) {
+	h.automationService = as
+	h.webhookService = ws
+	h.hub = hub
 }
 
 type CreateCannedResponseRequest struct {
@@ -348,6 +359,78 @@ func (h *OpsHandler) AttachConversationLabels(c *gin.Context) {
 	)
 
 	labels, _ := h.labelRepo.GetConversationLabels(conv.ID)
+
+	// Dispatch Automation, Webhook, and WebSocket event
+	if refreshed, err := h.convRepo.FindByID(accountID, conv.ID); err == nil && refreshed != nil {
+		if h.automationService != nil {
+			h.automationService.HandleConversationUpdated(refreshed)
+		}
+		if h.webhookService != nil {
+			h.webhookService.Dispatch(accountID, "conversation_updated", refreshed)
+		}
+		if h.hub != nil {
+			h.hub.Broadcast(&ws.Event{
+				Name:           ws.EventConversationUpdated,
+				AccountID:      accountID,
+				ConversationID: refreshed.ID,
+				Data:           refreshed,
+			})
+		}
+	}
+
+	response.Success(c, labels)
+}
+
+func (h *OpsHandler) DetachConversationLabel(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	convID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	labelID, err := strconv.ParseUint(c.Param("label_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid label ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(convID))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	_ = h.labelRepo.DetachFromConversation(conv.ID, uint(labelID))
+
+	logger.WithComponent("label").Info("detached label from conversation",
+		"account_id", accountID,
+		"conversation_id", conv.ID,
+		"label_id", labelID,
+	)
+
+	labels, _ := h.labelRepo.GetConversationLabels(conv.ID)
+
+	// Dispatch Automation, Webhook, and WebSocket event
+	if refreshed, err := h.convRepo.FindByID(accountID, conv.ID); err == nil && refreshed != nil {
+		if h.automationService != nil {
+			h.automationService.HandleConversationUpdated(refreshed)
+		}
+		if h.webhookService != nil {
+			h.webhookService.Dispatch(accountID, "conversation_updated", refreshed)
+		}
+		if h.hub != nil {
+			h.hub.Broadcast(&ws.Event{
+				Name:           ws.EventConversationUpdated,
+				AccountID:      accountID,
+				ConversationID: refreshed.ID,
+				Data:           refreshed,
+			})
+		}
+	}
+
 	response.Success(c, labels)
 }
 

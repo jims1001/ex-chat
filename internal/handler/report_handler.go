@@ -23,24 +23,45 @@ func NewReportHandler(reportService *service.ReportService) *ReportHandler {
 	}
 }
 
+func parseTimeParam(param string, isEnd bool) *time.Time {
+	param = strings.TrimSpace(param)
+	if param == "" {
+		return nil
+	}
+	if sec, err := strconv.ParseInt(param, 10, 64); err == nil {
+		t := time.Unix(sec, 0).UTC()
+		return &t
+	}
+	if t, err := time.Parse(time.RFC3339, param); err == nil {
+		utc := t.UTC()
+		return &utc
+	}
+	if t, err := time.Parse("2006-01-02", param); err == nil {
+		if isEnd {
+			utc := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
+			return &utc
+		}
+		utc := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+		return &utc
+	}
+	return nil
+}
+
 func parseReportFilter(c *gin.Context) service.ReportFilter {
 	filter := service.ReportFilter{}
-	if s := strings.TrimSpace(c.Query("since")); s != "" {
-		if sec, err := strconv.ParseInt(s, 10, 64); err == nil {
-			t := time.Unix(sec, 0).UTC()
-			filter.Since = &t
-		} else if t, err := time.Parse(time.RFC3339, s); err == nil {
-			filter.Since = &t
-		}
+
+	sinceParam := c.Query("since")
+	if sinceParam == "" {
+		sinceParam = c.Query("from")
 	}
-	if u := strings.TrimSpace(c.Query("until")); u != "" {
-		if sec, err := strconv.ParseInt(u, 10, 64); err == nil {
-			t := time.Unix(sec, 0).UTC()
-			filter.Until = &t
-		} else if t, err := time.Parse(time.RFC3339, u); err == nil {
-			filter.Until = &t
-		}
+	untilParam := c.Query("until")
+	if untilParam == "" {
+		untilParam = c.Query("to")
 	}
+
+	filter.Since = parseTimeParam(sinceParam, false)
+	filter.Until = parseTimeParam(untilParam, true)
+
 	bh := strings.ToLower(strings.TrimSpace(c.Query("business_hours")))
 	if bh == "true" || bh == "1" {
 		filter.BusinessHours = true
@@ -87,6 +108,7 @@ func (h *ReportHandler) GetAgentMetrics(c *gin.Context) {
 func (h *ReportHandler) GetTrends(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
 
 	days := 7
 	if dStr := c.Query("days"); dStr != "" {
@@ -95,7 +117,7 @@ func (h *ReportHandler) GetTrends(c *gin.Context) {
 		}
 	}
 
-	trends, err := h.reportService.GetConversationTrends(accountID, days)
+	trends, err := h.reportService.GetConversationTrends(accountID, days, filter)
 	if err != nil {
 		logger.WithComponent("report").Error("failed to generate conversation trends",
 			"account_id", accountID,

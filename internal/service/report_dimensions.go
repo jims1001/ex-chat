@@ -257,6 +257,7 @@ func (s *ReportService) GetInboxMetrics(accountID uint, filters ...ReportFilter)
 		var total int64
 		var open int64
 		var resolved int64
+		var pending int64
 		var frtSum, rtSum, artSum float64
 		var frtCount, rtCount, artCount int
 
@@ -267,6 +268,8 @@ func (s *ReportService) GetInboxMetrics(accountID uint, filters ...ReportFilter)
 					open++
 				} else if c.Status == domain.ConversationStatusResolved {
 					resolved++
+				} else if c.Status == domain.ConversationStatusPending {
+					pending++
 				}
 
 				msgs := messagesMap[c.ID]
@@ -307,6 +310,7 @@ func (s *ReportService) GetInboxMetrics(accountID uint, filters ...ReportFilter)
 			TotalConversations:    total,
 			OpenConversations:     open,
 			ResolvedConversations: resolved,
+			PendingConversations:  pending,
 			AvgFirstResponseTime:  avgFRT,
 			AvgResolutionTime:     avgRT,
 			AvgReplyTime:          avgReply,

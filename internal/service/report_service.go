@@ -147,49 +147,91 @@ func (s *ReportService) GetAccountSummary(accountID uint, filters ...ReportFilte
 	return summary, nil
 }
 
-// GetConversationTrends compiles volume trends over specified day count
-func (s *ReportService) GetConversationTrends(accountID uint, days int) (*ConversationTrendsReport, error) {
-	if days <= 0 {
-		days = 7
+// GetConversationTrends compiles volume trends over specified day count or time range
+func (s *ReportService) GetConversationTrends(accountID uint, days int, filters ...ReportFilter) (*ConversationTrendsReport, error) {
+	var filter ReportFilter
+	if len(filters) > 0 {
+		filter = filters[0]
 	}
+
 	now := time.Now().UTC()
-	startCurrent := now.AddDate(0, 0, -days)
-	startPrevious := now.AddDate(0, 0, -2*days)
+	var startDate, endDate time.Time
 
-	var currentCount int64
-	s.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, startCurrent, now).
-		Count(&currentCount)
+	if filter.Since != nil && filter.Until != nil && filter.Until.After(*filter.Since) {
+		startDate = time.Date(filter.Since.Year(), filter.Since.Month(), filter.Since.Day(), 0, 0, 0, 0, time.UTC)
+		endDate = time.Date(filter.Until.Year(), filter.Until.Month(), filter.Until.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+		diffDays := int(endDate.Sub(startDate).Hours() / 24)
+		if diffDays > 0 {
+			days = diffDays
+		}
+	} else {
+		if days <= 0 {
+			days = 7
+		}
+		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		startDate = todayStart.AddDate(0, 0, -(days - 1))
+		endDate = todayStart.AddDate(0, 0, 1)
+	}
 
-	var previousCount int64
-	s.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, startPrevious, startCurrent).
-		Count(&previousCount)
+	// Calculate previous period of equal length
+	periodDuration := endDate.Sub(startDate)
+	prevStart := startDate.Add(-periodDuration)
+	prevEnd := startDate
 
-	var growth float64
-	if previousCount > 0 {
-		growth = float64(currentCount-previousCount) / float64(previousCount) * 100.0
-	} else if currentCount > 0 {
-		growth = 100.0
+	// Load conversations with business hours if applicable
+	var convsCurrent, convsPrev []domain.Conversation
+	inboxesMap := s.loadInboxesMap(accountID)
+
+	if filter.BusinessHours {
+		var rawCurrent []domain.Conversation
+		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, startDate, endDate).
+			Find(&rawCurrent)
+		convsCurrent = FilterConversationsByBusinessHours(rawCurrent, inboxesMap)
+
+		var rawPrev []domain.Conversation
+		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, prevStart, prevEnd).
+			Find(&rawPrev)
+		convsPrev = FilterConversationsByBusinessHours(rawPrev, inboxesMap)
+	} else {
+		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, startDate, endDate).
+			Find(&convsCurrent)
+		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, prevStart, prevEnd).
+			Find(&convsPrev)
+	}
+
+	// Group current conversations into daily buckets
+	dayCounts := make(map[string]int64, days)
+	for _, c := range convsCurrent {
+		dKey := c.CreatedAt.UTC().Format("2006-01-02")
+		dayCounts[dKey]++
 	}
 
 	trends := make([]TrendPoint, 0, days)
-	for i := days - 1; i >= 0; i-- {
-		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -i)
-		dayEnd := dayStart.AddDate(0, 0, 1)
-		var c int64
-		s.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, dayStart, dayEnd).
-			Count(&c)
+	var currentTotal int64
+	curDay := startDate
+	for curDay.Before(endDate) {
+		dKey := curDay.Format("2006-01-02")
+		c := dayCounts[dKey]
+		currentTotal += c
 		trends = append(trends, TrendPoint{
-			Date:  dayStart.Format("2006-01-02"),
+			Date:  dKey,
 			Count: c,
 		})
+		curDay = curDay.AddDate(0, 0, 1)
+	}
+
+	previousTotal := int64(len(convsPrev))
+
+	var growth float64
+	if previousTotal > 0 {
+		growth = RoundToOneDecimal(float64(currentTotal-previousTotal) / float64(previousTotal) * 100.0)
+	} else if currentTotal > 0 {
+		growth = 100.0
 	}
 
 	return &ConversationTrendsReport{
-		CurrentPeriodTotal:  currentCount,
-		PreviousPeriodTotal: previousCount,
+		CurrentPeriodTotal:  currentTotal,
+		PreviousPeriodTotal: previousTotal,
 		GrowthPercentage:    growth,
 		Trends:              trends,
 	}, nil

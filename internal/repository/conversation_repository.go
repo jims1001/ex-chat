@@ -132,15 +132,23 @@ func (r *ConversationRepository) AssignTeam(accountID, id uint, teamID *uint) er
 		Updates(updates).Error
 }
 
-func (r *ConversationRepository) AssignWithTeam(accountID, id uint, assigneeID, teamID *uint) error {
+func (r *ConversationRepository) AssignWithTeam(accountID, id uint, hasAssignee bool, assigneeID *uint, hasTeam bool, teamID *uint) error {
 	updates := map[string]any{
 		"last_activity_at": time.Now().UTC(),
 	}
-	if assigneeID != nil {
-		updates["assignee_id"] = assigneeID
+	if hasAssignee {
+		if assigneeID != nil && *assigneeID > 0 {
+			updates["assignee_id"] = assigneeID
+		} else {
+			updates["assignee_id"] = nil
+		}
 	}
-	if teamID != nil {
-		updates["team_id"] = teamID
+	if hasTeam {
+		if teamID != nil && *teamID > 0 {
+			updates["team_id"] = teamID
+		} else {
+			updates["team_id"] = nil
+		}
 	}
 	return r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND id = ?", accountID, id).

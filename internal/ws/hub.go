@@ -33,6 +33,10 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	broadcast  chan *Event
+
+	// OnBroadcast is an optional hook called synchronously for each event
+	// before it is dispatched to clients. Used in tests to capture events.
+	OnBroadcast func(*Event)
 }
 
 var defaultHub *Hub
@@ -53,6 +57,14 @@ func NewHub() *Hub {
 		unregister: make(chan *Client),
 		broadcast:  make(chan *Event, 256),
 	}
+}
+
+// RegisterTestClient directly registers a client into the hub without a real WS
+// connection. Useful only in tests.
+func (h *Hub) RegisterTestClient(c *Client) {
+	h.clientsMu.Lock()
+	defer h.clientsMu.Unlock()
+	h.clients[c] = true
 }
 
 func (h *Hub) Run() {
@@ -91,6 +103,9 @@ func (h *Hub) Run() {
 				"account_id", event.AccountID,
 				"conversation_id", event.ConversationID,
 			)
+			if h.OnBroadcast != nil {
+				h.OnBroadcast(event)
+			}
 			h.clientsMu.RLock()
 			msgBytes, err := json.Marshal(event)
 			if err != nil {

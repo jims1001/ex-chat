@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -328,6 +330,21 @@ func (h *ConversationHandler) ToggleStatus(c *gin.Context) {
 	}
 	if h.webhookService != nil && conv != nil {
 		h.webhookService.Dispatch(accountID, "conversation_status_changed", conv)
+		h.webhookService.Dispatch(accountID, "conversation_updated", conv)
+	}
+	if h.hub != nil && conv != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationStatus,
+			AccountID:      accountID,
+			ConversationID: conv.ID,
+			Data:           conv,
+		})
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationUpdated,
+			AccountID:      accountID,
+			ConversationID: conv.ID,
+			Data:           conv,
+		})
 	}
 	response.Success(c, conv)
 }
@@ -342,36 +359,64 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 		return
 	}
 
-	var req AssignmentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		response.BadRequest(c, "Failed to read request body")
+		return
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
 
-	if req.AssigneeID != nil {
-		var capPolicy domain.CapacityPolicy
-		db := h.convRepo.GetDB()
-		found := false
-		if err := db.Where("user_id = ?", *req.AssigneeID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-			found = true
-		} else if accountID > 0 {
-			if err := db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-				found = true
+	var req AssignmentRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	_, hasAssignee := raw["assignee_id"]
+	_, hasTeam := raw["team_id"]
+
+	if hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
+		conv, _ := h.convRepo.FindByID(accountID, uint(id))
+		if conv != nil && h.routingService != nil {
+			var policy *domain.AssignmentPolicy
+			if conv.Inbox != nil && conv.Inbox.AssignmentPolicy != nil {
+				policy = conv.Inbox.AssignmentPolicy
 			}
-		}
-		if found && capPolicy.ConversationLimit > 0 {
-			var currentCount int64
-			db.Model(&domain.Conversation{}).
-				Where("assignee_id = ? AND status != ? AND id != ?", *req.AssigneeID, domain.ConversationStatusResolved, id).
-				Count(&currentCount)
-			if currentCount >= int64(capPolicy.ConversationLimit) {
+			hasCap, _ := h.routingService.CheckAgentCapacity(accountID, conv.InboxID, *req.AssigneeID, policy, uint(id))
+			if !hasCap {
 				response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
 				return
+			}
+		} else {
+			var capPolicy domain.CapacityPolicy
+			db := h.convRepo.GetDB()
+			found := false
+			if err := db.Where("user_id = ?", *req.AssigneeID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
+				found = true
+			} else if accountID > 0 {
+				if err := db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
+					found = true
+				}
+			}
+			if found && capPolicy.ConversationLimit > 0 {
+				var currentCount int64
+				db.Model(&domain.Conversation{}).
+					Where("assignee_id = ? AND status != ? AND id != ?", *req.AssigneeID, domain.ConversationStatusResolved, id).
+					Count(&currentCount)
+				if currentCount >= int64(capPolicy.ConversationLimit) {
+					response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
+					return
+				}
 			}
 		}
 	}
 
-	if req.TeamID != nil {
+	if hasTeam && req.TeamID != nil && *req.TeamID > 0 {
 		var team domain.Team
 		if err := h.convRepo.GetDB().Where("account_id = ? AND id = ?", accountID, *req.TeamID).First(&team).Error; err != nil {
 			response.BadRequest(c, "Invalid team ID")
@@ -379,7 +424,7 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 		}
 	}
 
-	if err := h.convRepo.AssignWithTeam(accountID, uint(id), req.AssigneeID, req.TeamID); err != nil {
+	if err := h.convRepo.AssignWithTeam(accountID, uint(id), hasAssignee, req.AssigneeID, hasTeam, req.TeamID); err != nil {
 		logger.WithComponent("conversation").Error("failed to assign conversation",
 			"conversation_id", id,
 			"account_id", accountID,
@@ -397,19 +442,68 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 	)
 
 	conv, _ := h.convRepo.FindByID(accountID, uint(id))
-	if h.automationService != nil && conv != nil {
-		h.automationService.HandleConversationUpdated(conv)
+	now := time.Now().UTC()
+	rawUserID, _ := c.Get(middleware.ContextUserID)
+	var currentUserID uint
+	if rawUserID != nil {
+		currentUserID, _ = rawUserID.(uint)
 	}
-	if h.webhookService != nil && conv != nil {
-		h.webhookService.Dispatch(accountID, "conversation_status_changed", conv)
+
+	// 1. In-App Notification Center (only when assigned to a valid user)
+	if h.notificationRepo != nil && hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
+		notif := domain.Notification{
+			AccountID:          accountID,
+			UserID:             *req.AssigneeID,
+			NotificationType:   domain.NotificationTypeConversationAssignment,
+			PrimaryActorType:   "Conversation",
+			PrimaryActorID:     uint(id),
+			SecondaryActorType: "User",
+			SecondaryActorID:   currentUserID,
+			CreatedAt:          now,
+		}
+		_ = h.notificationRepo.Create(c.Request.Context(), &notif)
 	}
-	if h.pushService != nil && req.AssigneeID != nil {
+
+	// 2. Push Notification Dispatch (only when assigned to a valid user)
+	if h.pushService != nil && hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
 		go h.pushService.Dispatch(context.Background(), *req.AssigneeID, accountID, service.PushPayload{
 			Title:        "Conversation Assigned",
 			Body:         fmt.Sprintf("Conversation #%d has been assigned to you", id),
 			AccountID:    accountID,
 			ResourceID:   uint(id),
 			ResourceType: "conversation",
+		})
+	}
+
+	// 3. Automation Pipeline
+	if h.automationService != nil && conv != nil {
+		h.automationService.HandleConversationUpdated(conv)
+	}
+
+	// 4. Webhook Event Dispatching
+	if h.webhookService != nil && conv != nil {
+		h.webhookService.Dispatch(accountID, "conversation_updated", conv)
+	}
+
+	// 5. Real-time WebSocket Broadcast
+	if h.hub != nil && conv != nil {
+		if hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
+			h.hub.Broadcast(&ws.Event{
+				Name:           ws.EventConversationAssigned,
+				AccountID:      accountID,
+				ConversationID: conv.ID,
+				Data: map[string]any{
+					"id":          conv.ID,
+					"assignee_id": req.AssigneeID,
+					"assignee":    conv.Assignee,
+				},
+			})
+		}
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationUpdated,
+			AccountID:      accountID,
+			ConversationID: conv.ID,
+			Data:           conv,
 		})
 	}
 	response.Success(c, conv)
@@ -529,6 +623,15 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 
 	if h.slaService != nil && msg.MessageType == domain.MessageTypeOutgoing && !isPrivate {
 		_, _ = h.slaService.EvaluateConversation(conv)
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      accountID,
+			ConversationID: conv.ID,
+			Data:           msg,
+		})
 	}
 
 	response.Created(c, msg)
@@ -751,6 +854,15 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 			AccountID:    inbox.AccountID,
 			ResourceID:   conv.ID,
 			ResourceType: "conversation",
+		})
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      inbox.AccountID,
+			ConversationID: conv.ID,
+			Data:           msg,
 		})
 	}
 
@@ -1318,6 +1430,16 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 
 	conv, _ := h.convRepo.FindByID(accountID, uint(convID))
 
+	// Re-open conversation if resolved when an incoming message is retried, or touch activity to bubble up conversation
+	if conv != nil {
+		if conv.Status == domain.ConversationStatusResolved && retriedMsg.MessageType == domain.MessageTypeIncoming {
+			_ = h.convRepo.UpdateStatus(accountID, conv.ID, domain.ConversationStatusOpen, nil)
+		} else {
+			_ = h.convRepo.TouchActivity(accountID, conv.ID)
+		}
+	}
+
+	// Real-time broadcast: dispatch both message.updated AND message.created to ensure all clients (Agents, WebWidgets, Apps) receive and render it
 	if h.hub != nil {
 		h.hub.Broadcast(&ws.Event{
 			Name:           ws.EventMessageUpdated,
@@ -1325,12 +1447,25 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 			ConversationID: uint(convID),
 			Data:           retriedMsg,
 		})
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      accountID,
+			ConversationID: uint(convID),
+			Data:           retriedMsg,
+		})
 	}
 
+	// Trigger automation rules for the retried message
+	if h.automationService != nil && conv != nil {
+		h.automationService.HandleMessageCreated(conv, retriedMsg)
+	}
+
+	// Trigger external webhooks for true HTTP delivery
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(accountID, "message_created", retriedMsg)
 	}
 
+	// Trigger push notification to assigned agent
 	if h.pushService != nil && conv != nil && conv.AssigneeID != nil {
 		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, accountID, service.PushPayload{
 			Title:        "Customer Message Retried",
@@ -1339,6 +1474,11 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 			ResourceID:   conv.ID,
 			ResourceType: "conversation",
 		})
+	}
+
+	// Re-evaluate SLA clocks for outgoing non-private agent messages
+	if h.slaService != nil && conv != nil && retriedMsg.MessageType == domain.MessageTypeOutgoing && !retriedMsg.Private {
+		_, _ = h.slaService.EvaluateConversation(conv)
 	}
 
 	response.Success(c, retriedMsg)

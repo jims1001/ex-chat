@@ -81,6 +81,7 @@ type InboxMetric struct {
 	TotalConversations    int64   `json:"total_conversations"`
 	OpenConversations     int64   `json:"open_conversations"`
 	ResolvedConversations int64   `json:"resolved_conversations"`
+	PendingConversations  int64   `json:"pending_conversations"`
 	AvgFirstResponseTime  float64 `json:"avg_first_response_time,omitempty"`
 	AvgResolutionTime     float64 `json:"avg_resolution_time,omitempty"`
 	AvgReplyTime          float64 `json:"avg_reply_time,omitempty"`

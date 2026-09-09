@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -34,6 +35,13 @@ func (s *RoutingService) IsWithinWorkingHours(inbox *domain.Inbox, t time.Time) 
 
 // CheckAgentCapacity determines if an agent has remaining capacity for a conversation in a specific inbox
 func (s *RoutingService) CheckAgentCapacity(accountID, inboxID, agentID uint, assignmentPolicy *domain.AssignmentPolicy, excludeConvID uint) (hasCapacity bool, currentLoad int64) {
+	if assignmentPolicy == nil && inboxID > 0 {
+		var inbox domain.Inbox
+		if err := s.db.Preload("AssignmentPolicy").First(&inbox, inboxID).Error; err == nil && inbox.AssignmentPolicy != nil {
+			assignmentPolicy = inbox.AssignmentPolicy
+		}
+	}
+
 	// 1. First check if agent is assigned to an AgentCapacityPolicy (per-inbox capacity limits)
 	var accountUser domain.AccountUser
 	if err := s.db.Where("account_id = ? AND user_id = ?", accountID, agentID).First(&accountUser).Error; err == nil {
@@ -47,10 +55,42 @@ func (s *RoutingService) CheckAgentCapacity(accountID, inboxID, agentID uint, as
 				if excludeConvID > 0 {
 					q = q.Where("id != ?", excludeConvID)
 				}
+
+				// Apply ExclusionRules if defined on AgentCapacityPolicy
+				var agentCapPolicy domain.AgentCapacityPolicy
+				if err := s.db.First(&agentCapPolicy, *accountUser.AgentCapacityPolicyID).Error; err == nil && agentCapPolicy.ExclusionRules != "" {
+					var rules struct {
+						ExcludeOlderThanHours int      `json:"exclude_older_than_hours"`
+						ExcludedLabels        []string `json:"excluded_labels"`
+						ExcludeResolved       bool     `json:"exclude_resolved"`
+					}
+					if err := json.Unmarshal([]byte(agentCapPolicy.ExclusionRules), &rules); err == nil {
+						if rules.ExcludeOlderThanHours > 0 {
+							cutoff := time.Now().UTC().Add(-time.Duration(rules.ExcludeOlderThanHours) * time.Hour)
+							q = q.Where("(last_activity_at IS NOT NULL AND last_activity_at >= ?) OR (last_activity_at IS NULL AND created_at >= ?)", cutoff, cutoff)
+						}
+						if len(rules.ExcludedLabels) > 0 {
+							q = q.Where("id NOT IN (SELECT conversation_labels.conversation_id FROM conversation_labels JOIN labels ON labels.id = conversation_labels.label_id WHERE labels.title IN ?)", rules.ExcludedLabels)
+						}
+					}
+				}
+
 				q.Count(&inboxCount)
 				return inboxCount < int64(inboxLimit.ConversationLimit), inboxCount
 			}
-			// If no specific limit for this inbox under this policy, agent has unlimited capacity for this inbox
+			// If no specific limit for this inbox under this policy, check if assignmentPolicy has an AgentCapacityLimit
+			if assignmentPolicy != nil && assignmentPolicy.AgentCapacityLimit > 0 {
+				var inboxCount int64
+				q := s.db.Model(&domain.Conversation{}).
+					Where("account_id = ? AND inbox_id = ? AND assignee_id = ? AND status != ?", accountID, inboxID, agentID, domain.ConversationStatusResolved)
+				if excludeConvID > 0 {
+					q = q.Where("id != ?", excludeConvID)
+				}
+				q.Count(&inboxCount)
+				return inboxCount < int64(assignmentPolicy.AgentCapacityLimit), inboxCount
+			}
+
+			// Otherwise, agent has unlimited capacity for this inbox
 			var totalCount int64
 			s.db.Model(&domain.Conversation{}).Where("account_id = ? AND assignee_id = ? AND status != ?", accountID, agentID, domain.ConversationStatusResolved).Count(&totalCount)
 			return true, totalCount
@@ -253,10 +293,24 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 
 		bestIndex := 0
 		if lastAssigneeID > 0 {
+			found := false
 			for idx, ag := range availableAgents {
 				if ag.ID == lastAssigneeID {
 					bestIndex = (idx + 1) % len(availableAgents)
+					found = true
 					break
+				}
+			}
+			if !found {
+				for idx, ag := range availableAgents {
+					if ag.ID > lastAssigneeID {
+						bestIndex = idx
+						found = true
+						break
+					}
+				}
+				if !found {
+					bestIndex = 0
 				}
 			}
 		}
