@@ -230,11 +230,13 @@ type Conversation struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 
-	Contact  *Contact `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
-	Inbox    *Inbox   `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
-	Assignee *User    `gorm:"foreignKey:AssigneeID" json:"assignee,omitempty"`
-	Team     *Team    `gorm:"foreignKey:TeamID" json:"team,omitempty"`
-	Labels   []Label  `gorm:"many2many:conversation_labels;" json:"labels,omitempty"`
+	Contact    *Contact    `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
+	Inbox      *Inbox      `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
+	Assignee   *User       `gorm:"foreignKey:AssigneeID" json:"assignee,omitempty"`
+	Team       *Team       `gorm:"foreignKey:TeamID" json:"team,omitempty"`
+	Labels     []Label     `gorm:"many2many:conversation_labels;" json:"labels,omitempty"`
+	AppliedSLA *AppliedSLA `gorm:"foreignKey:ConversationID" json:"applied_sla,omitempty"`
+	SLAEvents  []SLAEvent  `gorm:"foreignKey:ConversationID" json:"sla_events,omitempty"`
 }
 
 // Message represents an individual text or event entry in a conversation
@@ -741,6 +743,53 @@ type SLAPolicy struct {
 	OnlyDuringBusinessHours     bool      `gorm:"default:true" json:"only_during_business_hours"`
 	CreatedAt                   time.Time `json:"created_at"`
 	UpdatedAt                   time.Time `json:"updated_at"`
+}
+
+// AppliedSLA status constants
+const (
+	AppliedSLAStatusActive           = "active"
+	AppliedSLAStatusHit              = "hit"
+	AppliedSLAStatusMissed           = "missed"
+	AppliedSLAStatusActiveWithMisses = "active_with_misses"
+
+	SLAEventTypeFRT = "frt"
+	SLAEventTypeNRT = "nrt"
+	SLAEventTypeRT  = "rt"
+)
+
+// AppliedSLA tracks the application and compliance status of an SLA policy on a conversation
+type AppliedSLA struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	AccountID      uint      `gorm:"index;not null" json:"account_id"`
+	ConversationID uint      `gorm:"index;not null" json:"conversation_id"`
+	SLAPolicyID    uint      `gorm:"index;not null" json:"sla_policy_id"`
+	SLAStatus      string    `gorm:"size:50;default:'active';index" json:"sla_status"` // active, hit, missed, active_with_misses
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+
+	Account      *Account      `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	Conversation *Conversation `gorm:"foreignKey:ConversationID" json:"conversation,omitempty"`
+	SLAPolicy    *SLAPolicy    `gorm:"foreignKey:SLAPolicyID" json:"sla_policy,omitempty"`
+	SLAEvents    []SLAEvent    `gorm:"foreignKey:AppliedSLAID" json:"sla_events,omitempty"`
+}
+
+// SLAEvent records a specific SLA breach or threshold event
+type SLAEvent struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	AppliedSLAID   uint      `gorm:"index;not null" json:"applied_sla_id"`
+	ConversationID uint      `gorm:"index;not null" json:"conversation_id"`
+	AccountID      uint      `gorm:"index;not null" json:"account_id"`
+	SLAPolicyID    uint      `gorm:"index;not null" json:"sla_policy_id"`
+	InboxID        uint      `gorm:"index;not null" json:"inbox_id"`
+	EventType      string    `gorm:"size:50;not null;index" json:"event_type"` // frt, nrt, rt
+	Meta           string    `gorm:"type:text" json:"meta"`                     // e.g. {"message_id": 123}
+	CreatedAt      time.Time `gorm:"index" json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+
+	AppliedSLA   *AppliedSLA   `gorm:"foreignKey:AppliedSLAID" json:"applied_sla,omitempty"`
+	Conversation *Conversation `gorm:"foreignKey:ConversationID" json:"conversation,omitempty"`
+	SLAPolicy    *SLAPolicy    `gorm:"foreignKey:SLAPolicyID" json:"sla_policy,omitempty"`
+	Inbox        *Inbox        `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
 }
 
 // ----------------- EXT 机器人代理 (AgentBot) -----------------

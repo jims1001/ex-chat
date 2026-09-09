@@ -2,20 +2,34 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
 type SLAService struct {
-	db *gorm.DB
+	db             *gorm.DB
+	appliedSLARepo *repository.AppliedSLARepository
 }
 
 func NewSLAService(db *gorm.DB) *SLAService {
-	return &SLAService{db: db}
+	return &SLAService{
+		db:             db,
+		appliedSLARepo: repository.NewAppliedSLARepository(db),
+	}
+}
+
+func (s *SLAService) SetAppliedSLARepo(repo *repository.AppliedSLARepository) {
+	s.appliedSLARepo = repo
+}
+
+func (s *SLAService) GetAppliedSLARepo() *repository.AppliedSLARepository {
+	return s.appliedSLARepo
 }
 
 // resolvePolicy selects the most specific SLA policy for a conversation
@@ -273,6 +287,11 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 	now := time.Now().UTC()
 	var breaches []domain.SLABreachLog
 
+	var appliedSLA *domain.AppliedSLA
+	if s.appliedSLARepo != nil {
+		appliedSLA, _ = s.appliedSLARepo.EnsureAppliedSLA(conv.AccountID, conv.ID, applicablePolicy.ID)
+	}
+
 	// 1. First Response Time Evaluation
 	startTime := conv.CreatedAt
 	var firstCustomerMsg domain.Message
@@ -289,6 +308,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 		"resolution_due_at":    resDeadline,
 	}
 
+	isFRTBreached := false
 	if applicablePolicy.FirstResponseTimeThreshold > 0 {
 		var firstAgentMsg domain.Message
 		hasAgentReply := false
@@ -299,7 +319,6 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 			hasAgentReply = true
 		}
 
-		isFRTBreached := false
 		var actualSec int
 		var breachTime time.Time
 
@@ -320,6 +339,18 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 		}
 
 		if isFRTBreached {
+			if appliedSLA != nil && s.appliedSLARepo != nil {
+				_ = s.appliedSLARepo.RecordSLAEvent(&domain.SLAEvent{
+					AppliedSLAID:   appliedSLA.ID,
+					ConversationID: conv.ID,
+					AccountID:      conv.AccountID,
+					SLAPolicyID:    applicablePolicy.ID,
+					InboxID:        conv.InboxID,
+					EventType:      "frt",
+					CreatedAt:      breachTime,
+				})
+			}
+
 			var existing int64
 			_ = s.db.Model(&domain.SLABreachLog{}).
 				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "first_response").
@@ -351,11 +382,33 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 	}
 
 	// 2. Next Response Time Evaluation
+	isNRTBreached := false
 	if applicablePolicy.NextResponseTimeThreshold > 0 {
-		nDue, isNRTBreached, actualNRTSec, nrtBreachTime := s.EvaluateNextResponse(conv, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
+		nDue, breached, actualNRTSec, nrtBreachTime := s.EvaluateNextResponse(conv, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
+		isNRTBreached = breached
 		updates["next_response_due_at"] = nDue
 
 		if isNRTBreached {
+			if appliedSLA != nil && s.appliedSLARepo != nil {
+				var lastIncomingMsg domain.Message
+				_ = s.db.Where("conversation_id = ? AND (message_type = ? OR sender_type IN ('Contact', 'contact'))", conv.ID, domain.MessageTypeIncoming).
+					Order("created_at DESC, id DESC").First(&lastIncomingMsg).Error
+				nrtMeta := ""
+				if lastIncomingMsg.ID > 0 {
+					nrtMeta = fmt.Sprintf("{\"message_id\":%d}", lastIncomingMsg.ID)
+				}
+				_ = s.appliedSLARepo.RecordSLAEvent(&domain.SLAEvent{
+					AppliedSLAID:   appliedSLA.ID,
+					ConversationID: conv.ID,
+					AccountID:      conv.AccountID,
+					SLAPolicyID:    applicablePolicy.ID,
+					InboxID:        conv.InboxID,
+					EventType:      "nrt",
+					Meta:           nrtMeta,
+					CreatedAt:      nrtBreachTime,
+				})
+			}
+
 			var existing int64
 			_ = s.db.Model(&domain.SLABreachLog{}).
 				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "next_response").
@@ -387,8 +440,8 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 	}
 
 	// 3. Resolution Time Evaluation
+	isResBreached := false
 	if applicablePolicy.ResolutionTimeThreshold > 0 {
-		isResBreached := false
 		var actualResSec int
 		var resBreachTime time.Time
 
@@ -409,6 +462,18 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 		}
 
 		if isResBreached {
+			if appliedSLA != nil && s.appliedSLARepo != nil {
+				_ = s.appliedSLARepo.RecordSLAEvent(&domain.SLAEvent{
+					AppliedSLAID:   appliedSLA.ID,
+					ConversationID: conv.ID,
+					AccountID:      conv.AccountID,
+					SLAPolicyID:    applicablePolicy.ID,
+					InboxID:        conv.InboxID,
+					EventType:      "rt",
+					CreatedAt:      resBreachTime,
+				})
+			}
+
 			var existing int64
 			_ = s.db.Model(&domain.SLABreachLog{}).
 				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "resolution").
@@ -440,6 +505,43 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 			}
 		}
 	}
+
+	// 4. Status determination for AppliedSLA and Conversation
+	hasAnyBreach := isFRTBreached || isNRTBreached || isResBreached
+	if !hasAnyBreach && appliedSLA != nil {
+		var count int64
+		_ = s.db.Model(&domain.SLAEvent{}).Where("applied_sla_id = ?", appliedSLA.ID).Count(&count).Error
+		if count > 0 {
+			hasAnyBreach = true
+		}
+	}
+
+	var appliedStatus string
+	var convStatus string
+
+	if conv.Status == domain.ConversationStatusResolved {
+		if hasAnyBreach {
+			appliedStatus = "missed"
+			convStatus = "missed"
+		} else {
+			appliedStatus = "hit"
+			convStatus = "hit"
+		}
+	} else {
+		// Open, pending, snoozed
+		if hasAnyBreach {
+			appliedStatus = "active_with_misses"
+			convStatus = "breached"
+		} else {
+			appliedStatus = "active"
+			convStatus = "active"
+		}
+	}
+
+	if appliedSLA != nil && s.appliedSLARepo != nil {
+		_ = s.appliedSLARepo.UpdateSLAStatus(conv.AccountID, appliedSLA.ID, appliedStatus)
+	}
+	updates["sla_status"] = convStatus
 
 	_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error
 	return breaches, nil

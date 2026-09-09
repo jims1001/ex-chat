@@ -317,6 +317,12 @@ func (h *ConversationHandler) ToggleStatus(c *gin.Context) {
 	)
 
 	conv, _ := h.convRepo.FindByID(accountID, uint(id))
+	if h.slaService != nil && conv != nil {
+		_, _ = h.slaService.EvaluateConversation(conv)
+		if updated, err := h.convRepo.FindByID(accountID, uint(id)); err == nil && updated != nil {
+			conv = updated
+		}
+	}
 	if h.automationService != nil && conv != nil {
 		h.automationService.HandleConversationUpdated(conv)
 	}

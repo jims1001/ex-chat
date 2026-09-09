@@ -81,6 +81,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	contactExtensionRepo := repository.NewContactExtensionRepository(db)
 	companyExtensionRepo := repository.NewCompanyExtensionRepository(db)
 	csatExtensionRepo := repository.NewCSATExtensionRepository(db)
+	appliedSLARepo := repository.NewAppliedSLARepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -92,6 +93,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 		webhookService.SetHTTPClient(globalWebhookHTTPClient)
 	}
 	slaService := service.NewSLAService(db)
+	slaService.SetAppliedSLARepo(appliedSLARepo)
 	campaignService := service.NewCampaignService(db, convRepo, msgRepo, contactRepo)
 	emailService := service.NewEmailService(db)
 
@@ -143,6 +145,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	assignmentPolicyHandler := handler.NewAssignmentPolicyHandler(assignmentPolicyRepo)
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
 	csatHandler := handler.NewCSATHandler(csatExtensionRepo)
+	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService)
 
 	// 后台周期巡检与调度引擎 (Background Schedulers)
 	campaignService.StartScheduledCampaignWorker(context.Background(), 1*time.Minute)
@@ -517,13 +520,21 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			tenant.POST("/automation_rules/:id/clone", advancedHandler.CloneAutomationRule)
 			tenant.POST("/automation_rules/:id/duplicate", advancedHandler.CloneAutomationRule)
 
-			// 服务水平协议 (RPT / SLA)
+			// 服务水平协议与应用记录 (RPT / SLA & Applied SLA)
 			tenant.GET("/sla_policies", advancedHandler.ListSLAPolicies)
 			tenant.POST("/sla_policies", advancedHandler.CreateSLAPolicy)
 			tenant.GET("/sla_policies/:id", advancedHandler.GetSLAPolicy)
 			tenant.PUT("/sla_policies/:id", advancedHandler.UpdateSLAPolicy)
 			tenant.DELETE("/sla_policies/:id", advancedHandler.DeleteSLAPolicy)
-			tenant.GET("/conversations/:id/sla", advancedHandler.GetConversationSLA)
+			tenant.GET("/conversations/:id/sla", appliedSLAHandler.GetConversationAppliedSLA)
+			tenant.POST("/conversations/:id/sla", appliedSLAHandler.ApplySLA)
+			tenant.DELETE("/conversations/:id/sla", appliedSLAHandler.RemoveSLA)
+			tenant.GET("/conversations/:id/applied_sla", appliedSLAHandler.GetConversationAppliedSLA)
+			tenant.POST("/conversations/:id/applied_sla", appliedSLAHandler.ApplySLA)
+			tenant.DELETE("/conversations/:id/applied_sla", appliedSLAHandler.RemoveSLA)
+			tenant.GET("/applied_slas", appliedSLAHandler.ListAppliedSLAs)
+			tenant.GET("/applied_slas/metrics", appliedSLAHandler.GetMetrics)
+			tenant.GET("/applied_slas/download", appliedSLAHandler.Download)
 			tenant.POST("/sla_policies/process", advancedHandler.ProcessSLA)
 			tenant.POST("/sla/process", advancedHandler.ProcessSLA)
 			tenant.POST("/slas/evaluate", advancedHandler.ProcessSLA)
@@ -753,6 +764,11 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			reports.GET("/first_response_distribution", reportHandler.GetFirstResponseDistribution)
 			reports.GET("/first_response_time_distribution", reportHandler.GetFirstResponseDistribution)
 			reports.GET("/conversations/export", reportHandler.ExportConversationsCSV)
+			reports.GET("/applied_slas", appliedSLAHandler.ListAppliedSLAs)
+			reports.GET("/applied_slas/metrics", appliedSLAHandler.GetMetrics)
+			reports.GET("/applied_slas/download", appliedSLAHandler.Download)
+			reports.GET("/sla/metrics", appliedSLAHandler.GetMetrics)
+			reports.GET("/sla/download", appliedSLAHandler.Download)
 		}
 
 		// 企业配额与计费结算 (ENT / Limits & Billing)
