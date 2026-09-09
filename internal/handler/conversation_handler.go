@@ -29,6 +29,7 @@ type ConversationHandler struct {
 	pushService       *service.PushService
 	slaService        *service.SLAService
 	emailService      *service.EmailService
+	campaignService   *service.CampaignService
 	hub               *ws.Hub
 }
 
@@ -69,6 +70,10 @@ func (h *ConversationHandler) SetNotificationRepo(nr *repository.NotificationRep
 
 func (h *ConversationHandler) SetSLAService(ss *service.SLAService) {
 	h.slaService = ss
+}
+
+func (h *ConversationHandler) SetCampaignService(cs *service.CampaignService) {
+	h.campaignService = cs
 }
 
 type CreateConversationRequest struct {
@@ -232,6 +237,9 @@ func (h *ConversationHandler) CreateConversation(c *gin.Context) {
 	}
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(accountID, "conversation_created", fullConv)
+	}
+	if h.campaignService != nil {
+		_, _ = h.campaignService.TriggerOngoingCampaignForContact(accountID, conv.InboxID, conv.ContactID, conv.ID)
 	}
 	response.Created(c, fullConv)
 }
@@ -616,6 +624,9 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 	}
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(inbox.AccountID, "conversation_created", fullConv)
+	}
+	if h.campaignService != nil {
+		_, _ = h.campaignService.TriggerOngoingCampaignForContact(inbox.AccountID, conv.InboxID, conv.ContactID, conv.ID)
 	}
 	response.Created(c, gin.H{
 		"conversation": fullConv,

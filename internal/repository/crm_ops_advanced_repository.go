@@ -132,34 +132,6 @@ func (r *CompanyRepository) DisassociateContact(ctx context.Context, accountID, 
 		Update("company_id", nil).Error
 }
 
-// CampaignRepository manages outbound campaigns
-type CampaignRepository struct {
-	db *gorm.DB
-}
-
-func NewCampaignRepository(db *gorm.DB) *CampaignRepository {
-	return &CampaignRepository{db: db}
-}
-
-func (r *CampaignRepository) Create(ctx context.Context, camp *domain.Campaign) error {
-	return r.db.WithContext(ctx).Create(camp).Error
-}
-
-func (r *CampaignRepository) List(ctx context.Context, accountID uint) ([]domain.Campaign, error) {
-	var list []domain.Campaign
-	err := r.db.WithContext(ctx).Where("account_id = ?", accountID).Find(&list).Error
-	return list, err
-}
-
-func (r *CampaignRepository) GetByID(ctx context.Context, accountID, id uint) (*domain.Campaign, error) {
-	var camp domain.Campaign
-	err := r.db.WithContext(ctx).Where("account_id = ? AND id = ?", accountID, id).First(&camp).Error
-	if err != nil {
-		return nil, err
-	}
-	return &camp, nil
-}
-
 // SLARepository manages Service Level Agreements
 type SLARepository struct {
 	db *gorm.DB

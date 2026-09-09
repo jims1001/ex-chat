@@ -303,56 +303,6 @@ func (h *AdvancedHandler) RemoveCompanyContact(c *gin.Context) {
 	response.Success(c, gin.H{"unlinked": true})
 }
 
-// ----------------- Campaign Handlers -----------------
-
-type CreateCampaignReq struct {
-	InboxID      uint       `json:"inbox_id" binding:"required"`
-	Title        string     `json:"title" binding:"required"`
-	Message      string     `json:"message" binding:"required"`
-	CampaignType string     `json:"campaign_type"`
-	Audience     string     `json:"audience"`
-	ScheduledAt  *time.Time `json:"scheduled_at"`
-}
-
-func (h *AdvancedHandler) CreateCampaign(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	var req CreateCampaignReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	camp := domain.Campaign{
-		AccountID:    uint(accID),
-		InboxID:      req.InboxID,
-		Title:        req.Title,
-		Message:      req.Message,
-		CampaignType: req.CampaignType,
-		Audience:     req.Audience,
-		ScheduledAt:  req.ScheduledAt,
-		Status:       "scheduled",
-	}
-	if camp.CampaignType == "" {
-		camp.CampaignType = "one_off"
-	}
-
-	if err := h.campaignRepo.Create(c.Request.Context(), &camp); err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	response.Created(c, camp)
-}
-
-func (h *AdvancedHandler) ListCampaigns(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	campaigns, err := h.campaignRepo.List(c.Request.Context(), uint(accID))
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	response.Success(c, campaigns)
-}
 
 // ----------------- SLA Handlers -----------------
 
@@ -1882,27 +1832,7 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 	})
 }
 
-// ----------------- Campaign Dispatch & SLA Processors -----------------
-
-func (h *AdvancedHandler) TriggerCampaign(c *gin.Context) {
-	accID := c.GetUint("account_id")
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Invalid campaign ID")
-		return
-	}
-
-	if h.campaignService != nil {
-		sentCount, err := h.campaignService.TriggerCampaign(accID, uint(id))
-		if err != nil {
-			response.BadRequest(c, err.Error())
-			return
-		}
-		response.Success(c, gin.H{"status": "completed", "sent_count": sentCount})
-		return
-	}
-	response.Success(c, gin.H{"status": "completed"})
-}
+// ----------------- SLA Processors -----------------
 
 func (h *AdvancedHandler) ProcessSLA(c *gin.Context) {
 	accID := c.GetUint("account_id")

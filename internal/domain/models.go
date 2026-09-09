@@ -532,6 +532,7 @@ type CampaignDelivery struct {
 	ContactID      uint      `gorm:"index;not null" json:"contact_id"`
 	ConversationID uint      `json:"conversation_id"`
 	Status         string    `gorm:"size:50;default:'sent'" json:"status"`
+	ErrorMessage   string    `gorm:"size:255" json:"error_message,omitempty"`
 	SentAt         time.Time `json:"sent_at"`
 }
 
@@ -682,18 +683,24 @@ type Company struct {
 
 // Campaign defines targeted one-off or recurring outbound message campaigns
 type Campaign struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	AccountID    uint       `gorm:"index;not null" json:"account_id"`
-	InboxID      uint       `gorm:"index;not null" json:"inbox_id"`
-	Title        string     `gorm:"size:255;not null" json:"title"`
-	Description  string     `gorm:"type:text" json:"description"`
-	Message      string     `gorm:"type:text;not null" json:"message"`
-	CampaignType string     `gorm:"size:50;default:'one_off'" json:"campaign_type"` // one_off, ongoing
-	Status       string     `gorm:"size:50;default:'draft'" json:"status"`         // draft, scheduled, completed
-	ScheduledAt  *time.Time `json:"scheduled_at"`
-	Audience     string     `gorm:"type:text" json:"audience"` // JSON filter
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	AccountID       uint       `gorm:"index;not null" json:"account_id"`
+	InboxID         uint       `gorm:"index;not null" json:"inbox_id"`
+	Title           string     `gorm:"size:255;not null" json:"title"`
+	Description     string     `gorm:"type:text" json:"description"`
+	Message         string     `gorm:"type:text;not null" json:"message"`
+	CampaignType    string     `gorm:"size:50;default:'one_off'" json:"campaign_type"` // one_off, ongoing
+	Status          string     `gorm:"size:50;default:'draft'" json:"status"`         // draft, scheduled, active, paused, completed, cancelled
+	ScheduledAt     *time.Time `json:"scheduled_at"`
+	Audience        string     `gorm:"type:text" json:"audience"`                     // JSON filter
+	TriggerRules    string     `gorm:"type:text" json:"trigger_rules,omitempty"`       // URL/metadata/event filter for ongoing
+	SenderID        *uint      `json:"sender_id,omitempty"`
+	DeliveriesCount int64      `gorm:"-" json:"deliveries_count,omitempty"`
+	SentCount       int64      `gorm:"-" json:"sent_count,omitempty"`
+	DeliveredCount  int64      `gorm:"-" json:"delivered_count,omitempty"`
+	FailedCount     int64      `gorm:"-" json:"failed_count,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // ----------------- RPT 服务水平协议 (SLA) -----------------
