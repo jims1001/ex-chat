@@ -12,6 +12,8 @@ type Config struct {
 	DBPath             string
 	JWTSecret          string
 	JWTExpirationHours int
+	LogLevel           string
+	LogFormat          string
 }
 
 func LoadConfig() *Config {
@@ -25,6 +27,8 @@ func LoadConfig() *Config {
 	if err != nil {
 		jwtExpHours = 72
 	}
+	logLevel := getEnv("LOG_LEVEL", "info")
+	logFormat := getEnv("LOG_FORMAT", "json")
 
 	return &Config{
 		Port:               port,
@@ -33,6 +37,8 @@ func LoadConfig() *Config {
 		DBPath:             dbPath,
 		JWTSecret:          jwtSecret,
 		JWTExpirationHours: jwtExpHours,
+		LogLevel:           logLevel,
+		LogFormat:          logFormat,
 	}
 }
 

@@ -5,16 +5,34 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 )
 
 type contextKey string
 
 const (
-	KeyRequestID contextKey = "request_id"
-	KeyAccountID contextKey = "account_id"
-	KeyUserID    contextKey = "user_id"
+	KeyRequestID     contextKey = "request_id"
+	KeyCorrelationID contextKey = "correlation_id"
+	KeyAccountID     contextKey = "account_id"
+	KeyUserID        contextKey = "user_id"
+	KeyActorType     contextKey = "actor_type"
+	KeyActorID       contextKey = "actor_id"
 )
+
+// ParseLevel parses a log level string into slog.Level
+func ParseLevel(lvl string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(lvl)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
 
 var (
 	defaultLogger *slog.Logger
@@ -52,6 +70,16 @@ func Get() *slog.Logger {
 	return defaultLogger
 }
 
+// WithComponent returns a logger scoped to a specific architectural component
+func WithComponent(component string) *slog.Logger {
+	return Get().With("component", component)
+}
+
+// FromContext is an alias for WithContext
+func FromContext(ctx context.Context) *slog.Logger {
+	return WithContext(ctx)
+}
+
 // WithContext returns a logger decorated with fields extracted from context
 func WithContext(ctx context.Context) *slog.Logger {
 	l := Get()
@@ -59,15 +87,24 @@ func WithContext(ctx context.Context) *slog.Logger {
 		return l
 	}
 
-	attrs := make([]any, 0, 6)
+	attrs := make([]any, 0, 10)
 	if reqID, ok := ctx.Value(KeyRequestID).(string); ok && reqID != "" {
 		attrs = append(attrs, "request_id", reqID)
+	}
+	if corrID, ok := ctx.Value(KeyCorrelationID).(string); ok && corrID != "" {
+		attrs = append(attrs, "correlation_id", corrID)
 	}
 	if accID := ctx.Value(KeyAccountID); accID != nil {
 		attrs = append(attrs, "account_id", accID)
 	}
 	if userID := ctx.Value(KeyUserID); userID != nil {
 		attrs = append(attrs, "user_id", userID)
+	}
+	if actorType, ok := ctx.Value(KeyActorType).(string); ok && actorType != "" {
+		attrs = append(attrs, "actor_type", actorType)
+	}
+	if actorID := ctx.Value(KeyActorID); actorID != nil {
+		attrs = append(attrs, "actor_id", actorID)
 	}
 
 	if len(attrs) > 0 {
@@ -81,12 +118,24 @@ func ContextWithRequestID(ctx context.Context, requestID string) context.Context
 	return context.WithValue(ctx, KeyRequestID, requestID)
 }
 
+func ContextWithCorrelationID(ctx context.Context, correlationID string) context.Context {
+	return context.WithValue(ctx, KeyCorrelationID, correlationID)
+}
+
 func ContextWithAccountID(ctx context.Context, accountID any) context.Context {
 	return context.WithValue(ctx, KeyAccountID, accountID)
 }
 
 func ContextWithUserID(ctx context.Context, userID any) context.Context {
 	return context.WithValue(ctx, KeyUserID, userID)
+}
+
+func ContextWithActor(ctx context.Context, actorType string, actorID any) context.Context {
+	ctx = context.WithValue(ctx, KeyActorType, actorType)
+	if actorID != nil {
+		ctx = context.WithValue(ctx, KeyActorID, actorID)
+	}
+	return ctx
 }
 
 // Convenience package-level logging methods

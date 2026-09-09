@@ -3,6 +3,8 @@ package ws
 import (
 	"encoding/json"
 	"sync"
+
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 )
 
 // Event names following Chatwoot standards
@@ -59,7 +61,14 @@ func (h *Hub) Run() {
 		case client := <-h.register:
 			h.clientsMu.Lock()
 			h.clients[client] = true
+			total := len(h.clients)
 			h.clientsMu.Unlock()
+			logger.WithComponent("websocket").Info("client connected",
+				"is_agent", client.IsAgent,
+				"user_id", client.UserID,
+				"account_id", client.AccountID,
+				"total_clients", total,
+			)
 
 		case client := <-h.unregister:
 			h.clientsMu.Lock()
@@ -67,9 +76,21 @@ func (h *Hub) Run() {
 				delete(h.clients, client)
 				close(client.send)
 			}
+			total := len(h.clients)
 			h.clientsMu.Unlock()
+			logger.WithComponent("websocket").Info("client disconnected",
+				"is_agent", client.IsAgent,
+				"user_id", client.UserID,
+				"account_id", client.AccountID,
+				"total_clients", total,
+			)
 
 		case event := <-h.broadcast:
+			logger.WithComponent("websocket").Debug("broadcasting websocket event",
+				"event", event.Name,
+				"account_id", event.AccountID,
+				"conversation_id", event.ConversationID,
+			)
 			h.clientsMu.RLock()
 			msgBytes, err := json.Marshal(event)
 			if err != nil {

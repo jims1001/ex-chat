@@ -9,6 +9,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -108,6 +109,13 @@ func (h *AuthHandler) SignUp(c *gin.Context) {
 
 	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
 
+	logger.WithComponent("auth").Info("new user registered",
+		"user_id", user.ID,
+		"email", user.Email,
+		"account_id", account.ID,
+		"client_ip", c.ClientIP(),
+	)
+
 	response.Created(c, gin.H{
 		"user":     user,
 		"token":    token,
@@ -126,11 +134,13 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 
 	user, err := h.userRepo.FindByEmail(req.Email)
 	if err != nil || user == nil {
+		logger.WithComponent("auth").Warn("sign-in failed: user not found", "email", req.Email, "client_ip", c.ClientIP())
 		response.Unauthorized(c, "Invalid email or password")
 		return
 	}
 
 	if !auth.CheckPasswordHash(req.Password, user.PasswordHash) {
+		logger.WithComponent("auth").Warn("sign-in failed: invalid password", "user_id", user.ID, "email", req.Email, "client_ip", c.ClientIP())
 		response.Unauthorized(c, "Invalid email or password")
 		return
 	}
@@ -141,6 +151,7 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 		if err == nil && profile != nil && profile.Enabled {
 			if req.MFAOTP == "" {
 				// Block login: prompt client for MFA token
+				logger.WithComponent("auth").Info("sign-in mfa challenge required", "user_id", user.ID, "email", req.Email)
 				response.Unauthorized(c, "Multi-factor authentication required")
 				return
 			}
@@ -156,11 +167,13 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 						bBytes, _ := json.Marshal(backupCodes)
 						profile.BackupCodes = string(bBytes)
 						_ = h.enterpriseRepo.SaveMFAProfile(profile)
+						logger.WithComponent("auth").Info("sign-in backup code used", "user_id", user.ID, "remaining_codes", len(backupCodes))
 						break
 					}
 				}
 			}
 			if !valid {
+				logger.WithComponent("auth").Warn("sign-in failed: invalid mfa otp", "user_id", user.ID, "email", req.Email)
 				response.Unauthorized(c, "Invalid MFA verification code")
 				return
 			}
@@ -169,11 +182,18 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 
 	token, err := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
 	if err != nil {
+		logger.WithComponent("auth").Error("failed to generate auth token", "user_id", user.ID, "error", err.Error())
 		response.InternalError(c, "Failed to generate authentication token")
 		return
 	}
 
 	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
+
+	logger.WithComponent("auth").Info("user signed in successfully",
+		"user_id", user.ID,
+		"email", user.Email,
+		"client_ip", c.ClientIP(),
+	)
 
 	response.Success(c, gin.H{
 		"user":     user,

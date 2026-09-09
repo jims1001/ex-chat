@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -426,6 +427,13 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 				if err := s.db.Create(&breach).Error; err == nil {
 					breaches = append(breaches, breach)
 					updates["sla_status"] = "breached"
+					logger.WithComponent("sla").Warn("sla resolution breach recorded",
+						"conversation_id", conv.ID,
+						"account_id", conv.AccountID,
+						"policy_id", applicablePolicy.ID,
+						"threshold_seconds", applicablePolicy.ResolutionTimeThreshold,
+						"actual_seconds", actualResSec,
+					)
 				}
 			} else {
 				updates["sla_status"] = "breached"
@@ -492,5 +500,9 @@ func (s *SLAService) ProcessAllBreaches() int {
 			totalBreaches += len(b)
 		}
 	}
+	logger.WithComponent("sla").Info("sla periodic evaluation executed",
+		"accounts_count", len(accounts),
+		"breaches_count", totalBreaches,
+	)
 	return totalBreaches
 }

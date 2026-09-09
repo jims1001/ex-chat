@@ -11,6 +11,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -147,6 +148,20 @@ func (s *PushService) Dispatch(ctx context.Context, userID, accountID uint, payl
 
 		if status == "delivered" {
 			successCount++
+			logger.WithComponent("push").Info("push notification delivered",
+				"user_id", userID,
+				"account_id", accountID,
+				"status", status,
+				"http_code", httpCode,
+			)
+		} else {
+			logger.WithComponent("push").Warn("push notification delivery failed",
+				"user_id", userID,
+				"account_id", accountID,
+				"status", status,
+				"http_code", httpCode,
+				"error", errorDetail,
+			)
 		}
 	}
 

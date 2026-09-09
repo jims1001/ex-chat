@@ -67,4 +67,38 @@ func TestLogger(t *testing.T) {
 			t.Errorf("unexpected text log output: %s", output)
 		}
 	})
+
+	t.Run("ParseLevel Values", func(t *testing.T) {
+		if logger.ParseLevel("debug") != slog.LevelDebug {
+			t.Errorf("expected LevelDebug, got %v", logger.ParseLevel("debug"))
+		}
+		if logger.ParseLevel("WARN") != slog.LevelWarn {
+			t.Errorf("expected LevelWarn, got %v", logger.ParseLevel("WARN"))
+		}
+		if logger.ParseLevel("error") != slog.LevelError {
+			t.Errorf("expected LevelError, got %v", logger.ParseLevel("error"))
+		}
+		if logger.ParseLevel("unknown") != slog.LevelInfo {
+			t.Errorf("expected LevelInfo fallback, got %v", logger.ParseLevel("unknown"))
+		}
+	})
+
+	t.Run("WithComponent Scoping", func(t *testing.T) {
+		buf.Reset()
+		logger.SetOutput(buf, slog.LevelInfo, "json")
+
+		authLog := logger.WithComponent("auth")
+		authLog.Info("user logged in", "user_id", 101)
+
+		var entry map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+			t.Fatalf("failed to parse JSON log: %v", err)
+		}
+		if entry["component"] != "auth" {
+			t.Errorf("expected component auth, got %v", entry["component"])
+		}
+		if entry["user_id"] != float64(101) {
+			t.Errorf("expected user_id 101, got %v", entry["user_id"])
+		}
+	})
 }

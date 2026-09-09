@@ -12,6 +12,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -219,6 +220,13 @@ func (h *ConversationHandler) CreateConversation(c *gin.Context) {
 	}
 
 	fullConv, _ := h.convRepo.FindByID(accountID, conv.ID)
+	logger.WithComponent("conversation").Info("conversation created",
+		"conversation_id", conv.ID,
+		"account_id", accountID,
+		"inbox_id", req.InboxID,
+		"contact_id", req.ContactID,
+		"priority", priority,
+	)
 	if h.automationService != nil {
 		h.automationService.HandleConversationCreated(&conv)
 	}
@@ -285,9 +293,20 @@ func (h *ConversationHandler) ToggleStatus(c *gin.Context) {
 	}
 
 	if err := h.convRepo.UpdateStatus(accountID, uint(id), req.Status, req.SnoozedUntil); err != nil {
+		logger.WithComponent("conversation").Error("failed to update conversation status",
+			"conversation_id", id,
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to update conversation status")
 		return
 	}
+
+	logger.WithComponent("conversation").Info("conversation status updated",
+		"conversation_id", id,
+		"account_id", accountID,
+		"new_status", req.Status,
+	)
 
 	conv, _ := h.convRepo.FindByID(accountID, uint(id))
 	if h.automationService != nil && conv != nil {
@@ -347,9 +366,21 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 	}
 
 	if err := h.convRepo.AssignWithTeam(accountID, uint(id), req.AssigneeID, req.TeamID); err != nil {
+		logger.WithComponent("conversation").Error("failed to assign conversation",
+			"conversation_id", id,
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to assign conversation")
 		return
 	}
+
+	logger.WithComponent("conversation").Info("conversation assigned",
+		"conversation_id", id,
+		"account_id", accountID,
+		"assignee_id", req.AssigneeID,
+		"team_id", req.TeamID,
+	)
 
 	conv, _ := h.convRepo.FindByID(accountID, uint(id))
 	if h.automationService != nil && conv != nil {
@@ -446,9 +477,23 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 	}
 
 	if err := h.msgRepo.Create(&msg); err != nil {
+		logger.WithComponent("message").Error("failed to create message",
+			"conversation_id", conv.ID,
+			"account_id", accountID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, "Failed to create message")
 		return
 	}
+
+	logger.WithComponent("message").Info("message created",
+		"message_id", msg.ID,
+		"conversation_id", conv.ID,
+		"account_id", accountID,
+		"sender_type", msg.SenderType,
+		"sender_id", msg.SenderID,
+		"private", msg.Private,
+	)
 
 	_ = h.convRepo.TouchActivity(accountID, conv.ID)
 
@@ -867,10 +912,23 @@ func (h *ConversationHandler) SendTranscript(c *gin.Context) {
 
 	if h.emailService != nil {
 		if err := h.emailService.SendTranscript(c.Request.Context(), accountID, conv, messages, targetEmail); err != nil {
+			logger.WithComponent("conversation").Error("failed to send transcript email",
+				"conversation_id", conv.ID,
+				"account_id", accountID,
+				"target_email", targetEmail,
+				"error", err.Error(),
+			)
 			response.InternalError(c, "Failed to send transcript email: "+err.Error())
 			return
 		}
 	}
+
+	logger.WithComponent("conversation").Info("transcript email sent successfully",
+		"conversation_id", conv.ID,
+		"account_id", accountID,
+		"target_email", targetEmail,
+		"messages_count", len(messages),
+	)
 
 	response.Success(c, gin.H{
 		"message":        "Transcript sent successfully",

@@ -9,12 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -98,6 +98,14 @@ func (s *WebhookService) deliverWithRetry(webhook domain.Webhook, eventName stri
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				// Successfully delivered
 				s.recordDelivery(webhook.AccountID, webhook.ID, eventName, webhook.URL, string(bodyBytes), lastStatusCode, lastResponseBody, attempt, "delivered")
+				logger.WithComponent("webhook").Info("webhook delivered successfully",
+					"webhook_id", webhook.ID,
+					"account_id", webhook.AccountID,
+					"event", eventName,
+					"url", webhook.URL,
+					"status_code", lastStatusCode,
+					"attempts", attempt,
+				)
 				return
 			}
 		} else {
@@ -114,7 +122,14 @@ func (s *WebhookService) deliverWithRetry(webhook domain.Webhook, eventName stri
 	if lastResponseBody == "" && lastErr != nil {
 		lastResponseBody = lastErr.Error()
 	}
-	log.Printf("[WebhookService] Webhook ID=%d delivery failed after %d attempts: %v", webhook.ID, maxAttempts, lastErr)
+	logger.WithComponent("webhook").Warn("webhook delivery exhausted and moved to dead_letter",
+		"webhook_id", webhook.ID,
+		"account_id", webhook.AccountID,
+		"event", eventName,
+		"url", webhook.URL,
+		"attempts", maxAttempts,
+		"error", lastResponseBody,
+	)
 	s.recordDelivery(webhook.AccountID, webhook.ID, eventName, webhook.URL, string(bodyBytes), lastStatusCode, lastResponseBody, maxAttempts, "dead_letter")
 }
 

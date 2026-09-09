@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -168,9 +169,22 @@ func (h *AdvancedHandler) CloneAutomationRule(c *gin.Context) {
 	}
 
 	if err := h.db.Select("AccountID", "Name", "Description", "EventName", "Conditions", "Actions", "Active").Create(&clonedRule).Error; err != nil {
+		logger.WithComponent("automation").Error("failed to clone automation rule",
+			"source_rule_id", sourceRule.ID,
+			"account_id", accID,
+			"error", err.Error(),
+		)
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	logger.WithComponent("automation").Info("automation rule cloned",
+		"source_rule_id", sourceRule.ID,
+		"cloned_rule_id", clonedRule.ID,
+		"account_id", accID,
+		"name", clonedRule.Name,
+		"active", clonedRule.Active,
+	)
 
 	response.Created(c, clonedRule)
 }

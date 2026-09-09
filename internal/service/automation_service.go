@@ -8,6 +8,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -70,6 +71,14 @@ func (s *AutomationService) evaluateAndExecute(conv *domain.Conversation, msg *d
 		if !s.matchConditions(rule.Conditions, conv, msg) {
 			continue
 		}
+
+		logger.WithComponent("automation").Info("automation rule matched and triggered",
+			"rule_id", rule.ID,
+			"rule_name", rule.Name,
+			"event", eventName,
+			"conversation_id", conv.ID,
+			"account_id", conv.AccountID,
+		)
 
 		actions := s.parseActions(rule.Actions)
 		if len(actions) == 0 {
@@ -390,6 +399,11 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 }
 
 func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain.Message, action ActionInstruction) {
+	logger.WithComponent("automation").Info("executing automation action",
+		"action_name", action.ActionName,
+		"conversation_id", conv.ID,
+		"account_id", conv.AccountID,
+	)
 	getParamString := func(key string) string {
 		if m, ok := action.ActionParams.(map[string]any); ok {
 			if v, ok := m[key].(string); ok {

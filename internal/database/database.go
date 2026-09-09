@@ -2,13 +2,13 @@ package database
 
 import (
 	"fmt"
-	"log"
+	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	pkglogger "github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 func InitDB(cfg *config.Config) (*gorm.DB, error) {
@@ -22,11 +22,12 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	gormConfig := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: pkglogger.NewGORMLogger(200 * time.Millisecond),
 	}
 
 	db, err := gorm.Open(dialector, gormConfig)
 	if err != nil {
+		pkglogger.WithComponent("database").Error("failed to connect to database", "driver", cfg.DBDriver, "error", err.Error())
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
@@ -37,10 +38,11 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	if err := AutoMigrate(db); err != nil {
+		pkglogger.WithComponent("database").Error("failed to run migrations", "error", err.Error())
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	log.Printf("database initialized successfully (%s)", cfg.DBDriver)
+	pkglogger.WithComponent("database").Info("database initialized successfully", "driver", cfg.DBDriver, "path", cfg.DBPath)
 	return db, nil
 }
 

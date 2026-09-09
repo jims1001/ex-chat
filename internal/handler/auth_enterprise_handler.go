@@ -15,6 +15,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -71,6 +72,7 @@ func (h *AuthEnterpriseHandler) GoogleOAuthCallback(c *gin.Context) {
 		if err != nil {
 			errMsg += ": " + err.Error()
 		}
+		logger.WithComponent("sso").Warn("google oauth authentication failed", "error", errMsg, "client_ip", c.ClientIP())
 		response.Unauthorized(c, errMsg)
 		return
 	}
@@ -90,6 +92,7 @@ func (h *AuthEnterpriseHandler) GoogleOAuthCallback(c *gin.Context) {
 	}
 
 	token, _ := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	logger.WithComponent("sso").Info("google oauth authentication succeeded", "user_id", user.ID, "email", user.Email)
 	response.Success(c, gin.H{
 		"token": token,
 		"user":  user,
@@ -194,6 +197,7 @@ func (h *AuthEnterpriseHandler) SAMLCallback(c *gin.Context) {
 		if err != nil {
 			errMsg += ": " + err.Error()
 		}
+		logger.WithComponent("sso").Warn("saml authentication failed", "error", errMsg, "client_ip", c.ClientIP())
 		response.Unauthorized(c, errMsg)
 		return
 	}
@@ -214,6 +218,7 @@ func (h *AuthEnterpriseHandler) SAMLCallback(c *gin.Context) {
 	}
 
 	token, _ := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	logger.WithComponent("sso").Info("saml authentication succeeded", "user_id", user.ID, "email", user.Email)
 	response.Success(c, gin.H{
 		"token":       token,
 		"user":        user,

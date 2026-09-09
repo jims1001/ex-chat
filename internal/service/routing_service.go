@@ -8,6 +8,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -280,6 +281,14 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	conv.AssigneeID = &bestAgent.ID
 	conv.Assignee = bestAgent
 
+	logger.WithComponent("routing").Info("auto-assigned conversation to agent",
+		"conversation_id", conv.ID,
+		"account_id", conv.AccountID,
+		"inbox_id", conv.InboxID,
+		"agent_id", bestAgent.ID,
+		"agent_email", bestAgent.Email,
+	)
+
 	// 4. Broadcast event via WebSocket if hub is provided
 	if s.hub != nil {
 		s.hub.Broadcast(&ws.Event{
@@ -326,6 +335,11 @@ func (s *RoutingService) ResumeSnoozedConversations(ctx context.Context) ([]doma
 			conv.SnoozedUntil = nil
 			conv.LastActivityAt = now
 			resumed = append(resumed, *conv)
+
+			logger.WithComponent("routing").Info("resumed expired snoozed conversation",
+				"conversation_id", conv.ID,
+				"account_id", conv.AccountID,
+			)
 
 			if s.hub != nil {
 				s.hub.Broadcast(&ws.Event{

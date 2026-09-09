@@ -29,10 +29,12 @@ func SetAdvancedHTTPClient(client *http.Client) {
 }
 
 func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
 
 	// 1. 全局拦截器：统一上下文与全链路跟踪 (API-03 规范)
 	r.Use(foundation.UnifiedContextMiddleware())
+	r.Use(middleware.RequestLogger())
+	r.Use(middleware.RecoveryLogger())
 
 	// 2. CORS 跨域治理
 	r.Use(func(c *gin.Context) {

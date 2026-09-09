@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -50,6 +51,24 @@ func (s *MigrationService) Migrate(ctx context.Context, accountID uint, resource
 	if trimmed == "" {
 		return stats, nil
 	}
+
+	logger.WithComponent("migration").Info("starting historical data migration",
+		"account_id", accountID,
+		"resource_type", resourceType,
+	)
+	defer func() {
+		processed := stats.TotalProcessed()
+		logger.WithComponent("migration").Info("historical data migration completed",
+			"account_id", accountID,
+			"resource_type", resourceType,
+			"processed", processed,
+			"contacts_count", stats.ContactsCount,
+			"conversations_count", stats.ConversationsCount,
+			"messages_count", stats.MessagesCount,
+			"attachments_count", stats.AttachmentsCount,
+			"errors_count", len(stats.Errors),
+		)
+	}()
 
 	legacyContactMap := make(map[string]uint)
 	legacyConvMap := make(map[string]uint)
