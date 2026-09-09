@@ -549,6 +549,8 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 				for _, it := range val {
 					labelsToAdd = append(labelsToAdd, fmt.Sprintf("%v", it))
 				}
+			} else if val, ok := m["labels"].([]string); ok {
+				labelsToAdd = append(labelsToAdd, val...)
 			} else if val, ok := m["label"].(string); ok {
 				labelsToAdd = append(labelsToAdd, val)
 			}
@@ -568,8 +570,87 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 				if err := s.db.Where("account_id = ? AND title = ?", conv.AccountID, lblTitle).FirstOrCreate(&label, domain.Label{AccountID: conv.AccountID, Title: lblTitle}).Error; err == nil {
 					cl := domain.ConversationLabel{ConversationID: conv.ID, LabelID: label.ID}
 					_ = s.db.Where(cl).FirstOrCreate(&cl).Error
+
+					found := false
+					for _, existing := range conv.Labels {
+						if existing.ID == label.ID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						conv.Labels = append(conv.Labels, label)
+					}
 				}
 			}
+		}
+
+	case "remove_label", "remove_labels":
+		var labelsToRemove []string
+		if m, ok := action.ActionParams.(map[string]any); ok {
+			if val, ok := m["labels"].([]any); ok {
+				for _, it := range val {
+					labelsToRemove = append(labelsToRemove, fmt.Sprintf("%v", it))
+				}
+			} else if val, ok := m["labels"].([]string); ok {
+				labelsToRemove = append(labelsToRemove, val...)
+			} else if val, ok := m["label"].(string); ok {
+				labelsToRemove = append(labelsToRemove, val)
+			} else if val, ok := m["remove"].([]any); ok {
+				for _, it := range val {
+					labelsToRemove = append(labelsToRemove, fmt.Sprintf("%v", it))
+				}
+			} else if val, ok := m["remove"].([]string); ok {
+				labelsToRemove = append(labelsToRemove, val...)
+			}
+		} else if arr, ok := action.ActionParams.([]any); ok {
+			for _, it := range arr {
+				labelsToRemove = append(labelsToRemove, fmt.Sprintf("%v", it))
+			}
+		} else if arrStr, ok := action.ActionParams.([]string); ok {
+			labelsToRemove = append(labelsToRemove, arrStr...)
+		} else if str, ok := action.ActionParams.(string); ok {
+			labelsToRemove = append(labelsToRemove, str)
+		}
+		for _, lblTarget := range labelsToRemove {
+			lblTarget = strings.TrimSpace(lblTarget)
+			if lblTarget == "" {
+				continue
+			}
+			var idNum uint
+			_, _ = fmt.Sscanf(lblTarget, "%d", &idNum)
+
+			var labels []domain.Label
+			if idNum > 0 {
+				_ = s.db.Where("account_id = ? AND (title = ? OR id = ?)", conv.AccountID, lblTarget, idNum).Find(&labels).Error
+			} else {
+				_ = s.db.Where("account_id = ? AND title = ?", conv.AccountID, lblTarget).Find(&labels).Error
+			}
+
+			for _, l := range labels {
+				_ = s.db.Where("conversation_id = ? AND label_id = ?", conv.ID, l.ID).Delete(&domain.ConversationLabel{}).Error
+			}
+			if len(labels) == 0 && idNum > 0 {
+				_ = s.db.Where("conversation_id = ? AND label_id = ?", conv.ID, idNum).Delete(&domain.ConversationLabel{}).Error
+			}
+		}
+
+		if len(conv.Labels) > 0 {
+			var kept []domain.Label
+			for _, existing := range conv.Labels {
+				shouldRemove := false
+				for _, rem := range labelsToRemove {
+					rem = strings.TrimSpace(rem)
+					if strings.EqualFold(existing.Title, rem) || fmt.Sprintf("%d", existing.ID) == rem {
+						shouldRemove = true
+						break
+					}
+				}
+				if !shouldRemove {
+					kept = append(kept, existing)
+				}
+			}
+			conv.Labels = kept
 		}
 	}
 

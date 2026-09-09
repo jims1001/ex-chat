@@ -188,19 +188,37 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 					if len(params) > 0 {
 						conv.Priority = params[0]
 					}
-				case "add_label":
-					if len(params) > 0 {
+				case "add_label", "add_labels":
+					for _, p := range params {
+						p = strings.TrimSpace(p)
+						if p == "" {
+							continue
+						}
 						var label domain.Label
-						if err := tx.Where("account_id = ? AND title = ?", accountID, params[0]).FirstOrCreate(&label, domain.Label{AccountID: accountID, Title: params[0]}).Error; err == nil {
+						if err := tx.Where("account_id = ? AND title = ?", accountID, p).FirstOrCreate(&label, domain.Label{AccountID: accountID, Title: p}).Error; err == nil {
 							var cl domain.ConversationLabel
 							tx.Where("conversation_id = ? AND label_id = ?", conv.ID, label.ID).FirstOrCreate(&cl, domain.ConversationLabel{ConversationID: conv.ID, LabelID: label.ID})
 						}
 					}
-				case "remove_label":
-					if len(params) > 0 {
-						var label domain.Label
-						if err := tx.Where("account_id = ? AND title = ?", accountID, params[0]).First(&label).Error; err == nil {
-							_ = tx.Where("conversation_id = ? AND label_id = ?", conv.ID, label.ID).Delete(&domain.ConversationLabel{}).Error
+				case "remove_label", "remove_labels":
+					for _, p := range params {
+						p = strings.TrimSpace(p)
+						if p == "" {
+							continue
+						}
+						var idNum uint
+						_, _ = fmt.Sscanf(p, "%d", &idNum)
+						var labels []domain.Label
+						if idNum > 0 {
+							_ = tx.Where("account_id = ? AND (title = ? OR id = ?)", accountID, p, idNum).Find(&labels).Error
+						} else {
+							_ = tx.Where("account_id = ? AND title = ?", accountID, p).Find(&labels).Error
+						}
+						for _, lbl := range labels {
+							_ = tx.Where("conversation_id = ? AND label_id = ?", conv.ID, lbl.ID).Delete(&domain.ConversationLabel{}).Error
+						}
+						if len(labels) == 0 && idNum > 0 {
+							_ = tx.Where("conversation_id = ? AND label_id = ?", conv.ID, idNum).Delete(&domain.ConversationLabel{}).Error
 						}
 					}
 				case "send_message", "send_reply", "reply", "add_private_note", "private_note":

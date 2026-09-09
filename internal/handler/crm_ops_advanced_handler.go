@@ -1329,6 +1329,64 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 			}
 		}
 
+	case "remove_labels":
+		labelsToRemove := req.Labels.Remove
+		if len(labelsToRemove) == 0 && len(req.Labels.Add) > 0 {
+			labelsToRemove = req.Labels.Add
+		}
+		if len(labelsToRemove) == 0 {
+			response.BadRequest(c, "labels to remove cannot be empty")
+			return
+		}
+		var conversations []domain.Conversation
+		if err := h.db.WithContext(c.Request.Context()).
+			Where("account_id = ? AND id IN ?", accID, req.IDs).
+			Find(&conversations).Error; err != nil {
+			response.Error(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		now := time.Now().UTC()
+		for _, conv := range conversations {
+			for _, title := range labelsToRemove {
+				title = strings.TrimSpace(title)
+				if title == "" {
+					continue
+				}
+				var idNum uint
+				_, _ = fmt.Sscanf(title, "%d", &idNum)
+				var labels []domain.Label
+				if idNum > 0 {
+					_ = h.db.Where("account_id = ? AND (title = ? OR id = ?)", accID, title, idNum).Find(&labels).Error
+				} else {
+					_ = h.db.Where("account_id = ? AND title = ?", accID, title).Find(&labels).Error
+				}
+				for _, lbl := range labels {
+					_ = h.db.Where("conversation_id = ? AND label_id = ?", conv.ID, lbl.ID).Delete(&domain.ConversationLabel{}).Error
+				}
+				if len(labels) == 0 && idNum > 0 {
+					_ = h.db.Where("conversation_id = ? AND label_id = ?", conv.ID, idNum).Delete(&domain.ConversationLabel{}).Error
+				}
+			}
+			h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]any{"updated_at": now, "last_activity_at": now})
+			updatedCount++
+
+			if h.automationService != nil {
+				h.automationService.HandleConversationUpdated(&conv)
+			}
+			if h.webhookService != nil {
+				h.webhookService.Dispatch(uint(accID), "conversation_updated", &conv)
+			}
+			if h.hub != nil {
+				h.hub.Broadcast(&ws.Event{
+					Name:           ws.EventConversationUpdated,
+					AccountID:      uint(accID),
+					ConversationID: conv.ID,
+					Data:           conv,
+				})
+			}
+		}
+
 	default:
 		response.BadRequest(c, "Unsupported bulk action type")
 		return

@@ -65,6 +65,9 @@ const (
 	ActionRemoveAssignedTeam  = "remove_assigned_team"
 	ActionSendMessage         = "send_message"
 	ActionAddLabel            = "add_label"
+	ActionAddLabels           = "add_labels"
+	ActionRemoveLabel         = "remove_label"
+	ActionRemoveLabels        = "remove_labels"
 	ActionResolveConv         = "resolve_conversation"
 	ActionMuteConv            = "mute_conversation"
 )
