@@ -78,6 +78,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	channelEnterpriseRepo := repository.NewChannelAuthEnterpriseRepository(db)
 	assignmentPolicyRepo := repository.NewAssignmentPolicyRepository(db)
 	agentCapacityPolicyRepo := repository.NewAgentCapacityPolicyRepository(db)
+	contactExtensionRepo := repository.NewContactExtensionRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -98,6 +99,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	inboxHandler := handler.NewInboxHandler(inboxRepo, userRepo)
 	contactHandler := handler.NewContactHandler(contactRepo, inboxRepo)
 	contactHandler.SetExtraRepos(labelRepo, companyRepo, db)
+	contactExtensionHandler := handler.NewContactExtensionHandler(contactRepo, contactExtensionRepo)
 	convHandler := handler.NewConversationHandler(convRepo, msgRepo, inboxRepo, contactRepo, routingService, hub)
 	convHandler.SetAutomationAndWebhook(automationService, webhookService)
 	convHandler.SetPushService(pushService)
@@ -355,6 +357,17 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			tenant.GET("/contacts/:id/labels", contactHandler.GetContactLabels)
 			tenant.POST("/contacts/:id/labels", contactHandler.SetContactLabels)
 			tenant.DELETE("/contacts/:id/labels/:label_id", contactHandler.DetachContactLabel)
+
+			// 联系人扩展 (CRM / Contact Extensions: Attachments, Contactable Inboxes, Channels, Conversations & Stats)
+			tenant.GET("/contacts/:id/attachments", contactExtensionHandler.ListContactAttachments)
+			tenant.GET("/contacts/:id/contactable_inboxes", contactExtensionHandler.GetContactableInboxes)
+			tenant.GET("/contacts/:id/inboxes", contactExtensionHandler.GetContactableInboxes)
+			tenant.GET("/contacts/:id/contact_inboxes", contactExtensionHandler.ListContactInboxes)
+			tenant.POST("/contacts/:id/contact_inboxes", contactExtensionHandler.CreateContactInbox)
+			tenant.DELETE("/contacts/:id/contact_inboxes/:contact_inbox_id", contactExtensionHandler.DeleteContactInbox)
+			tenant.DELETE("/contacts/:id/inboxes/:inbox_id", contactExtensionHandler.DeleteContactInbox)
+			tenant.GET("/contacts/:id/conversations", contactExtensionHandler.ListContactConversations)
+			tenant.GET("/contacts/:id/stats", contactExtensionHandler.GetContactStats)
 
 			// 自定义字段定义 (Custom Attributes)
 			tenant.GET("/custom_attribute_definitions", customAttrHandler.List)
