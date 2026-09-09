@@ -359,6 +359,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			// 自定义字段定义 (Custom Attributes)
 			tenant.GET("/custom_attribute_definitions", customAttrHandler.List)
 			tenant.POST("/custom_attribute_definitions", customAttrHandler.Create)
+			tenant.GET("/custom_attribute_definitions/:id", customAttrHandler.Get)
+			tenant.PUT("/custom_attribute_definitions/:id", customAttrHandler.Update)
+			tenant.PATCH("/custom_attribute_definitions/:id", customAttrHandler.Update)
 			tenant.DELETE("/custom_attribute_definitions/:id", customAttrHandler.Delete)
 
 			// 会话与消息状态机 (CON / MSG)

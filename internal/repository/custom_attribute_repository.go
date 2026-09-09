@@ -27,6 +27,19 @@ func (r *CustomAttributeRepository) List(accountID uint, model string) ([]domain
 	return list, err
 }
 
+func (r *CustomAttributeRepository) Get(accountID, id uint) (*domain.CustomAttributeDefinition, error) {
+	var def domain.CustomAttributeDefinition
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&def).Error
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
+func (r *CustomAttributeRepository) Update(def *domain.CustomAttributeDefinition) error {
+	return r.db.Save(def).Error
+}
+
 func (r *CustomAttributeRepository) Delete(accountID, id uint) error {
 	return r.db.Where("account_id = ? AND id = ?", accountID, id).
 		Delete(&domain.CustomAttributeDefinition{}).Error

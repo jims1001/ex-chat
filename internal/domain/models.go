@@ -379,6 +379,8 @@ type CustomAttributeDefinition struct {
 	AttributeKey         string    `gorm:"size:100;not null" json:"attribute_key"`
 	AttributeModel       string    `gorm:"size:50;not null" json:"attribute_model"` // contact_attribute, conversation_attribute
 	AttributeDisplayType string    `gorm:"size:50;default:'text'" json:"attribute_display_type"`
+	AttributeDescription string    `gorm:"type:text" json:"attribute_description,omitempty"`
+	AttributeValues      string    `gorm:"type:text" json:"attribute_values,omitempty"`
 	DefaultValue         string    `gorm:"size:255" json:"default_value"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
