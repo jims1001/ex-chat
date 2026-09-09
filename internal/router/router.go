@@ -128,6 +128,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	webhookHandler.SetWebhookService(webhookService)
 	enterpriseHandler := handler.NewEnterpriseHandler(enterpriseRepo)
 	platformHandler := handler.NewPlatformHandler(platformRepo, userRepo)
+	platformHandler.SetJWTSecret(cfg.JWTSecret)
 	publicHandler := handler.NewPublicHandler(db, inboxRepo, contactRepo, convRepo, msgRepo)
 	publicHandler.SetPublicRepository(publicRepo)
 	publicHandler.SetAutomationAndWebhook(automationService, webhookService)
@@ -292,10 +293,42 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	platformGroup := r.Group("/platform/api/v1")
 	platformGroup.Use(platformHandler.PlatformAuthMiddleware())
 	{
+		// 账号全生命周期治理
+		platformGroup.GET("/accounts", platformHandler.ListAccounts)
 		platformGroup.POST("/accounts", platformHandler.CreateAccount)
 		platformGroup.GET("/accounts/:id", platformHandler.GetAccount)
+		platformGroup.PATCH("/accounts/:id", platformHandler.UpdateAccount)
+		platformGroup.PUT("/accounts/:id", platformHandler.UpdateAccount)
+		platformGroup.DELETE("/accounts/:id", platformHandler.DeleteAccount)
+		platformGroup.GET("/accounts/:id/status", platformHandler.GetAccountStatus)
+
+		// 用户全生命周期治理
+		platformGroup.GET("/users", platformHandler.ListUsers)
 		platformGroup.POST("/users", platformHandler.CreateUser)
+		platformGroup.GET("/users/:id", platformHandler.GetUser)
+		platformGroup.PATCH("/users/:id", platformHandler.UpdateUser)
+		platformGroup.PUT("/users/:id", platformHandler.UpdateUser)
+		platformGroup.DELETE("/users/:id", platformHandler.DeleteUser)
+		platformGroup.GET("/users/:id/login", platformHandler.GetUserLoginToken)
+
+		// 账号成员关系管理与解绑
+		platformGroup.GET("/accounts/:id/account_users", platformHandler.ListAccountUsers)
 		platformGroup.POST("/accounts/:id/account_users", platformHandler.AddAccountUser)
+		platformGroup.DELETE("/accounts/:id/account_users", platformHandler.DeleteAccountUser)
+		platformGroup.DELETE("/accounts/:id/account_users/:user_id", platformHandler.DeleteAccountUser)
+
+		// 平台级与租户级 Bot 治理
+		platformGroup.GET("/agent_bots", platformHandler.ListAgentBots)
+		platformGroup.POST("/agent_bots", platformHandler.CreateAgentBot)
+		platformGroup.GET("/agent_bots/:id", platformHandler.GetAgentBot)
+		platformGroup.PATCH("/agent_bots/:id", platformHandler.UpdateAgentBot)
+		platformGroup.PUT("/agent_bots/:id", platformHandler.UpdateAgentBot)
+		platformGroup.DELETE("/agent_bots/:id", platformHandler.DeleteAgentBot)
+		platformGroup.GET("/accounts/:id/agent_bots", platformHandler.ListAccountAgentBots)
+		platformGroup.POST("/accounts/:id/agent_bots", platformHandler.CreateAccountAgentBot)
+		platformGroup.DELETE("/accounts/:id/agent_bots/:agent_bot_id", platformHandler.DeleteAccountAgentBot)
+
+		// 企业级与审计扩展
 		platformGroup.POST("/accounts/:id/email_channel_migrations", authEnterpriseHandler.EmailChannelMigration)
 		platformGroup.GET("/accounts/:id/data_changes", auditHandler.PlatformListDataChanges)
 	}
