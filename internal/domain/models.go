@@ -406,7 +406,7 @@ type AutomationRule struct {
 	EventName   string    `gorm:"size:100;not null" json:"event_name"` // conversation_created, message_created
 	Conditions  string    `gorm:"type:text" json:"conditions"`        // JSON condition rules
 	Actions     string    `gorm:"type:text" json:"actions"`           // JSON action steps
-	Active      bool      `gorm:"default:true" json:"active"`
+	Active      bool      `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

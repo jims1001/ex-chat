@@ -467,6 +467,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			tenant.GET("/automation_rules/:id", advancedHandler.GetAutomationRule)
 			tenant.PUT("/automation_rules/:id", advancedHandler.UpdateAutomationRule)
 			tenant.DELETE("/automation_rules/:id", advancedHandler.DeleteAutomationRule)
+			tenant.POST("/automation_rules/:id/clone", advancedHandler.CloneAutomationRule)
+			tenant.POST("/automation_rules/:id/duplicate", advancedHandler.CloneAutomationRule)
 
 			// 服务水平协议 (RPT / SLA)
 			tenant.GET("/sla_policies", advancedHandler.ListSLAPolicies)
