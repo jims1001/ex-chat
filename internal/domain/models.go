@@ -681,6 +681,20 @@ type Company struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// CompanyNote represents an internal operator note attached to a company profile
+type CompanyNote struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	AccountID uint      `gorm:"index;not null" json:"account_id"`
+	CompanyID uint      `gorm:"index;not null" json:"company_id"`
+	UserID    uint      `gorm:"index;not null" json:"user_id"`
+	Content   string    `gorm:"type:text;not null" json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	User    *User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Company *Company `gorm:"foreignKey:CompanyID" json:"company,omitempty"`
+}
+
 // ----------------- OPS 营销与触达活动 -----------------
 
 // Campaign defines targeted one-off or recurring outbound message campaigns

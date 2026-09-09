@@ -91,6 +91,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.PlatformApp{},
 		&domain.NotificationSubscription{},
 		&domain.Company{},
+		&domain.CompanyNote{},
 		&domain.Campaign{},
 		&domain.SLAPolicy{},
 		&domain.AgentBot{},
