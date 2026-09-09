@@ -1129,6 +1129,64 @@ type AIUsageQuota struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
+// Copilot thread & message status and role constants
+const (
+	CopilotThreadStatusActive   = "active"
+	CopilotThreadStatusArchived = "archived"
+	CopilotThreadStatusPinned   = "pinned"
+
+	CopilotRoleUser      = "user"
+	CopilotRoleAssistant = "assistant"
+	CopilotRoleSystem    = "system"
+
+	CopilotFeedbackNone       = "none"
+	CopilotFeedbackThumbsUp   = "thumbs_up"
+	CopilotFeedbackThumbsDown = "thumbs_down"
+)
+
+// CopilotThread represents a multi-turn AI assistant conversation thread
+type CopilotThread struct {
+	ID             uint                   `gorm:"primaryKey" json:"id"`
+	AccountID      uint                   `gorm:"index;not null" json:"account_id"`
+	UserID         uint                   `gorm:"index;not null" json:"user_id"`
+	ConversationID *uint                  `gorm:"index" json:"conversation_id,omitempty"`
+	AssistantID    *uint                  `gorm:"index" json:"assistant_id,omitempty"`
+	Title          string                 `gorm:"size:255;not null" json:"title"`
+	Status         string                 `gorm:"size:50;default:'active';index" json:"status"` // active, archived, pinned
+	Context        string                 `gorm:"type:text" json:"context,omitempty"`
+	Metadata       string                 `gorm:"type:text" json:"metadata,omitempty"`
+	MessageCount   int                    `gorm:"default:0" json:"message_count"`
+	TotalTokens    int                    `gorm:"default:0" json:"total_tokens"`
+	LastMessageAt  *time.Time             `gorm:"index" json:"last_message_at,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+
+	Account      *Account               `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	User         *User                  `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Conversation *Conversation          `gorm:"foreignKey:ConversationID" json:"conversation,omitempty"`
+	Assistant    *CaptainAssistant      `gorm:"foreignKey:AssistantID" json:"assistant,omitempty"`
+	Messages     []CopilotThreadMessage `gorm:"foreignKey:ThreadID" json:"messages,omitempty"`
+}
+
+// CopilotThreadMessage represents a single message in a CopilotThread
+type CopilotThreadMessage struct {
+	ID               uint           `gorm:"primaryKey" json:"id"`
+	AccountID        uint           `gorm:"index;not null" json:"account_id"`
+	ThreadID         uint           `gorm:"index;not null" json:"thread_id"`
+	Role             string         `gorm:"size:50;not null;index" json:"role"` // user, assistant, system
+	Content          string         `gorm:"type:text;not null" json:"content"`
+	Citations        string         `gorm:"type:text" json:"citations,omitempty"`
+	SuggestedActions string         `gorm:"type:text" json:"suggested_actions,omitempty"`
+	TokenCount       int            `gorm:"default:0" json:"token_count"`
+	Feedback         string         `gorm:"size:50;default:'none'" json:"feedback"` // none, thumbs_up, thumbs_down
+	FeedbackNotes    string         `gorm:"type:text" json:"feedback_notes,omitempty"`
+	Metadata         string         `gorm:"type:text" json:"metadata,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+
+	Thread *CopilotThread `gorm:"foreignKey:ThreadID" json:"thread,omitempty"`
+}
+
 // CustomRole defines custom agent role and granular permissions
 type CustomRole struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`

@@ -82,6 +82,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	companyExtensionRepo := repository.NewCompanyExtensionRepository(db)
 	csatExtensionRepo := repository.NewCSATExtensionRepository(db)
 	appliedSLARepo := repository.NewAppliedSLARepository(db)
+	copilotThreadRepo := repository.NewCopilotThreadRepository(db)
+	captainRepo := repository.NewCaptainRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -146,6 +148,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
 	csatHandler := handler.NewCSATHandler(csatExtensionRepo)
 	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService)
+	copilotThreadHandler := handler.NewCopilotThreadHandler(db, copilotThreadRepo, convRepo, msgRepo, captainRepo)
 
 	// 后台周期巡检与调度引擎 (Background Schedulers)
 	campaignService.StartScheduledCampaignWorker(context.Background(), 1*time.Minute)
@@ -616,6 +619,28 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			tenant.POST("/conversations/:id/copilot/rephrase", copilotHandler.RephraseText)
 			tenant.POST("/copilot/rephrase", copilotHandler.RephraseText)
 			tenant.POST("/copilot/completions", copilotHandler.GenerateCompletion)
+
+			// Copilot 多轮 Thread 与消息管理
+			tenant.GET("/copilot/threads", copilotThreadHandler.ListThreads)
+			tenant.POST("/copilot/threads", copilotThreadHandler.CreateThread)
+			tenant.GET("/copilot/threads/metrics", copilotThreadHandler.GetMetrics)
+			tenant.GET("/copilot/threads/:id", copilotThreadHandler.GetThread)
+			tenant.PUT("/copilot/threads/:id", copilotThreadHandler.UpdateThread)
+			tenant.PATCH("/copilot/threads/:id", copilotThreadHandler.UpdateThread)
+			tenant.DELETE("/copilot/threads/:id", copilotThreadHandler.DeleteThread)
+
+			tenant.GET("/copilot/threads/:id/messages", copilotThreadHandler.ListMessages)
+			tenant.POST("/copilot/threads/:id/messages", copilotThreadHandler.SendMessage)
+			tenant.POST("/copilot/threads/:id/chat", copilotThreadHandler.SendMessage)
+			tenant.DELETE("/copilot/threads/:id/messages", copilotThreadHandler.ClearMessages)
+			tenant.GET("/copilot/threads/:id/messages/:msg_id", copilotThreadHandler.GetMessage)
+			tenant.DELETE("/copilot/threads/:id/messages/:msg_id", copilotThreadHandler.DeleteMessage)
+			tenant.POST("/copilot/threads/:id/messages/:msg_id/feedback", copilotThreadHandler.UpdateFeedback)
+			tenant.PUT("/copilot/threads/:id/messages/:msg_id/feedback", copilotThreadHandler.UpdateFeedback)
+
+			// 会话级 Copilot Thread 快捷端点
+			tenant.GET("/conversations/:id/copilot/threads", copilotThreadHandler.ListConversationThreads)
+			tenant.POST("/conversations/:id/copilot/threads", copilotThreadHandler.CreateConversationThread)
 
 			// Captain 助手完整管理 (CRUD)
 			tenant.GET("/captain/assistants", copilotHandler.ListAssistants)
