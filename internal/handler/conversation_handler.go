@@ -26,6 +26,7 @@ type ConversationHandler struct {
 	automationService *service.AutomationService
 	webhookService    *service.WebhookService
 	pushService       *service.PushService
+	slaService        *service.SLAService
 	hub               *ws.Hub
 }
 
@@ -58,6 +59,10 @@ func (h *ConversationHandler) SetPushService(ps *service.PushService) {
 
 func (h *ConversationHandler) SetNotificationRepo(nr *repository.NotificationRepository) {
 	h.notificationRepo = nr
+}
+
+func (h *ConversationHandler) SetSLAService(ss *service.SLAService) {
+	h.slaService = ss
 }
 
 type CreateConversationRequest struct {
@@ -456,6 +461,10 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 			ResourceID:   conv.ID,
 			ResourceType: "conversation",
 		})
+	}
+
+	if h.slaService != nil && msg.MessageType == domain.MessageTypeOutgoing && !isPrivate {
+		_, _ = h.slaService.EvaluateConversation(conv)
 	}
 
 	response.Created(c, msg)

@@ -95,14 +95,31 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		fDue := s.CalculateDeadline(effectiveInbox, startTime, applicablePolicy.FirstResponseTimeThreshold)
 		frtDeadline = &fDue
 
-		var agentMsgCount int64
-		_ = s.db.Model(&domain.Message{}).
-			Where("conversation_id = ? AND message_type = ? AND (private = 0 OR private = false OR private IS NULL) AND (content_type NOT IN ('activity', 'internal_note') OR content_type IS NULL) AND sender_type NOT IN ('Contact', 'contact')",
-				conv.ID, domain.MessageTypeOutgoing).
-			Count(&agentMsgCount).Error
+		var existingBreach int64
+		_ = s.db.Model(&domain.SLABreachLog{}).
+			Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "first_response").
+			Count(&existingBreach).Error
 
-		if agentMsgCount == 0 && !now.Before(fDue) {
+		if existingBreach > 0 {
 			isFRTBreached = true
+		} else {
+			var firstAgentMsg domain.Message
+			err := s.db.Where("conversation_id = ? AND message_type = ? AND (private = 0 OR private = false OR private IS NULL) AND (content_type NOT IN ('activity', 'internal_note') OR content_type IS NULL) AND sender_type NOT IN ('Contact', 'contact') AND created_at >= ?",
+				conv.ID, domain.MessageTypeOutgoing, startTime).
+				Order("created_at ASC, id ASC").First(&firstAgentMsg).Error
+
+			if err != nil || firstAgentMsg.CreatedAt.IsZero() {
+				// No agent reply yet
+				if !now.Before(fDue) {
+					isFRTBreached = true
+				}
+			} else {
+				// Agent replied: check if first reply was sent after deadline or elapsed business time exceeded threshold
+				actualSec := s.CalculateBusinessSeconds(effectiveInbox, startTime, firstAgentMsg.CreatedAt)
+				if firstAgentMsg.CreatedAt.After(fDue) || actualSec > applicablePolicy.FirstResponseTimeThreshold {
+					isFRTBreached = true
+				}
+			}
 		}
 	}
 
@@ -111,121 +128,205 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		rDue := s.CalculateDeadline(effectiveInbox, conv.CreatedAt, applicablePolicy.ResolutionTimeThreshold)
 		resDeadline = &rDue
 
-		if conv.Status != domain.ConversationStatusResolved && !now.Before(rDue) {
+		var existingResBreach int64
+		_ = s.db.Model(&domain.SLABreachLog{}).
+			Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "resolution").
+			Count(&existingResBreach).Error
+
+		if existingResBreach > 0 {
 			isResBreached = true
+		} else if conv.Status != domain.ConversationStatusResolved {
+			if !now.Before(rDue) {
+				isResBreached = true
+			}
+		} else {
+			actualResSec := s.CalculateBusinessSeconds(effectiveInbox, conv.CreatedAt, conv.UpdatedAt)
+			if conv.UpdatedAt.After(rDue) || actualResSec > applicablePolicy.ResolutionTimeThreshold {
+				isResBreached = true
+			}
 		}
 	}
 
 	return frtDeadline, resDeadline, isFRTBreached, isResBreached, policy
 }
 
-// EvaluateAccountSLAs scans open conversations and logs breaches according to applicable SLA policies
-func (s *SLAService) EvaluateAccountSLAs(accountID uint) ([]domain.SLABreachLog, error) {
-	var policies []domain.SLAPolicy
-	if err := s.db.Where("account_id = ?", accountID).Find(&policies).Error; err != nil {
-		return nil, err
-	}
-	if len(policies) == 0 {
+// EvaluateConversation evaluates SLA breaches for a single conversation and records logs/updates status
+func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.SLABreachLog, error) {
+	if conv == nil {
 		return nil, nil
 	}
 
-	var openConversations []domain.Conversation
-	err := s.db.Preload("Inbox").Where("account_id = ? AND status != ?", accountID, domain.ConversationStatusResolved).
-		Find(&openConversations).Error
-	if err != nil {
+	var policies []domain.SLAPolicy
+	if err := s.db.Where("account_id = ?", conv.AccountID).Find(&policies).Error; err != nil {
 		return nil, err
+	}
+	applicablePolicy := s.resolvePolicy(conv, policies)
+	if applicablePolicy.ID == 0 {
+		return nil, nil
+	}
+
+	if conv.Inbox == nil && conv.InboxID > 0 {
+		var inbox domain.Inbox
+		if err := s.db.Where("id = ?", conv.InboxID).First(&inbox).Error; err == nil {
+			conv.Inbox = &inbox
+		}
+	}
+
+	var effectiveInbox *domain.Inbox
+	if applicablePolicy.OnlyDuringBusinessHours {
+		effectiveInbox = conv.Inbox
 	}
 
 	now := time.Now().UTC()
 	var breaches []domain.SLABreachLog
 
-	for _, conv := range openConversations {
-		applicablePolicy := s.resolvePolicy(&conv, policies)
-		if applicablePolicy.ID == 0 {
-			continue
+	// 1. First Response Time Evaluation
+	startTime := conv.CreatedAt
+	var firstCustomerMsg domain.Message
+	if err := s.db.Where("conversation_id = ? AND (message_type = ? OR sender_type IN ('Contact', 'contact'))", conv.ID, domain.MessageTypeIncoming).
+		Order("created_at ASC, id ASC").First(&firstCustomerMsg).Error; err == nil && !firstCustomerMsg.CreatedAt.IsZero() {
+		startTime = firstCustomerMsg.CreatedAt
+	}
+
+	frtDeadline := s.CalculateDeadline(effectiveInbox, startTime, applicablePolicy.FirstResponseTimeThreshold)
+	resDeadline := s.CalculateDeadline(effectiveInbox, conv.CreatedAt, applicablePolicy.ResolutionTimeThreshold)
+
+	updates := map[string]any{
+		"first_response_due_at": frtDeadline,
+		"resolution_due_at":    resDeadline,
+	}
+
+	if applicablePolicy.FirstResponseTimeThreshold > 0 {
+		var firstAgentMsg domain.Message
+		hasAgentReply := false
+		err := s.db.Where("conversation_id = ? AND message_type = ? AND (private = 0 OR private = false OR private IS NULL) AND (content_type NOT IN ('activity', 'internal_note') OR content_type IS NULL) AND sender_type NOT IN ('Contact', 'contact') AND created_at >= ?",
+			conv.ID, domain.MessageTypeOutgoing, startTime).
+			Order("created_at ASC, id ASC").First(&firstAgentMsg).Error
+		if err == nil && !firstAgentMsg.CreatedAt.IsZero() {
+			hasAgentReply = true
 		}
 
-		var effectiveInbox *domain.Inbox
-		if applicablePolicy.OnlyDuringBusinessHours {
-			effectiveInbox = conv.Inbox
+		isFRTBreached := false
+		var actualSec int
+		var breachTime time.Time
+
+		if !hasAgentReply {
+			// No agent reply yet: check if current time has exceeded deadline
+			if !now.Before(frtDeadline) {
+				isFRTBreached = true
+				actualSec = s.CalculateBusinessSeconds(effectiveInbox, startTime, now)
+				breachTime = now
+			}
+		} else {
+			// Agent has replied: check if first response was sent after deadline or duration exceeded threshold
+			actualSec = s.CalculateBusinessSeconds(effectiveInbox, startTime, firstAgentMsg.CreatedAt)
+			if firstAgentMsg.CreatedAt.After(frtDeadline) || actualSec > applicablePolicy.FirstResponseTimeThreshold {
+				isFRTBreached = true
+				breachTime = firstAgentMsg.CreatedAt
+			}
 		}
 
-		// 1. Check First Response Time (strictly ignore internal private notes / activity notes)
-		var agentMsgCount int64
-		_ = s.db.Model(&domain.Message{}).
-			Where("conversation_id = ? AND message_type = ? AND (private = 0 OR private = false OR private IS NULL) AND (content_type NOT IN ('activity', 'internal_note') OR content_type IS NULL) AND sender_type NOT IN ('Contact', 'contact')",
-				conv.ID, domain.MessageTypeOutgoing).
-			Count(&agentMsgCount).Error
-
-		startTime := conv.CreatedAt
-		var firstCustomerMsg domain.Message
-		if err := s.db.Where("conversation_id = ? AND (message_type = ? OR sender_type IN ('Contact', 'contact'))", conv.ID, domain.MessageTypeIncoming).
-			Order("created_at ASC, id ASC").First(&firstCustomerMsg).Error; err == nil && !firstCustomerMsg.CreatedAt.IsZero() {
-			startTime = firstCustomerMsg.CreatedAt
-		}
-
-		frtDeadline := s.CalculateDeadline(effectiveInbox, startTime, applicablePolicy.FirstResponseTimeThreshold)
-		resDeadline := s.CalculateDeadline(effectiveInbox, conv.CreatedAt, applicablePolicy.ResolutionTimeThreshold)
-
-		updates := map[string]any{
-			"first_response_due_at": frtDeadline,
-			"resolution_due_at":    resDeadline,
-		}
-
-		// Check first response breach
-		if agentMsgCount == 0 && applicablePolicy.FirstResponseTimeThreshold > 0 && !now.Before(frtDeadline) {
+		if isFRTBreached {
 			var existing int64
 			_ = s.db.Model(&domain.SLABreachLog{}).
-				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", accountID, conv.ID, "first_response").
+				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "first_response").
 				Count(&existing).Error
 
 			if existing == 0 {
-				actualSec := s.CalculateBusinessSeconds(effectiveInbox, startTime, now)
 				breach := domain.SLABreachLog{
-					AccountID:        accountID,
+					AccountID:        conv.AccountID,
 					ConversationID:   conv.ID,
 					SLAPolicyID:      applicablePolicy.ID,
 					BreachType:       "first_response",
 					ThresholdSeconds: applicablePolicy.FirstResponseTimeThreshold,
 					ActualSeconds:    actualSec,
-					CreatedAt:        now,
+					CreatedAt:        breachTime,
 				}
 				if err := s.db.Create(&breach).Error; err == nil {
 					breaches = append(breaches, breach)
 					updates["sla_status"] = "breached"
 				}
+			} else {
+				updates["sla_status"] = "breached"
+				if hasAgentReply {
+					_ = s.db.Model(&domain.SLABreachLog{}).
+						Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "first_response").
+						Update("actual_seconds", actualSec).Error
+				}
+			}
+		}
+	}
+
+	// 2. Resolution Time Evaluation
+	if applicablePolicy.ResolutionTimeThreshold > 0 {
+		isResBreached := false
+		var actualResSec int
+		var resBreachTime time.Time
+
+		if conv.Status != domain.ConversationStatusResolved {
+			// Open conversation: check if current time has exceeded resolution deadline
+			if !now.Before(resDeadline) {
+				isResBreached = true
+				actualResSec = s.CalculateBusinessSeconds(effectiveInbox, conv.CreatedAt, now)
+				resBreachTime = now
+			}
+		} else {
+			// Resolved conversation: check if resolved after deadline
+			actualResSec = s.CalculateBusinessSeconds(effectiveInbox, conv.CreatedAt, conv.UpdatedAt)
+			if conv.UpdatedAt.After(resDeadline) || actualResSec > applicablePolicy.ResolutionTimeThreshold {
+				isResBreached = true
+				resBreachTime = conv.UpdatedAt
 			}
 		}
 
-		// Check resolution breach
-		if applicablePolicy.ResolutionTimeThreshold > 0 && !now.Before(resDeadline) {
+		if isResBreached {
 			var existing int64
 			_ = s.db.Model(&domain.SLABreachLog{}).
-				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", accountID, conv.ID, "resolution").
+				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "resolution").
 				Count(&existing).Error
 
 			if existing == 0 {
-				actualSec := s.CalculateBusinessSeconds(effectiveInbox, conv.CreatedAt, now)
 				breach := domain.SLABreachLog{
-					AccountID:        accountID,
+					AccountID:        conv.AccountID,
 					ConversationID:   conv.ID,
 					SLAPolicyID:      applicablePolicy.ID,
 					BreachType:       "resolution",
 					ThresholdSeconds: applicablePolicy.ResolutionTimeThreshold,
-					ActualSeconds:    actualSec,
-					CreatedAt:        now,
+					ActualSeconds:    actualResSec,
+					CreatedAt:        resBreachTime,
 				}
 				if err := s.db.Create(&breach).Error; err == nil {
 					breaches = append(breaches, breach)
 					updates["sla_status"] = "breached"
 				}
+			} else {
+				updates["sla_status"] = "breached"
 			}
 		}
-
-		_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error
 	}
 
+	_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error
 	return breaches, nil
+}
+
+// EvaluateAccountSLAs scans open (and unbreached resolved) conversations and logs breaches according to applicable SLA policies
+func (s *SLAService) EvaluateAccountSLAs(accountID uint) ([]domain.SLABreachLog, error) {
+	var conversations []domain.Conversation
+	err := s.db.Preload("Inbox").
+		Where("account_id = ? AND (status != ? OR sla_status != 'breached' OR sla_status IS NULL)", accountID, domain.ConversationStatusResolved).
+		Find(&conversations).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var allBreaches []domain.SLABreachLog
+	for _, conv := range conversations {
+		breaches, err := s.EvaluateConversation(&conv)
+		if err == nil && len(breaches) > 0 {
+			allBreaches = append(allBreaches, breaches...)
+		}
+	}
+	return allBreaches, nil
 }
 
 // ListBreaches returns recorded SLA breach logs for auditing

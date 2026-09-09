@@ -99,6 +99,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	convHandler.SetAutomationAndWebhook(automationService, webhookService)
 	convHandler.SetPushService(pushService)
 	convHandler.SetNotificationRepo(notificationRepo)
+	convHandler.SetSLAService(slaService)
 	opsHandler := handler.NewOpsHandler(labelRepo, cannedRepo, convRepo)
 	macroHandler := handler.NewMacroNotificationHandler(macroRepo, notificationRepo, csatRepo)
 	reportHandler := handler.NewReportHandler(reportService)
