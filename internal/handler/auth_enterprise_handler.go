@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -27,12 +26,17 @@ type AuthEnterpriseHandler struct {
 	accountRepo      *repository.AccountRepository
 	portalRepo       *repository.PortalRepository
 	contactRepo      *repository.ContactRepository
-	migrationService *service.MigrationService
-	cfg              *config.Config
+	migrationService  *service.MigrationService
+	dataImportService *service.DataImportService
+	cfg               *config.Config
 }
 
 func (h *AuthEnterpriseHandler) SetMigrationService(ms *service.MigrationService) {
 	h.migrationService = ms
+}
+
+func (h *AuthEnterpriseHandler) SetDataImportService(dis *service.DataImportService) {
+	h.dataImportService = dis
 }
 
 func NewAuthEnterpriseHandler(
@@ -398,124 +402,7 @@ func (h *AuthEnterpriseHandler) ResetPassword(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Password updated successfully"})
 }
 
-// ----------------- Data Imports & Migrations -----------------
-
-func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	var req struct {
-		SourceProvider string `json:"source_provider"` // csv, json
-		ImportType     string `json:"import_type"`     // contacts, conversations, messages, attachments
-		RawData        string `json:"raw_data"`
-		TotalRecords   int    `json:"total_records"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	rawData := req.RawData
-	if rawData == "" {
-		if file, err := c.FormFile("file"); err == nil {
-			if f, err := file.Open(); err == nil {
-				defer f.Close()
-				content, _ := io.ReadAll(f)
-				rawData = string(content)
-			}
-		}
-	}
-
-	provider := req.SourceProvider
-	if provider == "" {
-		provider = "csv"
-	}
-	importType := req.ImportType
-	if importType == "" {
-		importType = "contacts"
-	}
-
-	imp := &domain.DataImport{
-		AccountID:      uint(accountID),
-		SourceProvider: provider,
-		ImportType:     importType,
-		Status:         "processing",
-	}
-	_ = h.repo.CreateDataImport(imp)
-
-	migService := h.migrationService
-	if migService == nil {
-		migService = service.NewMigrationService(h.repo.GetDB())
-	}
-
-	trimmed := strings.TrimSpace(rawData)
-	if trimmed != "" && (provider == "json" || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
-		var js any
-		if err := json.Unmarshal([]byte(trimmed), &js); err != nil {
-			imp.Status = "failed"
-			imp.TotalRecords = 0
-			imp.ProcessedRecords = 0
-			imp.ErrorsJSON = fmt.Sprintf(`[{"error": "Invalid JSON: %s"}]`, err.Error())
-			_ = h.repo.UpdateDataImport(imp)
-			response.BadRequest(c, "Invalid JSON data: "+err.Error())
-			return
-		}
-	}
-
-	var stats *service.MigrationStats
-	var migErr error
-	if trimmed != "" && migService != nil {
-		stats, migErr = migService.Migrate(c.Request.Context(), uint(accountID), importType, trimmed)
-	}
-
-	total := 0
-	processed := 0
-	if stats != nil {
-		processed = stats.TotalProcessed()
-		total = processed
-		if len(stats.Errors) > 0 {
-			total += len(stats.Errors)
-			errBytes, _ := json.Marshal(stats.Errors)
-			imp.ErrorsJSON = string(errBytes)
-		}
-	} else if req.TotalRecords > 0 {
-		total = req.TotalRecords
-		processed = req.TotalRecords
-	}
-
-	imp.TotalRecords = total
-	imp.ProcessedRecords = processed
-	if processed > 0 {
-		imp.Status = "completed"
-	} else {
-		imp.Status = "failed"
-		if imp.ErrorsJSON == "" {
-			if migErr != nil {
-				imp.ErrorsJSON = fmt.Sprintf(`[{"error": "%s"}]`, migErr.Error())
-			} else {
-				imp.ErrorsJSON = `[{"error": "No valid records imported"}]`
-			}
-		}
-	}
-	_ = h.repo.UpdateDataImport(imp)
-
-	response.Created(c, imp)
-}
-
-func (h *AuthEnterpriseHandler) ListDataImports(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	imports, err := h.repo.ListDataImports(uint(accountID))
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Success(c, imports)
-}
+// ----------------- Data Migrations -----------------
 
 func (h *AuthEnterpriseHandler) CreateMigrationJob(c *gin.Context) {
 	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)

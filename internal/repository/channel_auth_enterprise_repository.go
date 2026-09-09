@@ -34,7 +34,9 @@ type ChannelAuthEnterpriseRepository interface {
 	// Data Imports & Migrations
 	CreateDataImport(imp *domain.DataImport) error
 	ListDataImports(accountID uint) ([]domain.DataImport, error)
+	GetDataImport(accountID, id uint) (*domain.DataImport, error)
 	UpdateDataImport(imp *domain.DataImport) error
+	DeleteDataImport(accountID, id uint) error
 	CreateMigrationJob(job *domain.MigrationJob) error
 	ListMigrationJobs(accountID uint) ([]domain.MigrationJob, error)
 
@@ -208,8 +210,21 @@ func (r *channelAuthEnterpriseRepository) ListDataImports(accountID uint) ([]dom
 	return imports, err
 }
 
+func (r *channelAuthEnterpriseRepository) GetDataImport(accountID, id uint) (*domain.DataImport, error) {
+	var imp domain.DataImport
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&imp).Error
+	if err != nil {
+		return nil, err
+	}
+	return &imp, nil
+}
+
 func (r *channelAuthEnterpriseRepository) UpdateDataImport(imp *domain.DataImport) error {
 	return r.db.Save(imp).Error
+}
+
+func (r *channelAuthEnterpriseRepository) DeleteDataImport(accountID, id uint) error {
+	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.DataImport{}).Error
 }
 
 func (r *channelAuthEnterpriseRepository) CreateMigrationJob(job *domain.MigrationJob) error {

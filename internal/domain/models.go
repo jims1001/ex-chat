@@ -866,10 +866,15 @@ type DataImport struct {
 	AccountID        uint      `gorm:"index;not null" json:"account_id"`
 	SourceProvider   string    `gorm:"size:100;default:'csv'" json:"source_provider"` // csv, json
 	ImportType       string    `gorm:"size:100;not null" json:"import_type"`           // contacts, conversations
-	Status           string    `gorm:"size:50;default:'pending'" json:"status"`       // pending, processing, completed, failed
+	Status           string    `gorm:"size:50;default:'pending'" json:"status"`       // staged, validated, processing, completed, failed, cancelled, discarded
 	TotalRecords     int       `gorm:"default:0" json:"total_records"`
 	ProcessedRecords int       `gorm:"default:0" json:"processed_records"`
-	ErrorsJSON       string    `gorm:"type:text" json:"errors_json"`
+	FailedRecords    int       `gorm:"default:0" json:"failed_records"`
+	SkippedRecords   int       `gorm:"default:0" json:"skipped_records"`
+	RawData          string    `gorm:"type:longtext" json:"raw_data,omitempty"`
+	ValidationJSON   string    `gorm:"type:text" json:"validation_json,omitempty"`
+	ErrorsJSON       string    `gorm:"type:text" json:"errors_json,omitempty"`
+	SkippedJSON      string    `gorm:"type:text" json:"skipped_json,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
