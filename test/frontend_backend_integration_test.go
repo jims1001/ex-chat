@@ -620,5 +620,65 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 			t.Fatalf("custom attribute not found in DB: %v", err)
 		}
 	})
+
+	// -------------------------------------------------------------
+	// Gap 8: Frontend Failure Handling & Non-2xx Contract Verification
+	// -------------------------------------------------------------
+	t.Run("Frontend_Failure_Handling_Verification", func(t *testing.T) {
+		// 1. Bulk action with empty action or invalid body returns 400
+		wBulkErr := httptest.NewRecorder()
+		reqBulkErr, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/bulk_actions", accountID), bytes.NewBuffer([]byte(`{}`)))
+		reqBulkErr.Header.Set("Authorization", authHeader)
+		reqBulkErr.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wBulkErr, reqBulkErr)
+		if wBulkErr.Code < 400 || wBulkErr.Code >= 500 {
+			t.Fatalf("expected 4xx for empty bulk_actions, got %d", wBulkErr.Code)
+		}
+
+		// 2. Custom role creation with empty body returns 400
+		wRoleErr := httptest.NewRecorder()
+		reqRoleErr, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/custom_roles", accountID), bytes.NewBuffer([]byte(`{"name":""}`)))
+		reqRoleErr.Header.Set("Authorization", authHeader)
+		reqRoleErr.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wRoleErr, reqRoleErr)
+		if wRoleErr.Code < 400 || wRoleErr.Code >= 500 {
+			t.Fatalf("expected 4xx for invalid custom_roles, got %d", wRoleErr.Code)
+		}
+
+		// 3. Contact creation with duplicate email returns 400
+		wContact1 := httptest.NewRecorder()
+		reqContact1, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/contacts", accountID), bytes.NewBuffer([]byte(`{"name":"测试客户","email":"duplicate@test.com"}`)))
+		reqContact1.Header.Set("Authorization", authHeader)
+		reqContact1.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wContact1, reqContact1)
+
+		wContactDup := httptest.NewRecorder()
+		reqContactDup, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/contacts", accountID), bytes.NewBuffer([]byte(`{"name":"重复客户","email":"duplicate@test.com"}`)))
+		reqContactDup.Header.Set("Authorization", authHeader)
+		reqContactDup.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wContactDup, reqContactDup)
+		if wContactDup.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for duplicate contact email, got %d", wContactDup.Code)
+		}
+
+		// 4. Message creation with empty content returns 400
+		wMsgErr := httptest.NewRecorder()
+		reqMsgErr, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/conversations/1/messages", accountID), bytes.NewBuffer([]byte(`{"content":""}`)))
+		reqMsgErr.Header.Set("Authorization", authHeader)
+		reqMsgErr.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wMsgErr, reqMsgErr)
+		if wMsgErr.Code < 400 || wMsgErr.Code >= 500 {
+			t.Fatalf("expected 4xx for empty message content, got %d", wMsgErr.Code)
+		}
+
+		// 5. Message retry for non-existent message returns 404
+		wRetryErr := httptest.NewRecorder()
+		reqRetryErr, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/conversations/1/messages/999999/retry", accountID), nil)
+		reqRetryErr.Header.Set("Authorization", authHeader)
+		engine.ServeHTTP(wRetryErr, reqRetryErr)
+		if wRetryErr.Code != http.StatusNotFound && wRetryErr.Code < 400 {
+			t.Fatalf("expected 4xx/404 for retry non-existent message, got %d", wRetryErr.Code)
+		}
+	})
 }
 
