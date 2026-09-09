@@ -85,6 +85,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	copilotThreadRepo := repository.NewCopilotThreadRepository(db)
 	captainRepo := repository.NewCaptainRepository(db)
 	aiCustomToolRepo := repository.NewAICustomToolRepository(db)
+	widgetRepo := repository.NewWidgetRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -151,6 +152,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService)
 	copilotThreadHandler := handler.NewCopilotThreadHandler(db, copilotThreadRepo, convRepo, msgRepo, captainRepo)
 	aiCustomToolHandler := handler.NewAICustomToolHandler(db, aiCustomToolRepo)
+	widgetHandler := handler.NewWidgetHandler(db, widgetRepo, convRepo, contactRepo)
 
 	// 后台周期巡检与调度引擎 (Background Schedulers)
 	campaignService.StartScheduledCampaignWorker(context.Background(), 1*time.Minute)
@@ -211,13 +213,36 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	widget := r.Group("/api/v1/widget")
 	{
 		widget.GET("/config", inboxHandler.WidgetConfig)
+
+		// 访客联系人识别与局部更新
 		widget.POST("/contact", contactHandler.WidgetIdentify)
+		widget.PATCH("/contact", widgetHandler.UpdateContact)
+		widget.POST("/contact/custom_attributes", widgetHandler.MergeContactCustomAttributes)
+
+		// 访客会话历史列表与单条会话详情
+		widget.GET("/conversations", widgetHandler.ListConversations)
 		widget.POST("/conversations", convHandler.WidgetCreateConversation)
+		widget.GET("/conversations/:id", widgetHandler.GetConversation)
+		widget.PATCH("/conversations/:id/custom_attributes", widgetHandler.MergeConversationCustomAttributes)
+
+		// 消息与实时互动
 		widget.GET("/messages", convHandler.WidgetListMessages)
 		widget.POST("/messages", convHandler.WidgetCreateMessage)
 		widget.POST("/conversations/update_last_seen", convHandler.WidgetUpdateLastSeen)
 		widget.POST("/conversations/toggle_typing", convHandler.WidgetToggleTyping)
 		widget.POST("/conversations/transcript", convHandler.WidgetSendTranscript)
+
+		// 正在运行的主动营销活动
+		widget.GET("/campaigns", widgetHandler.ListCampaigns)
+
+		// 访客行为事件上报与查询
+		widget.POST("/events", widgetHandler.RecordEvent)
+		widget.GET("/events", widgetHandler.ListEvents)
+
+		// 访客/会话标签管理
+		widget.GET("/labels", widgetHandler.GetLabels)
+		widget.POST("/labels", widgetHandler.AddLabels)
+		widget.DELETE("/labels", widgetHandler.RemoveLabels)
 	}
 
 	// 4. 公开帮助中心门户接口 (HELP)

@@ -136,5 +136,6 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.CopilotThreadMessage{},
 		&domain.AICustomTool{},
 		&domain.AIToolExecutionLog{},
+		&domain.WidgetEvent{},
 	)
 }

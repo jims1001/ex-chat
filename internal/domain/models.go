@@ -235,6 +235,7 @@ type Conversation struct {
 	Assignee   *User       `gorm:"foreignKey:AssigneeID" json:"assignee,omitempty"`
 	Team       *Team       `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Labels     []Label     `gorm:"many2many:conversation_labels;" json:"labels,omitempty"`
+	Messages   []Message   `gorm:"foreignKey:ConversationID" json:"messages,omitempty"`
 	AppliedSLA *AppliedSLA `gorm:"foreignKey:ConversationID" json:"applied_sla,omitempty"`
 	SLAEvents  []SLAEvent  `gorm:"foreignKey:ConversationID" json:"sla_events,omitempty"`
 }
@@ -1352,4 +1353,35 @@ func (w *WorkingHourConfig) IsOpenAllDay() bool {
 	}
 	return false
 }
+
+// ----------------- Widget 访客端事件模型 -----------------
+
+// WidgetEvent captures visitor behavioral and interaction events in the chat widget
+type WidgetEvent struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	AccountID      uint      `gorm:"index;not null" json:"account_id"`
+	InboxID        uint      `gorm:"index;not null" json:"inbox_id"`
+	ContactID      *uint     `gorm:"index" json:"contact_id,omitempty"`
+	ConversationID *uint     `gorm:"index" json:"conversation_id,omitempty"`
+	Name           string    `gorm:"size:100;not null;index" json:"name"`
+	SourceID       string    `gorm:"size:255;index" json:"source_id,omitempty"`
+	URL            string    `gorm:"size:1024" json:"url,omitempty"`
+	Title          string    `gorm:"size:255" json:"title,omitempty"`
+	Properties     string    `gorm:"type:text" json:"properties,omitempty"` // JSON metadata
+	CreatedAt      time.Time `gorm:"index" json:"created_at"`
+
+	Account      *Account      `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	Inbox        *Inbox        `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
+	Contact      *Contact      `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
+	Conversation *Conversation `gorm:"foreignKey:ConversationID" json:"conversation,omitempty"`
+}
+
+const (
+	WidgetEventPageView      = "page_view"
+	WidgetEventOpened        = "widget_opened"
+	WidgetEventClosed        = "widget_closed"
+	WidgetEventInitiatedChat = "initiated_chat"
+	WidgetEventButtonClicked = "button_clicked"
+)
+
 
