@@ -257,7 +257,23 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 			return len(labels) > 0
 		case "is_not_present":
 			return len(labels) == 0
-		case "equal_to", "contains", "includes", "is":
+		case "equal_to", "is":
+			if len(labels) == 0 {
+				return false
+			}
+			for _, lbl := range labels {
+				for _, v := range cond.Values {
+					vStr := strings.TrimSpace(fmt.Sprintf("%v", v))
+					if vStr == "" {
+						continue
+					}
+					if strings.EqualFold(lbl.Title, vStr) || fmt.Sprintf("%d", lbl.ID) == vStr {
+						return true
+					}
+				}
+			}
+			return false
+		case "contains", "includes":
 			if len(labels) == 0 {
 				return false
 			}
@@ -273,7 +289,7 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 				}
 			}
 			return false
-		case "not_equal_to", "does_not_contain", "is_not":
+		case "not_equal_to", "is_not":
 			if len(labels) == 0 {
 				return true
 			}
@@ -283,7 +299,23 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 					if vStr == "" {
 						continue
 					}
-					if strings.EqualFold(lbl.Title, vStr) || fmt.Sprintf("%d", lbl.ID) == vStr || strings.Contains(strings.ToLower(lbl.Title), strings.ToLower(vStr)) {
+					if strings.EqualFold(lbl.Title, vStr) || fmt.Sprintf("%d", lbl.ID) == vStr {
+						return false
+					}
+				}
+			}
+			return true
+		case "does_not_contain":
+			if len(labels) == 0 {
+				return true
+			}
+			for _, lbl := range labels {
+				for _, v := range cond.Values {
+					vStr := strings.TrimSpace(fmt.Sprintf("%v", v))
+					if vStr == "" {
+						continue
+					}
+					if strings.Contains(strings.ToLower(lbl.Title), strings.ToLower(vStr)) {
 						return false
 					}
 				}
