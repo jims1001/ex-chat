@@ -110,6 +110,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.Onboarding{},
 		&domain.BrandedEmailLayout{},
 		&domain.EmailChannelMigration{},
+		&domain.EmailLog{},
 		&domain.WebhookDelivery{},
 		&domain.IntegrationInstallation{},
 		&domain.SLABreachLog{},

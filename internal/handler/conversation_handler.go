@@ -27,6 +27,7 @@ type ConversationHandler struct {
 	webhookService    *service.WebhookService
 	pushService       *service.PushService
 	slaService        *service.SLAService
+	emailService      *service.EmailService
 	hub               *ws.Hub
 }
 
@@ -55,6 +56,10 @@ func (h *ConversationHandler) SetAutomationAndWebhook(as *service.AutomationServ
 
 func (h *ConversationHandler) SetPushService(ps *service.PushService) {
 	h.pushService = ps
+}
+
+func (h *ConversationHandler) SetEmailService(es *service.EmailService) {
+	h.emailService = es
 }
 
 func (h *ConversationHandler) SetNotificationRepo(nr *repository.NotificationRepository) {
@@ -860,6 +865,13 @@ func (h *ConversationHandler) SendTranscript(c *gin.Context) {
 
 	messages, _, _ := h.msgRepo.ListByConversation(accountID, conv.ID, true, 1, 200)
 
+	if h.emailService != nil {
+		if err := h.emailService.SendTranscript(c.Request.Context(), accountID, conv, messages, targetEmail); err != nil {
+			response.InternalError(c, "Failed to send transcript email: "+err.Error())
+			return
+		}
+	}
+
 	response.Success(c, gin.H{
 		"message":        "Transcript sent successfully",
 		"email":          targetEmail,
@@ -1031,6 +1043,17 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 	}
 
 	messages, _, _ := h.msgRepo.ListByConversation(inbox.AccountID, conv.ID, false, 1, 100)
+
+	if conv.Inbox == nil {
+		conv.Inbox = inbox
+	}
+
+	if h.emailService != nil {
+		if err := h.emailService.SendTranscript(c.Request.Context(), inbox.AccountID, conv, messages, targetEmail); err != nil {
+			response.InternalError(c, "Failed to send transcript email: "+err.Error())
+			return
+		}
+	}
 
 	response.Success(c, gin.H{
 		"message":        "Transcript sent successfully",

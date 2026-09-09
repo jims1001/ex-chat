@@ -88,6 +88,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	}
 	slaService := service.NewSLAService(db)
 	campaignService := service.NewCampaignService(db, convRepo, msgRepo, contactRepo)
+	emailService := service.NewEmailService(db)
 
 	// API 处理器 (Handlers)
 	authHandler := handler.NewAuthHandler(cfg, userRepo, accountRepo)
@@ -100,6 +101,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	convHandler.SetPushService(pushService)
 	convHandler.SetNotificationRepo(notificationRepo)
 	convHandler.SetSLAService(slaService)
+	convHandler.SetEmailService(emailService)
 	opsHandler := handler.NewOpsHandler(labelRepo, cannedRepo, convRepo)
 	macroHandler := handler.NewMacroNotificationHandler(macroRepo, notificationRepo, csatRepo)
 	reportHandler := handler.NewReportHandler(reportService)
