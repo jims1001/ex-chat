@@ -10,6 +10,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -20,6 +21,11 @@ type CampaignService struct {
 	msgRepo      *repository.MessageRepository
 	contactRepo  *repository.ContactRepository
 	campaignRepo *repository.CampaignRepository
+	hub          *ws.Hub
+}
+
+func (s *CampaignService) SetHub(hub *ws.Hub) {
+	s.hub = hub
 }
 
 func NewCampaignService(
@@ -378,6 +384,15 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 			}
 			_ = s.db.Create(&del)
 			sentCount++
+
+			if s.hub != nil {
+				s.hub.Broadcast(&ws.Event{
+					Name:           ws.EventMessageCreated,
+					AccountID:      accountID,
+					ConversationID: conv.ID,
+					Data:           msg,
+				})
+			}
 		}
 	}
 
@@ -461,6 +476,15 @@ func (s *CampaignService) TriggerOngoingCampaignForContact(accountID, inboxID, c
 			}
 			_ = s.db.Create(&del)
 			triggeredCount++
+
+			if s.hub != nil {
+				s.hub.Broadcast(&ws.Event{
+					Name:           ws.EventMessageCreated,
+					AccountID:      accountID,
+					ConversationID: conversationID,
+					Data:           msg,
+				})
+			}
 
 			logger.WithComponent("campaign").Info("ongoing campaign delivered to contact",
 				"campaign_id", camp.ID,

@@ -290,11 +290,82 @@ func TestPlatformAPIFullLifecycle(t *testing.T) {
 			Data struct {
 				Token    string `json:"token"`
 				LoginURL string `json:"login_url"`
+				URL      string `json:"url"`
 			} `json:"data"`
 		}
 		_ = json.Unmarshal(w.Body.Bytes(), &loginResp)
-		if loginResp.Data.Token == "" || loginResp.Data.LoginURL == "" {
-			t.Fatalf("expected non-empty sso login token and url")
+		if loginResp.Data.Token == "" || loginResp.Data.LoginURL == "" || loginResp.Data.URL == "" {
+			t.Fatalf("expected non-empty sso login token, url and login_url, got %v", loginResp.Data)
+		}
+
+		// 6.1 Get Platform User Token (POST /platform/api/v1/users/:id/token)
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/platform/api/v1/users/%d/token", user1ID), nil)
+		req.Header.Set("api_access_token", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("post user token failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+		var tokenResp struct {
+			Data struct {
+				AccessToken string `json:"access_token"`
+				Expiry      any    `json:"expiry"`
+				User        struct {
+					ID          uint   `json:"id"`
+					Name        string `json:"name"`
+					DisplayName string `json:"display_name"`
+					Email       string `json:"email"`
+					PubsubToken string `json:"pubsub_token"`
+				} `json:"user"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &tokenResp)
+		if tokenResp.Data.AccessToken == "" {
+			t.Fatalf("expected non-empty access_token from user token endpoint")
+		}
+		if tokenResp.Data.User.ID != user1ID || tokenResp.Data.User.PubsubToken == "" {
+			t.Fatalf("expected user data with valid ID and pubsub_token, got %+v", tokenResp.Data.User)
+		}
+
+		// 6.2 Get Platform User Token via GET
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/platform/api/v1/users/%d/token", user1ID), nil)
+		req.Header.Set("api_access_token", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("get user token failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+
+		// 6.3 Create User Without Password (Chatwoot compatible auto-generated password)
+		pwdlessPayload := map[string]string{
+			"name":  "Passwordless Specialist",
+			"email": "pwdless@alpha.com",
+			"role":  "agent",
+		}
+		b, _ = json.Marshal(pwdlessPayload)
+		req = httptest.NewRequest(http.MethodPost, "/platform/api/v1/users", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("api_access_token", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create user without password failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+
+		// 6.4 Create User with Existing Email (Chatwoot find-or-create behavior)
+		dupPayload := map[string]string{
+			"name":  "David Senior Chief Agent",
+			"email": "david@alpha.com",
+			"role":  "administrator",
+		}
+		b, _ = json.Marshal(dupPayload)
+		req = httptest.NewRequest(http.MethodPost, "/platform/api/v1/users", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("api_access_token", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("find-or-create existing user failed: code=%d body=%s", w.Code, w.Body.String())
 		}
 
 		// 7. Delete User 2
@@ -333,6 +404,32 @@ func TestPlatformAPIFullLifecycle(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("add user 1 to account failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+		var au1Resp struct {
+			Data domain.AccountUser `json:"data"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &au1Resp)
+		if au1Resp.Data.UserID != user1ID || au1Resp.Data.Role != "administrator" {
+			t.Fatalf("expected AccountUser entity returned with administrator role, got %+v", au1Resp.Data)
+		}
+
+		// 1.1 Re-add User 1 to Account 1 with different role (should update role, not error)
+		updateRolePayload := map[string]any{
+			"user_id": user1ID,
+			"role":    "agent",
+		}
+		b, _ = json.Marshal(updateRolePayload)
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/platform/api/v1/accounts/%d/account_users", account1ID), bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("api_access_token", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("re-add user 1 to update role failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &au1Resp)
+		if au1Resp.Data.Role != "agent" {
+			t.Fatalf("expected updated role agent, got %s", au1Resp.Data.Role)
 		}
 
 		// 2. Create User 3 and add to Account 1
@@ -450,6 +547,7 @@ func TestPlatformAPIFullLifecycle(t *testing.T) {
 			"description":  "Platform-wide intelligent routing and reply bot",
 			"outgoing_url": "https://ai.example.com/platform-webhook",
 			"bot_type":     "webhook",
+			"avatar_url":   "https://ai.example.com/bot-avatar.png",
 		}
 		b, _ := json.Marshal(botPayload)
 		req := httptest.NewRequest(http.MethodPost, "/platform/api/v1/agent_bots", bytes.NewReader(b))
@@ -470,6 +568,12 @@ func TestPlatformAPIFullLifecycle(t *testing.T) {
 		}
 		if botResp.Data.AccountID != 0 {
 			t.Fatalf("expected global bot AccountID = 0, got %d", botResp.Data.AccountID)
+		}
+		if botResp.Data.AccessToken == "" {
+			t.Fatalf("expected auto-generated AccessToken on AgentBot")
+		}
+		if botResp.Data.AvatarURL != "https://ai.example.com/bot-avatar.png" {
+			t.Fatalf("expected AvatarURL to be set, got %s", botResp.Data.AvatarURL)
 		}
 
 		// 2. List Global Agent Bots
@@ -520,6 +624,22 @@ func TestPlatformAPIFullLifecycle(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &updatedBotResp)
 		if updatedBotResp.Data.OutgoingURL != "https://ai.example.com/v2/webhook" {
 			t.Fatalf("expected updated outgoing url, got %s", updatedBotResp.Data.OutgoingURL)
+		}
+
+		// 5. Delete Agent Bot Avatar (DELETE /platform/api/v1/agent_bots/:id/avatar)
+		req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/platform/api/v1/agent_bots/%d/avatar", globalBotID), nil)
+		req.Header.Set("api_access_token", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("delete agent bot avatar failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+		var avatarDelResp struct {
+			Data domain.AgentBot `json:"data"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &avatarDelResp)
+		if avatarDelResp.Data.AvatarURL != "" {
+			t.Fatalf("expected avatar_url to be empty after deletion, got %s", avatarDelResp.Data.AvatarURL)
 		}
 	})
 
@@ -617,6 +737,32 @@ func TestPlatformAPIFullLifecycle(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200 using X-Platform-App-Token header, got %d", w.Code)
+		}
+
+		// 3.1 Alternative Header HTTP_API_ACCESS_TOKEN -> 200 OK
+		req = httptest.NewRequest(http.MethodGet, "/platform/api/v1/accounts", nil)
+		req.Header.Set("HTTP_API_ACCESS_TOKEN", platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 using HTTP_API_ACCESS_TOKEN header, got %d", w.Code)
+		}
+
+		// 3.2 Standard Authorization Bearer Header -> 200 OK
+		req = httptest.NewRequest(http.MethodGet, "/platform/api/v1/accounts", nil)
+		req.Header.Set("Authorization", "Bearer "+platformToken)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 using Authorization Bearer header, got %d", w.Code)
+		}
+
+		// 3.3 Query Parameter ?api_access_token -> 200 OK
+		req = httptest.NewRequest(http.MethodGet, "/platform/api/v1/accounts?api_access_token="+platformToken, nil)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 using query api_access_token, got %d", w.Code)
 		}
 
 		// 4. Invalid Account ID -> 400 or 404

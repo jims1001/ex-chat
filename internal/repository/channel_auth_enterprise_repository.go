@@ -1,9 +1,14 @@
 package repository
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
 )
@@ -16,10 +21,16 @@ type ChannelAuthEnterpriseRepository interface {
 	UpdateCall(call *domain.Call) error
 	CreateConference(conf *domain.Conference) error
 	GetConference(accountID uint, inboxID uint) (*domain.Conference, error)
+	GetConferenceByID(accountID uint, id uint) (*domain.Conference, error)
+	DeleteConference(accountID uint, id uint) error
+	DeleteConferenceByInbox(accountID uint, inboxID uint) error
+	GetCallByProviderCallID(accountID uint, providerCallID string) (*domain.Call, error)
 
 	// SAML
 	GetSAMLSetting(accountID uint) (*domain.SAMLSetting, error)
 	SaveSAMLSetting(setting *domain.SAMLSetting) error
+	DeleteSAMLSetting(accountID uint) error
+	DisableSAMLSetting(accountID uint) (*domain.SAMLSetting, error)
 
 	// Sessions & MFA & Password Reset
 	CreateSession(sess *domain.UserSession) error
@@ -30,6 +41,15 @@ type ChannelAuthEnterpriseRepository interface {
 	MarkPasswordResetTokenUsed(tokenID uint) error
 	GetMFAProfile(userID uint) (*domain.MFAProfile, error)
 	SaveMFAProfile(profile *domain.MFAProfile) error
+	GenerateMFABackupCodes(userID uint) ([]string, error)
+
+	// Token Revocation
+	RevokeToken(token string, userID uint, expiresAt time.Time) error
+	IsTokenRevoked(token string) (bool, error)
+
+	// Email Confirmation
+	ConfirmUserByToken(tokenStr string) (*domain.User, error)
+	GenerateConfirmationToken(userID uint) (string, error)
 
 	// Data Imports & Migrations
 	CreateDataImport(imp *domain.DataImport) error
@@ -43,6 +63,7 @@ type ChannelAuthEnterpriseRepository interface {
 	// Reporting Events
 	CreateReportingEvent(evt *domain.ReportingEvent) error
 	ListReportingEvents(accountID uint, name string) ([]domain.ReportingEvent, error)
+	ListReportingEventsByConversation(accountID, conversationID uint) ([]domain.ReportingEvent, error)
 
 	// Enterprise Limits & Billing
 	GetAccountLimit(accountID uint) (*domain.AccountLimit, error)
@@ -116,6 +137,32 @@ func (r *channelAuthEnterpriseRepository) GetConference(accountID uint, inboxID 
 	return &conf, nil
 }
 
+func (r *channelAuthEnterpriseRepository) GetConferenceByID(accountID uint, id uint) (*domain.Conference, error) {
+	var conf domain.Conference
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&conf).Error
+	if err != nil {
+		return nil, err
+	}
+	return &conf, nil
+}
+
+func (r *channelAuthEnterpriseRepository) DeleteConference(accountID uint, id uint) error {
+	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Conference{}).Error
+}
+
+func (r *channelAuthEnterpriseRepository) DeleteConferenceByInbox(accountID uint, inboxID uint) error {
+	return r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Delete(&domain.Conference{}).Error
+}
+
+func (r *channelAuthEnterpriseRepository) GetCallByProviderCallID(accountID uint, providerCallID string) (*domain.Call, error) {
+	var call domain.Call
+	err := r.db.Where("account_id = ? AND provider_call_id = ?", accountID, providerCallID).First(&call).Error
+	if err != nil {
+		return nil, err
+	}
+	return &call, nil
+}
+
 // SAML
 func (r *channelAuthEnterpriseRepository) GetSAMLSetting(accountID uint) (*domain.SAMLSetting, error) {
 	var setting domain.SAMLSetting
@@ -140,6 +187,23 @@ func (r *channelAuthEnterpriseRepository) SaveSAMLSetting(setting *domain.SAMLSe
 	}
 	setting.ID = existing.ID
 	return r.db.Save(setting).Error
+}
+
+func (r *channelAuthEnterpriseRepository) DeleteSAMLSetting(accountID uint) error {
+	return r.db.Where("account_id = ?", accountID).Delete(&domain.SAMLSetting{}).Error
+}
+
+func (r *channelAuthEnterpriseRepository) DisableSAMLSetting(accountID uint) (*domain.SAMLSetting, error) {
+	var setting domain.SAMLSetting
+	err := r.db.Where("account_id = ?", accountID).First(&setting).Error
+	if err != nil {
+		return nil, err
+	}
+	setting.Enabled = false
+	if err := r.db.Save(&setting).Error; err != nil {
+		return nil, err
+	}
+	return &setting, nil
 }
 
 // Sessions & MFA & Password Reset
@@ -199,6 +263,77 @@ func (r *channelAuthEnterpriseRepository) SaveMFAProfile(profile *domain.MFAProf
 	return r.db.Save(profile).Error
 }
 
+func (r *channelAuthEnterpriseRepository) GenerateMFABackupCodes(userID uint) ([]string, error) {
+	profile, err := r.GetMFAProfile(userID)
+	if err != nil || profile == nil {
+		return nil, errors.New("mfa profile not found")
+	}
+	rawCodes, err := auth.GenerateBackupCodes(8)
+	if err != nil {
+		return nil, err
+	}
+	bBytes, _ := json.Marshal(rawCodes)
+	profile.BackupCodes = string(bBytes)
+	if err := r.SaveMFAProfile(profile); err != nil {
+		return nil, err
+	}
+	return rawCodes, nil
+}
+
+func (r *channelAuthEnterpriseRepository) RevokeToken(token string, userID uint, expiresAt time.Time) error {
+	rev := domain.RevokedToken{
+		Token:     token,
+		UserID:    userID,
+		ExpiresAt: expiresAt,
+		CreatedAt: time.Now(),
+	}
+	return r.db.Create(&rev).Error
+}
+
+func (r *channelAuthEnterpriseRepository) IsTokenRevoked(token string) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.RevokedToken{}).Where("token = ? AND expires_at > ?", token, time.Now()).Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (r *channelAuthEnterpriseRepository) ConfirmUserByToken(tokenStr string) (*domain.User, error) {
+	if tokenStr == "" {
+		return nil, errors.New("invalid confirmation token")
+	}
+	var user domain.User
+	err := r.db.Where("confirmation_token = ?", tokenStr).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	user.ConfirmedAt = &now
+	user.ConfirmationToken = ""
+	if err := r.db.Save(&user).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (r *channelAuthEnterpriseRepository) GenerateConfirmationToken(userID uint) (string, error) {
+	bytes := make([]byte, 20)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(bytes)
+	now := time.Now()
+	err := r.db.Model(&domain.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"confirmation_token":   token,
+		"confirmation_sent_at": &now,
+	}).Error
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
 // Data Imports & Migrations
 func (r *channelAuthEnterpriseRepository) CreateDataImport(imp *domain.DataImport) error {
 	return r.db.Create(imp).Error
@@ -249,6 +384,14 @@ func (r *channelAuthEnterpriseRepository) ListReportingEvents(accountID uint, na
 		query = query.Where("name = ?", name)
 	}
 	err := query.Order("id DESC").Find(&events).Error
+	return events, err
+}
+
+func (r *channelAuthEnterpriseRepository) ListReportingEventsByConversation(accountID, conversationID uint) ([]domain.ReportingEvent, error) {
+	var events []domain.ReportingEvent
+	err := r.db.Where("account_id = ? AND (conversation_id = ? OR metadata_json LIKE ?)",
+		accountID, conversationID, fmt.Sprintf(`%%"conversation_id":%d%%`, conversationID)).
+		Order("id DESC").Find(&events).Error
 	return events, err
 }
 

@@ -15,6 +15,8 @@ const (
 	EventConversationUpdated  = "conversation.updated"
 	EventConversationStatus   = "conversation.status_changed"
 	EventConversationAssigned = "conversation.assigned"
+	EventConversationDeleted  = "conversation.deleted"
+	EventConversationPriority = "conversation.priority_changed"
 	EventPresenceUpdate       = "presence.update"
 )
 

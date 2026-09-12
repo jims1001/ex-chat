@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
@@ -90,10 +93,57 @@ func (h *AdvancedHandler) SetEventServices(
 // ----------------- Company Handlers -----------------
 
 type CreateCompanyReq struct {
-	Name        string `json:"name" binding:"required"`
-	Domain      string `json:"domain"`
-	Industry    string `json:"industry"`
-	Description string `json:"description"`
+	Name                 string            `json:"name"`
+	Domain               string            `json:"domain"`
+	Industry             string            `json:"industry"`
+	Description          string            `json:"description"`
+	AvatarURL            string            `json:"avatar_url"`
+	CustomAttributes     any               `json:"custom_attributes"`
+	AdditionalAttributes any               `json:"additional_attributes"`
+	Company              *CreateCompanyReq `json:"company"`
+}
+
+func parseCompanyAttributes(val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		b, err := json.Marshal(v)
+		if err == nil {
+			return string(b)
+		}
+	}
+	return ""
+}
+
+func mergeCompanyAttributes(existingStr string, newVal any) string {
+	if newVal == nil {
+		return existingStr
+	}
+	existing := make(map[string]any)
+	if strings.TrimSpace(existingStr) != "" {
+		_ = json.Unmarshal([]byte(existingStr), &existing)
+	}
+
+	switch v := newVal.(type) {
+	case string:
+		var incoming map[string]any
+		if err := json.Unmarshal([]byte(v), &incoming); err == nil {
+			for k, val := range incoming {
+				existing[k] = val
+			}
+		}
+	case map[string]any:
+		for k, val := range v {
+			existing[k] = val
+		}
+	}
+
+	b, _ := json.Marshal(existing)
+	return string(b)
 }
 
 func (h *AdvancedHandler) CreateCompany(c *gin.Context) {
@@ -104,12 +154,44 @@ func (h *AdvancedHandler) CreateCompany(c *gin.Context) {
 		return
 	}
 
+	if req.Company != nil {
+		if req.Company.Name != "" {
+			req.Name = req.Company.Name
+		}
+		if req.Company.Domain != "" {
+			req.Domain = req.Company.Domain
+		}
+		if req.Company.Industry != "" {
+			req.Industry = req.Company.Industry
+		}
+		if req.Company.Description != "" {
+			req.Description = req.Company.Description
+		}
+		if req.Company.AvatarURL != "" {
+			req.AvatarURL = req.Company.AvatarURL
+		}
+		if req.Company.CustomAttributes != nil {
+			req.CustomAttributes = req.Company.CustomAttributes
+		}
+		if req.Company.AdditionalAttributes != nil {
+			req.AdditionalAttributes = req.Company.AdditionalAttributes
+		}
+	}
+
+	if strings.TrimSpace(req.Name) == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Name is required"})
+		return
+	}
+
 	comp := domain.Company{
-		AccountID:   uint(accID),
-		Name:        req.Name,
-		Domain:      req.Domain,
-		Industry:    req.Industry,
-		Description: req.Description,
+		AccountID:            uint(accID),
+		Name:                 strings.TrimSpace(req.Name),
+		Domain:               strings.TrimSpace(req.Domain),
+		Industry:             strings.TrimSpace(req.Industry),
+		Description:          strings.TrimSpace(req.Description),
+		AvatarURL:            strings.TrimSpace(req.AvatarURL),
+		CustomAttributes:     parseCompanyAttributes(req.CustomAttributes),
+		AdditionalAttributes: parseCompanyAttributes(req.AdditionalAttributes),
 	}
 
 	if err := h.companyRepo.Create(c.Request.Context(), &comp); err != nil {
@@ -117,7 +199,11 @@ func (h *AdvancedHandler) CreateCompany(c *gin.Context) {
 		return
 	}
 
-	response.Created(c, comp)
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"payload": comp,
+		"data":    comp,
+	})
 }
 
 func (h *AdvancedHandler) ListCompanies(c *gin.Context) {
@@ -126,7 +212,7 @@ func (h *AdvancedHandler) ListCompanies(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "25"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("per_page", "25")))
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 25
 	}
@@ -137,7 +223,50 @@ func (h *AdvancedHandler) ListCompanies(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	response.Paginated(c, companies, total, page, pageSize)
+	c.JSON(http.StatusOK, gin.H{
+		"meta": gin.H{
+			"total_count": total,
+			"page":        page,
+		},
+		"payload": companies,
+		"data":    companies,
+	})
+}
+
+// SearchCompanies handles GET /api/v1/accounts/:account_id/companies/search
+func (h *AdvancedHandler) SearchCompanies(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	q := strings.TrimSpace(c.DefaultQuery("q", c.Query("search")))
+	if q == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "Specify search string with parameter q",
+		})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("per_page", "25")))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+
+	companies, total, err := h.companyRepo.Search(c.Request.Context(), uint(accID), q, page, pageSize)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"meta": gin.H{
+			"total_count": total,
+			"page":        page,
+		},
+		"payload": companies,
+		"data":    companies,
+	})
 }
 
 func (h *AdvancedHandler) GetCompany(c *gin.Context) {
@@ -148,14 +277,22 @@ func (h *AdvancedHandler) GetCompany(c *gin.Context) {
 		response.NotFound(c, "company not found")
 		return
 	}
-	response.Success(c, comp)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": comp,
+		"data":    comp,
+	})
 }
 
 type UpdateCompanyReq struct {
-	Name        string `json:"name"`
-	Domain      string `json:"domain"`
-	Industry    string `json:"industry"`
-	Description string `json:"description"`
+	Name                 string            `json:"name"`
+	Domain               string            `json:"domain"`
+	Industry             string            `json:"industry"`
+	Description          string            `json:"description"`
+	AvatarURL            string            `json:"avatar_url"`
+	CustomAttributes     any               `json:"custom_attributes"`
+	AdditionalAttributes any               `json:"additional_attributes"`
+	Company              *UpdateCompanyReq `json:"company"`
 }
 
 func (h *AdvancedHandler) UpdateCompany(c *gin.Context) {
@@ -173,6 +310,30 @@ func (h *AdvancedHandler) UpdateCompany(c *gin.Context) {
 		return
 	}
 
+	if req.Company != nil {
+		if req.Company.Name != "" {
+			req.Name = req.Company.Name
+		}
+		if req.Company.Domain != "" {
+			req.Domain = req.Company.Domain
+		}
+		if req.Company.Industry != "" {
+			req.Industry = req.Company.Industry
+		}
+		if req.Company.Description != "" {
+			req.Description = req.Company.Description
+		}
+		if req.Company.AvatarURL != "" {
+			req.AvatarURL = req.Company.AvatarURL
+		}
+		if req.Company.CustomAttributes != nil {
+			req.CustomAttributes = req.Company.CustomAttributes
+		}
+		if req.Company.AdditionalAttributes != nil {
+			req.AdditionalAttributes = req.Company.AdditionalAttributes
+		}
+	}
+
 	if req.Name != "" {
 		comp.Name = req.Name
 	}
@@ -185,12 +346,25 @@ func (h *AdvancedHandler) UpdateCompany(c *gin.Context) {
 	if req.Description != "" {
 		comp.Description = req.Description
 	}
+	if req.AvatarURL != "" {
+		comp.AvatarURL = req.AvatarURL
+	}
+	if req.CustomAttributes != nil {
+		comp.CustomAttributes = mergeCompanyAttributes(comp.CustomAttributes, req.CustomAttributes)
+	}
+	if req.AdditionalAttributes != nil {
+		comp.AdditionalAttributes = mergeCompanyAttributes(comp.AdditionalAttributes, req.AdditionalAttributes)
+	}
 
 	if err := h.companyRepo.Update(c.Request.Context(), comp); err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	response.Success(c, comp)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": comp,
+		"data":    comp,
+	})
 }
 
 func (h *AdvancedHandler) DeleteCompany(c *gin.Context) {
@@ -201,6 +375,102 @@ func (h *AdvancedHandler) DeleteCompany(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"deleted": true})
+}
+
+type DestroyCompanyCustomAttrsReq struct {
+	CustomAttributes []string `json:"custom_attributes"`
+	CustomAttribute  string   `json:"custom_attribute"`
+	Key              string   `json:"key"`
+	Keys             []string `json:"keys"`
+	ID               uint     `json:"id"`
+	CompanyID        uint     `json:"company_id"`
+}
+
+// DestroyCompanyCustomAttributes handles POST /api/v1/accounts/:account_id/companies/:id/destroy_custom_attributes
+func (h *AdvancedHandler) DestroyCompanyCustomAttributes(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	companyID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	if companyID == 0 {
+		companyID, _ = strconv.ParseUint(c.Param("company_id"), 10, 32)
+	}
+
+	var req DestroyCompanyCustomAttrsReq
+	if err := c.ShouldBindJSON(&req); err != nil && companyID == 0 {
+		response.BadRequest(c, "Invalid request payload")
+		return
+	}
+
+	if companyID == 0 {
+		if req.ID > 0 {
+			companyID = uint64(req.ID)
+		} else if req.CompanyID > 0 {
+			companyID = uint64(req.CompanyID)
+		}
+	}
+
+	if companyID == 0 {
+		response.BadRequest(c, "Company ID is required")
+		return
+	}
+
+	keys := req.CustomAttributes
+	if len(keys) == 0 && len(req.Keys) > 0 {
+		keys = req.Keys
+	}
+	if len(keys) == 0 && req.CustomAttribute != "" {
+		keys = []string{req.CustomAttribute}
+	}
+	if len(keys) == 0 && req.Key != "" {
+		keys = []string{req.Key}
+	}
+
+	if len(keys) == 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "custom_attributes must be an array",
+		})
+		return
+	}
+
+	updated, err := h.companyRepo.DestroyCustomAttributes(c.Request.Context(), uint(accID), uint(companyID), keys)
+	if err != nil || updated == nil {
+		response.NotFound(c, "Company not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": updated,
+		"data":    updated,
+		"message": "Company custom attributes removed successfully",
+	})
+}
+
+// DeleteCompanyAvatar handles DELETE /api/v1/accounts/:account_id/companies/:id/avatar
+func (h *AdvancedHandler) DeleteCompanyAvatar(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	companyID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	if companyID == 0 {
+		companyID, _ = strconv.ParseUint(c.Param("company_id"), 10, 32)
+	}
+
+	if companyID == 0 {
+		response.BadRequest(c, "Company ID is required")
+		return
+	}
+
+	updated, err := h.companyRepo.DeleteAvatar(c.Request.Context(), uint(accID), uint(companyID))
+	if err != nil || updated == nil {
+		response.NotFound(c, "Company not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"payload":    updated,
+		"data":       updated,
+		"avatar_url": "",
+		"message":    "Company avatar deleted successfully",
+	})
 }
 
 func (h *AdvancedHandler) ListCompanyContacts(c *gin.Context) {
@@ -229,7 +499,85 @@ func (h *AdvancedHandler) ListCompanyContacts(c *gin.Context) {
 		return
 	}
 
-	response.Paginated(c, contacts, total, page, pageSize)
+	c.JSON(http.StatusOK, gin.H{
+		"meta": gin.H{
+			"total_count": total,
+			"page":        page,
+		},
+		"payload": contacts,
+		"data": response.PaginatedData{
+			Items:      contacts,
+			Total:      total,
+			Page:       page,
+			PageSize:   pageSize,
+			TotalPages: int(total)/pageSize + 1,
+		},
+	})
+}
+
+type CompanyContactSearchResult struct {
+	domain.Contact
+	LinkedToCurrentCompany bool `json:"linked_to_current_company"`
+}
+
+// SearchCompanyContacts handles GET /api/v1/accounts/:account_id/companies/:id/contacts/search
+func (h *AdvancedHandler) SearchCompanyContacts(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	companyID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	if companyID == 0 {
+		companyID, _ = strconv.ParseUint(c.Param("company_id"), 10, 32)
+	}
+
+	comp, err := h.companyRepo.GetByID(c.Request.Context(), uint(accID), uint(companyID))
+	if err != nil || comp == nil {
+		response.NotFound(c, "Company not found")
+		return
+	}
+
+	q := strings.TrimSpace(c.DefaultQuery("q", c.Query("search")))
+	if q == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "Specify search string with parameter q",
+		})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("per_page", "15")))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 15
+	}
+
+	scope := strings.TrimSpace(c.Query("scope"))
+	if c.Query("include_current") == "true" {
+		scope = "all"
+	}
+
+	contacts, total, err := h.companyRepo.SearchContacts(c.Request.Context(), uint(accID), comp.ID, q, scope, page, pageSize)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	results := make([]CompanyContactSearchResult, len(contacts))
+	for i, ct := range contacts {
+		results[i] = CompanyContactSearchResult{
+			Contact:                ct,
+			LinkedToCurrentCompany: ct.CompanyID != nil && *ct.CompanyID == comp.ID,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"meta": gin.H{
+			"total_count": total,
+			"page":        page,
+		},
+		"payload": results,
+		"data":    results,
+	})
 }
 
 type AddCompanyContactsReq struct {
@@ -511,6 +859,21 @@ type CreateAgentBotReq struct {
 	Description string `json:"description"`
 	OutgoingURL string `json:"outgoing_url" binding:"required"`
 	BotType     string `json:"bot_type"`
+	AvatarURL   string `json:"avatar_url"`
+	BotConfig   string `json:"bot_config"`
+}
+
+type UpdateAgentBotReq struct {
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	OutgoingURL *string `json:"outgoing_url"`
+	BotType     *string `json:"bot_type"`
+	AvatarURL   *string `json:"avatar_url"`
+	BotConfig   *string `json:"bot_config"`
+}
+
+type ConnectBotInboxReq struct {
+	InboxID uint `json:"inbox_id"`
 }
 
 func (h *AdvancedHandler) CreateAgentBot(c *gin.Context) {
@@ -523,10 +886,13 @@ func (h *AdvancedHandler) CreateAgentBot(c *gin.Context) {
 
 	bot := domain.AgentBot{
 		AccountID:   uint(accID),
-		Name:        req.Name,
+		Name:        strings.TrimSpace(req.Name),
 		Description: req.Description,
-		OutgoingURL: req.OutgoingURL,
+		OutgoingURL: strings.TrimSpace(req.OutgoingURL),
 		BotType:     req.BotType,
+		AvatarURL:   req.AvatarURL,
+		BotConfig:   req.BotConfig,
+		AccessToken: uuid.New().String(),
 	}
 	if bot.BotType == "" {
 		bot.BotType = "webhook"
@@ -537,7 +903,20 @@ func (h *AdvancedHandler) CreateAgentBot(c *gin.Context) {
 		return
 	}
 
-	response.Created(c, bot)
+	c.JSON(http.StatusCreated, gin.H{
+		"success":      true,
+		"payload":      bot,
+		"data":         bot,
+		"id":           bot.ID,
+		"account_id":   bot.AccountID,
+		"name":         bot.Name,
+		"description":  bot.Description,
+		"outgoing_url": bot.OutgoingURL,
+		"bot_type":     bot.BotType,
+		"avatar_url":   bot.AvatarURL,
+		"access_token": bot.AccessToken,
+		"bot_config":   bot.BotConfig,
+	})
 }
 
 func (h *AdvancedHandler) ListAgentBots(c *gin.Context) {
@@ -548,6 +927,216 @@ func (h *AdvancedHandler) ListAgentBots(c *gin.Context) {
 		return
 	}
 	response.Success(c, bots)
+}
+
+func (h *AdvancedHandler) GetAgentBot(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	bot, err := h.agentBotRepo.GetByID(c.Request.Context(), uint(accID), uint(botID))
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if bot == nil {
+		response.NotFound(c, "Agent bot not found")
+		return
+	}
+
+	inboxes, _ := h.agentBotRepo.GetInboxes(c.Request.Context(), uint(accID), uint(botID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"payload":      bot,
+		"data":         bot,
+		"id":           bot.ID,
+		"account_id":   bot.AccountID,
+		"name":         bot.Name,
+		"description":  bot.Description,
+		"outgoing_url": bot.OutgoingURL,
+		"bot_type":     bot.BotType,
+		"avatar_url":   bot.AvatarURL,
+		"access_token": bot.AccessToken,
+		"bot_config":   bot.BotConfig,
+		"inboxes":      inboxes,
+	})
+}
+
+func (h *AdvancedHandler) UpdateAgentBot(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	var req UpdateAgentBotReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updates := make(map[string]any)
+	if req.Name != nil {
+		updates["name"] = strings.TrimSpace(*req.Name)
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
+	}
+	if req.OutgoingURL != nil {
+		updates["outgoing_url"] = strings.TrimSpace(*req.OutgoingURL)
+	}
+	if req.BotType != nil {
+		updates["bot_type"] = strings.TrimSpace(*req.BotType)
+	}
+	if req.AvatarURL != nil {
+		updates["avatar_url"] = *req.AvatarURL
+	}
+	if req.BotConfig != nil {
+		updates["bot_config"] = *req.BotConfig
+	}
+
+	updated, err := h.agentBotRepo.Update(c.Request.Context(), uint(accID), uint(botID), updates)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Agent bot not found")
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"payload":      updated,
+		"data":         updated,
+		"id":           updated.ID,
+		"account_id":   updated.AccountID,
+		"name":         updated.Name,
+		"description":  updated.Description,
+		"outgoing_url": updated.OutgoingURL,
+		"bot_type":     updated.BotType,
+		"avatar_url":   updated.AvatarURL,
+		"access_token": updated.AccessToken,
+		"bot_config":   updated.BotConfig,
+	})
+}
+
+func (h *AdvancedHandler) DeleteAgentBot(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	if err := h.agentBotRepo.Delete(c.Request.Context(), uint(accID), uint(botID)); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Agent bot not found")
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Agent bot deleted successfully"})
+}
+
+func (h *AdvancedHandler) DeleteAgentBotAvatar(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	if err := h.agentBotRepo.DeleteAvatar(c.Request.Context(), uint(accID), uint(botID)); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Agent bot not found")
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Agent bot avatar removed successfully"})
+}
+
+func (h *AdvancedHandler) GetAgentBotInboxes(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	inboxes, err := h.agentBotRepo.GetInboxes(c.Request.Context(), uint(accID), uint(botID))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Agent bot not found")
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, inboxes)
+}
+
+func (h *AdvancedHandler) ConnectAgentBotInbox(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	var req ConnectBotInboxReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.InboxID == 0 {
+		response.BadRequest(c, "Valid inbox_id is required")
+		return
+	}
+
+	if err := h.agentBotRepo.ConnectInbox(c.Request.Context(), uint(accID), uint(botID), req.InboxID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Agent bot or inbox not found")
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Agent bot connected to inbox successfully"})
+}
+
+func (h *AdvancedHandler) DisconnectAgentBotInbox(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	botID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || botID == 0 {
+		response.BadRequest(c, "Invalid bot ID")
+		return
+	}
+
+	inboxID, err := strconv.ParseUint(c.Param("inbox_id"), 10, 32)
+	if err != nil || inboxID == 0 {
+		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	if err := h.agentBotRepo.DisconnectInbox(c.Request.Context(), uint(accID), uint(botID), uint(inboxID)); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Binding not found")
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Agent bot disconnected from inbox successfully"})
 }
 
 // ----------------- Attachment Handlers -----------------
@@ -868,6 +1457,28 @@ func (h *AdvancedHandler) DeleteContactNote(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"deleted": true})
+}
+
+// GetContactNote retrieves a single contact note by note_id
+func (h *AdvancedHandler) GetContactNote(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	noteID, _ := strconv.ParseUint(c.Param("note_id"), 10, 32)
+
+	var note domain.ContactNote
+	if err := h.db.WithContext(c.Request.Context()).
+		Preload("User").
+		Where("account_id = ? AND contact_id = ? AND id = ?", accID, contactID, noteID).
+		First(&note).Error; err != nil {
+		response.NotFound(c, "Contact note not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    note,
+		"payload": note,
+	})
 }
 
 // ----------------- Agent Capacity Policies -----------------

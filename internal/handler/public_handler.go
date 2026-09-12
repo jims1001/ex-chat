@@ -29,6 +29,7 @@ type PublicHandler struct {
 	automationService *service.AutomationService
 	webhookService    *service.WebhookService
 	pushService       *service.PushService
+	campaignService   *service.CampaignService
 	hub               *ws.Hub
 }
 
@@ -65,6 +66,11 @@ func (h *PublicHandler) SetAutomationAndWebhook(as *service.AutomationService, w
 func (h *PublicHandler) SetPushAndHub(ps *service.PushService, hub *ws.Hub) {
 	h.pushService = ps
 	h.hub = hub
+}
+
+// SetCampaignService injects campaign service
+func (h *PublicHandler) SetCampaignService(cs *service.CampaignService) {
+	h.campaignService = cs
 }
 
 // ----------------- Helper Methods -----------------
@@ -254,6 +260,10 @@ func (h *PublicHandler) CreateConversation(c *gin.Context) {
 
 	logger.WithComponent("public_api").Info("public conversation created",
 		"conversation_id", conv.ID, "contact_id", contact.ID, "inbox_id", inbox.ID)
+
+	if h.campaignService != nil {
+		_, _ = h.campaignService.TriggerOngoingCampaignForContact(inbox.AccountID, conv.InboxID, conv.ContactID, conv.ID)
+	}
 
 	response.Created(c, conv)
 }

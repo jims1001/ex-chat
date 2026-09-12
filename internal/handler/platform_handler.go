@@ -12,6 +12,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -43,7 +44,16 @@ func (h *PlatformHandler) PlatformAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.GetHeader("api_access_token")
 		if token == "" {
+			token = c.GetHeader("HTTP_API_ACCESS_TOKEN")
+		}
+		if token == "" {
 			token = c.GetHeader("X-Platform-App-Token")
+		}
+		if token == "" {
+			authHeader := c.GetHeader("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			}
 		}
 		if token == "" {
 			token = c.Query("api_access_token")
@@ -252,13 +262,16 @@ func (h *PlatformHandler) GetAccountStatus(c *gin.Context) {
 
 // PlatformCreateUserReq represents user creation payload
 type PlatformCreateUserReq struct {
-	Name     string `json:"name" binding:"required"`
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
-	Role     string `json:"role"`
+	Name        string `json:"name" binding:"required"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email" binding:"required,email"`
+	Password    string `json:"password"`
+	Role        string `json:"role"`
+	Type        string `json:"type"`
+	AvatarURL   string `json:"avatar_url"`
 }
 
-// CreateUser provisions a new user
+// CreateUser provisions a new user or updates an existing user by email
 func (h *PlatformHandler) CreateUser(c *gin.Context) {
 	var req PlatformCreateUserReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -266,7 +279,47 @@ func (h *PlatformHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	normalizedEmail := strings.ToLower(strings.TrimSpace(req.Email))
+	existingUser, _ := h.userRepo.FindByEmail(normalizedEmail)
+	if existingUser != nil {
+		if strings.TrimSpace(req.Name) != "" {
+			existingUser.Name = strings.TrimSpace(req.Name)
+		}
+		if strings.TrimSpace(req.DisplayName) != "" {
+			existingUser.DisplayName = strings.TrimSpace(req.DisplayName)
+		}
+		if strings.TrimSpace(req.Role) != "" {
+			existingUser.Role = strings.TrimSpace(req.Role)
+		}
+		if strings.TrimSpace(req.Type) != "" {
+			existingUser.Type = strings.TrimSpace(req.Type)
+		}
+		if strings.TrimSpace(req.AvatarURL) != "" {
+			existingUser.AvatarURL = strings.TrimSpace(req.AvatarURL)
+		}
+		if strings.TrimSpace(req.Password) != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+			if err == nil {
+				existingUser.PasswordHash = string(hash)
+			}
+		}
+		if existingUser.PubsubToken == "" {
+			existingUser.PubsubToken = uuid.New().String()
+		}
+		_ = h.userRepo.Update(existingUser)
+		logger.WithComponent("platform").Info("platform user updated via find-or-create",
+			"user_id", existingUser.ID,
+			"email", existingUser.Email,
+		)
+		response.Created(c, existingUser)
+		return
+	}
+
+	pwd := strings.TrimSpace(req.Password)
+	if pwd == "" {
+		pwd = uuid.New().String() + "Aa1!"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.DefaultCost)
 	if err != nil {
 		logger.WithComponent("platform").Error("failed to hash password for platform user",
 			"email", req.Email,
@@ -276,23 +329,35 @@ func (h *PlatformHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
+	displayName := strings.TrimSpace(req.DisplayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(req.Name)
+	}
+
 	user := domain.User{
 		Name:         strings.TrimSpace(req.Name),
-		Email:        strings.ToLower(strings.TrimSpace(req.Email)),
+		DisplayName:  displayName,
+		Email:        normalizedEmail,
 		PasswordHash: string(hash),
 		Role:         req.Role,
+		Type:         req.Type,
+		AvatarURL:    strings.TrimSpace(req.AvatarURL),
+		PubsubToken:  uuid.New().String(),
 		Availability: domain.AvailabilityOnline,
 	}
 	if user.Role == "" {
 		user.Role = domain.RoleAgent
 	}
+	if user.Type == "" {
+		user.Type = domain.UserTypeUser
+	}
 
 	if err := h.userRepo.Create(&user); err != nil {
-		logger.WithComponent("platform").Warn("platform create user email conflict or failure",
+		logger.WithComponent("platform").Warn("platform create user failure",
 			"email", req.Email,
 			"error", err.Error(),
 		)
-		response.Error(c, http.StatusConflict, "email already in use")
+		response.Error(c, http.StatusConflict, "email already in use or database error")
 		return
 	}
 
@@ -353,6 +418,7 @@ type PlatformUpdateUserReq struct {
 	Email        string `json:"email"`
 	Password     string `json:"password"`
 	Role         string `json:"role"`
+	Type         string `json:"type"`
 	Availability string `json:"availability"`
 	AvatarURL    string `json:"avatar_url"`
 }
@@ -388,6 +454,9 @@ func (h *PlatformHandler) UpdateUser(c *gin.Context) {
 	}
 	if strings.TrimSpace(req.Role) != "" {
 		updates["role"] = strings.TrimSpace(req.Role)
+	}
+	if strings.TrimSpace(req.Type) != "" {
+		updates["type"] = strings.TrimSpace(req.Type)
 	}
 	if strings.TrimSpace(req.Availability) != "" {
 		updates["availability"] = strings.TrimSpace(req.Availability)
@@ -446,10 +515,52 @@ func (h *PlatformHandler) GetUserLoginToken(c *gin.Context) {
 		return
 	}
 
+	loginURL := fmt.Sprintf("/app/login?token=%s", token)
 	response.Success(c, gin.H{
 		"user":      user,
 		"token":     token,
-		"login_url": fmt.Sprintf("/app/login?token=%s", token),
+		"url":       loginURL,
+		"login_url": loginURL,
+	})
+}
+
+// GetUserToken generates or returns an access token and user identity for platform user
+func (h *PlatformHandler) GetUserToken(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "Invalid user ID")
+		return
+	}
+
+	user, _, err := h.platformRepo.GetUser(c.Request.Context(), uint(id))
+	if err != nil || user == nil {
+		response.NotFound(c, "User not found")
+		return
+	}
+
+	token, err := auth.GenerateToken(user, h.jwtSecret, 24*30)
+	if err != nil {
+		logger.WithComponent("platform").Error("failed to generate access token", "user_id", id, "error", err.Error())
+		response.InternalError(c, "Failed to generate access token")
+		return
+	}
+
+	pubsubToken := user.PubsubToken
+	if pubsubToken == "" {
+		pubsubToken = uuid.New().String()
+		_, _ = h.platformRepo.UpdateUser(c.Request.Context(), user.ID, map[string]any{"pubsub_token": pubsubToken})
+	}
+
+	response.Success(c, gin.H{
+		"access_token": token,
+		"expiry":       nil,
+		"user": gin.H{
+			"id":           user.ID,
+			"name":         user.Name,
+			"display_name": user.DisplayName,
+			"email":        user.Email,
+			"pubsub_token": pubsubToken,
+		},
 	})
 }
 
@@ -474,14 +585,15 @@ func (h *PlatformHandler) AddAccountUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.platformRepo.AddUserToAccount(c.Request.Context(), uint(accountID), req.UserID, req.Role); err != nil {
+	au, err := h.platformRepo.AddUserToAccount(c.Request.Context(), uint(accountID), req.UserID, req.Role)
+	if err != nil {
 		logger.WithComponent("platform").Error("failed to add user to account via platform api",
 			"account_id", uint(accountID),
 			"user_id", req.UserID,
 			"role", req.Role,
 			"error", err.Error(),
 		)
-		response.Error(c, http.StatusConflict, err.Error())
+		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -491,7 +603,7 @@ func (h *PlatformHandler) AddAccountUser(c *gin.Context) {
 		"role", req.Role,
 	)
 
-	response.Created(c, gin.H{"status": "ok"})
+	response.Created(c, au)
 }
 
 // ListAccountUsers lists member users within a tenant account
@@ -584,6 +696,8 @@ type PlatformCreateAgentBotReq struct {
 	Description string `json:"description"`
 	OutgoingURL string `json:"outgoing_url" binding:"required"`
 	BotType     string `json:"bot_type"`
+	AvatarURL   string `json:"avatar_url"`
+	AccessToken string `json:"access_token"`
 	AccountID   uint   `json:"account_id"`
 }
 
@@ -605,6 +719,8 @@ func (h *PlatformHandler) CreateAgentBot(c *gin.Context) {
 		Description: req.Description,
 		OutgoingURL: strings.TrimSpace(req.OutgoingURL),
 		BotType:     botType,
+		AvatarURL:   strings.TrimSpace(req.AvatarURL),
+		AccessToken: strings.TrimSpace(req.AccessToken),
 		AccountID:   req.AccountID,
 	}
 
@@ -671,6 +787,8 @@ type PlatformUpdateAgentBotReq struct {
 	Description string `json:"description"`
 	OutgoingURL string `json:"outgoing_url"`
 	BotType     string `json:"bot_type"`
+	AvatarURL   string `json:"avatar_url"`
+	AccessToken string `json:"access_token"`
 }
 
 // UpdateAgentBot updates an agent bot's parameters
@@ -700,6 +818,12 @@ func (h *PlatformHandler) UpdateAgentBot(c *gin.Context) {
 	if strings.TrimSpace(req.BotType) != "" {
 		updates["bot_type"] = strings.TrimSpace(req.BotType)
 	}
+	if strings.TrimSpace(req.AvatarURL) != "" {
+		updates["avatar_url"] = strings.TrimSpace(req.AvatarURL)
+	}
+	if strings.TrimSpace(req.AccessToken) != "" {
+		updates["access_token"] = strings.TrimSpace(req.AccessToken)
+	}
 
 	updated, err := h.platformRepo.UpdateAgentBot(c.Request.Context(), uint(id), updates)
 	if err != nil {
@@ -728,6 +852,23 @@ func (h *PlatformHandler) DeleteAgentBot(c *gin.Context) {
 
 	logger.WithComponent("platform").Info("agent bot deleted", "bot_id", id)
 	response.Success(c, gin.H{"message": "agent bot deleted successfully"})
+}
+
+// DeleteAgentBotAvatar removes the avatar of an agent bot
+func (h *PlatformHandler) DeleteAgentBotAvatar(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "Invalid agent bot ID")
+		return
+	}
+
+	if err := h.platformRepo.DeleteAgentBotAvatar(c.Request.Context(), uint(id)); err != nil {
+		response.NotFound(c, "Agent bot not found")
+		return
+	}
+
+	bot, _ := h.platformRepo.GetAgentBot(c.Request.Context(), uint(id))
+	response.Success(c, bot)
 }
 
 // ListAccountAgentBots returns agent bots applicable to a specific account
@@ -775,6 +916,8 @@ func (h *PlatformHandler) CreateAccountAgentBot(c *gin.Context) {
 		Description: req.Description,
 		OutgoingURL: strings.TrimSpace(req.OutgoingURL),
 		BotType:     botType,
+		AvatarURL:   strings.TrimSpace(req.AvatarURL),
+		AccessToken: strings.TrimSpace(req.AccessToken),
 	}
 
 	if err := h.platformRepo.CreateAgentBot(c.Request.Context(), &bot); err != nil {

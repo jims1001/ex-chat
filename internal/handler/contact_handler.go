@@ -650,3 +650,305 @@ func (h *ContactHandler) ExportContacts(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
 }
+
+// ----------------- Contact Enhancements -----------------
+
+// ListActiveContacts lists contacts with ongoing active conversations
+func (h *ContactHandler) ListActiveContacts(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("limit", "25")))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	search := strings.TrimSpace(c.Query("q"))
+
+	contacts, total, err := h.contactRepo.ListActive(accountID, page, pageSize, search)
+	if err != nil {
+		response.InternalError(c, "Failed to list active contacts: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": contacts,
+		"data":    contacts,
+		"meta": gin.H{
+			"count":        total,
+			"current_page": page,
+			"page_size":    pageSize,
+		},
+	})
+}
+
+// SearchContacts searches contacts matching query
+func (h *ContactHandler) SearchContacts(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("limit", "25")))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	query := strings.TrimSpace(c.DefaultQuery("q", c.Query("search")))
+
+	contacts, total, err := h.contactRepo.Search(accountID, query, page, pageSize)
+	if err != nil {
+		response.InternalError(c, "Failed to search contacts: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": contacts,
+		"data":    contacts,
+		"meta": gin.H{
+			"count":        total,
+			"current_page": page,
+			"page_size":    pageSize,
+		},
+	})
+}
+
+// FilterContacts handles advanced structured filtering of contacts
+func (h *ContactHandler) FilterContacts(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	var req domain.ContactFilterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid filter payload: "+err.Error())
+		return
+	}
+
+	page := req.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
+		if page < 1 {
+			page = 1
+		}
+	}
+	pageSize := req.PageSize
+	if pageSize < 1 {
+		pageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("limit", "25")))
+		if pageSize < 1 || pageSize > 100 {
+			pageSize = 25
+		}
+	}
+
+	contacts, total, err := h.contactRepo.Filter(accountID, req.Payload, page, pageSize)
+	if err != nil {
+		response.InternalError(c, "Failed to filter contacts: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": contacts,
+		"data":    contacts,
+		"meta": gin.H{
+			"count":        total,
+			"current_page": page,
+			"page_size":    pageSize,
+		},
+	})
+}
+
+// ImportContacts imports contacts from multipart CSV or JSON body
+func (h *ContactHandler) ImportContacts(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	var contactsToImport []domain.Contact
+
+	// 1. Check if multipart form upload
+	contentType := c.GetHeader("Content-Type")
+	if strings.Contains(contentType, "multipart/form-data") {
+		file, _, err := c.Request.FormFile("import_file")
+		if err != nil {
+			file, _, err = c.Request.FormFile("file")
+		}
+		if err != nil {
+			response.BadRequest(c, "No file uploaded: "+err.Error())
+			return
+		}
+		defer file.Close()
+
+		reader := csv.NewReader(file)
+		records, err := reader.ReadAll()
+		if err != nil {
+			response.BadRequest(c, "Failed to parse CSV file: "+err.Error())
+			return
+		}
+		if len(records) < 2 {
+			response.BadRequest(c, "CSV must contain at least header and one data row")
+			return
+		}
+
+		headers := records[0]
+		headerIndex := make(map[string]int)
+		for idx, h := range headers {
+			headerIndex[strings.TrimSpace(strings.ToLower(h))] = idx
+		}
+
+		for _, row := range records[1:] {
+			var contact domain.Contact
+			contact.AccountID = accountID
+
+			if idx, ok := headerIndex["name"]; ok && idx < len(row) {
+				contact.Name = strings.TrimSpace(row[idx])
+			}
+			if idx, ok := headerIndex["email"]; ok && idx < len(row) {
+				contact.Email = strings.ToLower(strings.TrimSpace(row[idx]))
+			}
+			if idx, ok := headerIndex["phone_number"]; ok && idx < len(row) {
+				contact.PhoneNumber = strings.TrimSpace(row[idx])
+			} else if idx, ok := headerIndex["phone"]; ok && idx < len(row) {
+				contact.PhoneNumber = strings.TrimSpace(row[idx])
+			}
+			if idx, ok := headerIndex["identifier"]; ok && idx < len(row) {
+				contact.Identifier = strings.TrimSpace(row[idx])
+			}
+			if idx, ok := headerIndex["custom_attributes"]; ok && idx < len(row) {
+				contact.CustomAttributes = strings.TrimSpace(row[idx])
+			}
+
+			if contact.Name != "" || contact.Email != "" || contact.PhoneNumber != "" || contact.Identifier != "" {
+				contactsToImport = append(contactsToImport, contact)
+			}
+		}
+	} else {
+		// 2. Direct JSON body
+		var jsonReq struct {
+			Contacts []domain.Contact `json:"contacts"`
+			Contact  *domain.Contact  `json:"contact"`
+		}
+		if err := c.ShouldBindJSON(&jsonReq); err == nil {
+			if len(jsonReq.Contacts) > 0 {
+				contactsToImport = append(contactsToImport, jsonReq.Contacts...)
+			} else if jsonReq.Contact != nil {
+				contactsToImport = append(contactsToImport, *jsonReq.Contact)
+			}
+		}
+		if len(contactsToImport) == 0 {
+			// Try binding as array of contacts
+			var rawList []domain.Contact
+			if err := c.ShouldBindJSON(&rawList); err == nil && len(rawList) > 0 {
+				contactsToImport = append(contactsToImport, rawList...)
+			}
+		}
+	}
+
+	if len(contactsToImport) == 0 {
+		response.BadRequest(c, "No valid contacts found in import payload")
+		return
+	}
+
+	importedCount, updatedCount, err := h.contactRepo.ImportContacts(accountID, contactsToImport)
+	if err != nil {
+		response.InternalError(c, "Failed to import contacts: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":        true,
+		"message":        "Contacts imported successfully",
+		"imported_count": importedCount,
+		"updated_count":  updatedCount,
+		"total_records":  len(contactsToImport),
+	})
+}
+
+// DestroyCustomAttributes deletes designated custom attributes key(s) from a contact
+func (h *ContactHandler) DestroyCustomAttributes(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	contactID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		contactID, _ = strconv.ParseUint(c.Param("contact_id"), 10, 64)
+	}
+
+	var req struct {
+		ContactID        uint     `json:"contact_id"`
+		CustomAttributes []string `json:"custom_attributes"`
+		CustomAttribute  string   `json:"custom_attribute"`
+		Key              string   `json:"key"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	targetID := uint(contactID)
+	if targetID == 0 {
+		targetID = req.ContactID
+	}
+	if targetID == 0 {
+		response.BadRequest(c, "Contact ID is required")
+		return
+	}
+
+	keys := req.CustomAttributes
+	if req.CustomAttribute != "" {
+		keys = append(keys, req.CustomAttribute)
+	}
+	if req.Key != "" {
+		keys = append(keys, req.Key)
+	}
+	if len(keys) == 0 {
+		response.BadRequest(c, "No attribute keys specified to remove")
+		return
+	}
+
+	updatedContact, err := h.contactRepo.DestroyCustomAttributes(accountID, targetID, keys)
+	if err != nil {
+		response.InternalError(c, "Failed to remove custom attributes: "+err.Error())
+		return
+	}
+	if updatedContact == nil {
+		response.NotFound(c, "Contact not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": updatedContact,
+		"data":    updatedContact,
+		"message": "Custom attributes removed successfully",
+	})
+}
+
+// DeleteAvatar removes custom contact avatar
+func (h *ContactHandler) DeleteAvatar(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	contactID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		contactID, _ = strconv.ParseUint(c.Param("contact_id"), 10, 64)
+	}
+
+	contact, err := h.contactRepo.FindByID(accountID, uint(contactID))
+	if err != nil || contact == nil {
+		response.NotFound(c, "Contact not found")
+		return
+	}
+
+	if err := h.contactRepo.DeleteAvatar(accountID, uint(contactID)); err != nil {
+		response.InternalError(c, "Failed to delete avatar: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"message":    "Avatar deleted successfully",
+		"avatar_url": "",
+	})
+}

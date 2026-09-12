@@ -2,7 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
@@ -41,9 +46,11 @@ type SignUpRequest struct {
 }
 
 type SignInRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
-	MFAOTP   string `json:"mfa_otp"`
+	Email      string `json:"email" binding:"required,email"`
+	Password   string `json:"password" binding:"required"`
+	MFAOTP     string `json:"mfa_otp"`
+	OTPCode    string `json:"otp_code"`
+	BackupCode string `json:"backup_code"`
 }
 
 type AvailabilityRequest struct {
@@ -86,6 +93,10 @@ func (h *AuthHandler) SignUp(c *gin.Context) {
 	if err := h.userRepo.Create(&user); err != nil {
 		response.InternalError(c, "Failed to create user account")
 		return
+	}
+
+	if h.enterpriseRepo != nil {
+		_, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
 	}
 
 	// Create initial workspace account for new admin
@@ -149,19 +160,38 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 	if h.enterpriseRepo != nil {
 		profile, err := h.enterpriseRepo.GetMFAProfile(user.ID)
 		if err == nil && profile != nil && profile.Enabled {
-			if req.MFAOTP == "" {
+			otp := req.MFAOTP
+			if otp == "" {
+				otp = req.OTPCode
+			}
+			if otp == "" {
+				otp = req.BackupCode
+			}
+
+			if otp == "" {
 				// Block login: prompt client for MFA token
+				mfaToken, _ := auth.GenerateToken(user, h.cfg.JWTSecret, 1)
 				logger.WithComponent("auth").Info("sign-in mfa challenge required", "user_id", user.ID, "email", req.Email)
-				response.Unauthorized(c, "Multi-factor authentication required")
+				c.JSON(http.StatusPartialContent, gin.H{
+					"success":      false,
+					"mfa_required": true,
+					"mfa_token":    mfaToken,
+					"message":      "Multi-factor authentication required",
+					"data": gin.H{
+						"mfa_required": true,
+						"mfa_token":    mfaToken,
+					},
+				})
 				return
 			}
+
 			// Verify MFA TOTP code or backup code
-			valid := auth.VerifyTOTPCode(profile.Secret, req.MFAOTP)
+			valid := auth.VerifyTOTPCode(profile.Secret, otp)
 			if !valid {
 				var backupCodes []string
 				_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
 				for i, code := range backupCodes {
-					if code == req.MFAOTP {
+					if code == otp {
 						valid = true
 						backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
 						bBytes, _ := json.Marshal(backupCodes)
@@ -278,7 +308,7 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 		user.Name = strings.TrimSpace(req.Name)
 	}
 	if strings.TrimSpace(req.DisplayName) != "" {
-		user.Name = strings.TrimSpace(req.DisplayName)
+		user.DisplayName = strings.TrimSpace(req.DisplayName)
 	}
 	if req.AvatarURL != "" {
 		user.AvatarURL = req.AvatarURL
@@ -292,6 +322,294 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
 	response.Success(c, gin.H{
 		"user":     user,
+		"accounts": accounts,
+	})
+}
+
+// SignOut invalidates the user's current token and clears the session
+func (h *AuthHandler) SignOut(c *gin.Context) {
+	tokenStr := c.GetString("token_string")
+	if tokenStr == "" {
+		authHeader := c.GetHeader("Authorization")
+		parts := strings.Split(authHeader, " ")
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			tokenStr = parts[1]
+		}
+	}
+
+	rawUserID, exists := c.Get(middleware.ContextUserID)
+	var userID uint
+	if exists {
+		userID = rawUserID.(uint)
+	}
+
+	if tokenStr != "" && h.enterpriseRepo != nil {
+		expiresAt := time.Now().Add(time.Duration(h.cfg.JWTExpirationHours) * time.Hour)
+		claims, err := auth.ValidateToken(tokenStr, h.cfg.JWTSecret)
+		if err == nil && claims != nil {
+			if claims.UserID != 0 {
+				userID = claims.UserID
+			}
+			if claims.ExpiresAt != nil {
+				expiresAt = claims.ExpiresAt.Time
+			}
+		}
+		_ = h.enterpriseRepo.RevokeToken(tokenStr, userID, expiresAt)
+	}
+
+	response.Success(c, gin.H{
+		"success": true,
+		"message": "signed out successfully",
+	})
+}
+
+// ValidateToken returns the currently authenticated user's information and session status
+func (h *AuthHandler) ValidateToken(c *gin.Context) {
+	rawUser, exists := c.Get(middleware.ContextUser)
+	if !exists {
+		response.Unauthorized(c, "User not found in context")
+		return
+	}
+
+	user := rawUser.(*domain.User)
+	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
+
+	response.Success(c, gin.H{
+		"success":  true,
+		"user":     user,
+		"data":     user,
+		"accounts": accounts,
+	})
+}
+
+type ConfirmEmailRequest struct {
+	ConfirmationToken string `json:"confirmation_token"`
+}
+
+// ConfirmEmail verifies the user's email address using a confirmation token
+func (h *AuthHandler) ConfirmEmail(c *gin.Context) {
+	token := c.Query("confirmation_token")
+	if token == "" {
+		var req ConfirmEmailRequest
+		_ = c.ShouldBindJSON(&req)
+		token = req.ConfirmationToken
+	}
+
+	if token == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"message": "Invalid token",
+		})
+		return
+	}
+
+	if h.enterpriseRepo == nil {
+		response.InternalError(c, "Enterprise auth not configured")
+		return
+	}
+
+	user, err := h.enterpriseRepo.ConfirmUserByToken(token)
+	if err != nil || user == nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"message": "Invalid token or already confirmed",
+		})
+		return
+	}
+
+	tokenStr, _ := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
+
+	response.Success(c, gin.H{
+		"message":  "Email confirmed successfully",
+		"user":     user,
+		"token":    tokenStr,
+		"accounts": accounts,
+	})
+}
+
+type ResendConfirmationRequest struct {
+	Email string `json:"email"`
+}
+
+// ResendConfirmation dispatches email confirmation instructions
+func (h *AuthHandler) ResendConfirmation(c *gin.Context) {
+	var user *domain.User
+	if rawUserID, exists := c.Get(middleware.ContextUserID); exists {
+		user, _ = h.userRepo.FindByID(rawUserID.(uint))
+	}
+	if user == nil {
+		var req ResendConfirmationRequest
+		_ = c.ShouldBindJSON(&req)
+		if req.Email != "" {
+			user, _ = h.userRepo.FindByEmail(strings.ToLower(strings.TrimSpace(req.Email)))
+		}
+	}
+
+	if user == nil {
+		response.Success(c, gin.H{"message": "Confirmation instructions sent"})
+		return
+	}
+
+	if user.IsConfirmed() {
+		response.Success(c, gin.H{"message": "Already confirmed"})
+		return
+	}
+
+	if h.enterpriseRepo != nil {
+		_, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
+	}
+
+	response.Success(c, gin.H{"message": "Confirmation instructions sent"})
+}
+
+// UploadAvatar updates the authenticated user's avatar via file upload or URL
+func (h *AuthHandler) UploadAvatar(c *gin.Context) {
+	rawUserID, exists := c.Get(middleware.ContextUserID)
+	if !exists {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	userID := rawUserID.(uint)
+
+	user, err := h.userRepo.FindByID(userID)
+	if err != nil || user == nil {
+		response.NotFound(c, "User not found")
+		return
+	}
+
+	var avatarURL string
+	// Multipart file upload
+	file, err := c.FormFile("avatar")
+	if err == nil && file != nil {
+		uploadDir := "public/uploads/avatars"
+		_ = os.MkdirAll(uploadDir, 0755)
+		filename := fmt.Sprintf("avatar_%d_%d%s", userID, time.Now().UnixNano(), filepath.Ext(file.Filename))
+		targetPath := filepath.Join(uploadDir, filename)
+		if err := c.SaveUploadedFile(file, targetPath); err == nil {
+			avatarURL = "/" + targetPath
+		}
+	}
+
+	if avatarURL == "" {
+		if formURL := c.PostForm("avatar_url"); formURL != "" {
+			avatarURL = formURL
+		}
+	}
+
+	if avatarURL == "" {
+		var req struct {
+			AvatarURL string `json:"avatar_url"`
+		}
+		_ = c.ShouldBindJSON(&req)
+		if req.AvatarURL != "" {
+			avatarURL = req.AvatarURL
+		}
+	}
+
+	if avatarURL != "" {
+		user.AvatarURL = avatarURL
+		_ = h.userRepo.Update(user)
+	}
+
+	response.Success(c, user)
+}
+
+// DeleteAvatar clears the authenticated user's avatar
+func (h *AuthHandler) DeleteAvatar(c *gin.Context) {
+	rawUserID, exists := c.Get(middleware.ContextUserID)
+	if !exists {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	userID := rawUserID.(uint)
+
+	user, err := h.userRepo.FindByID(userID)
+	if err != nil || user == nil {
+		response.NotFound(c, "User not found")
+		return
+	}
+
+	user.AvatarURL = ""
+	if err := h.userRepo.Update(user); err != nil {
+		response.InternalError(c, "Failed to remove avatar")
+		return
+	}
+
+	response.Success(c, user)
+}
+
+type VerifyMFALoginRequest struct {
+	MFAToken   string `json:"mfa_token" binding:"required"`
+	OTPCode    string `json:"otp_code"`
+	BackupCode string `json:"backup_code"`
+}
+
+// VerifyMFAForLogin authenticates with a secondary MFA OTP code or backup code
+func (h *AuthHandler) VerifyMFAForLogin(c *gin.Context) {
+	var req VerifyMFALoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	claims, err := auth.ValidateToken(req.MFAToken, h.cfg.JWTSecret)
+	if err != nil {
+		response.Unauthorized(c, "Invalid or expired MFA session token")
+		return
+	}
+
+	user, err := h.userRepo.FindByID(claims.UserID)
+	if err != nil || user == nil {
+		response.NotFound(c, "User not found")
+		return
+	}
+
+	if h.enterpriseRepo == nil {
+		response.InternalError(c, "Enterprise auth not configured")
+		return
+	}
+
+	profile, err := h.enterpriseRepo.GetMFAProfile(user.ID)
+	if err != nil || profile == nil || !profile.Enabled {
+		response.BadRequest(c, "MFA is not enabled for this user")
+		return
+	}
+
+	code := req.OTPCode
+	if code == "" {
+		code = req.BackupCode
+	}
+
+	valid := auth.VerifyTOTPCode(profile.Secret, code)
+	if !valid {
+		var backupCodes []string
+		_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
+		for i, bc := range backupCodes {
+			if bc == code {
+				valid = true
+				backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
+				bBytes, _ := json.Marshal(backupCodes)
+				profile.BackupCodes = string(bBytes)
+				_ = h.enterpriseRepo.SaveMFAProfile(profile)
+				break
+			}
+		}
+	}
+
+	if !valid {
+		response.Unauthorized(c, "Invalid MFA code or backup code")
+		return
+	}
+
+	token, err := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	if err != nil {
+		response.InternalError(c, "Failed to generate token")
+		return
+	}
+
+	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
+	response.Success(c, gin.H{
+		"user":     user,
+		"token":    token,
 		"accounts": accounts,
 	})
 }

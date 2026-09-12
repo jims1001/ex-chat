@@ -32,6 +32,8 @@ type ConversationHandler struct {
 	slaService        *service.SLAService
 	emailService      *service.EmailService
 	campaignService   *service.CampaignService
+	captainRepo       *repository.CaptainRepository
+	enterpriseRepo    repository.ChannelAuthEnterpriseRepository
 	hub               *ws.Hub
 }
 
@@ -78,6 +80,14 @@ func (h *ConversationHandler) SetCampaignService(cs *service.CampaignService) {
 	h.campaignService = cs
 }
 
+func (h *ConversationHandler) SetCaptainRepo(cr *repository.CaptainRepository) {
+	h.captainRepo = cr
+}
+
+func (h *ConversationHandler) SetEnterpriseRepo(er repository.ChannelAuthEnterpriseRepository) {
+	h.enterpriseRepo = er
+}
+
 type CreateConversationRequest struct {
 	InboxID          uint   `json:"inbox_id" binding:"required"`
 	ContactID        uint   `json:"contact_id" binding:"required"`
@@ -90,6 +100,23 @@ type CreateConversationRequest struct {
 type ToggleStatusRequest struct {
 	Status       string     `json:"status" binding:"required"`
 	SnoozedUntil *time.Time `json:"snoozed_until"`
+}
+
+type UpdateConversationRequest struct {
+	Status           string     `json:"status"`
+	Priority         string     `json:"priority"`
+	AssigneeID       *uint      `json:"assignee_id"`
+	TeamID           *uint      `json:"team_id"`
+	SnoozedUntil     *time.Time `json:"snoozed_until"`
+	CustomAttributes any        `json:"custom_attributes"`
+}
+
+type SetPriorityRequest struct {
+	Priority string `json:"priority" binding:"required"`
+}
+
+type UpdateCustomAttributesRequest struct {
+	CustomAttributes map[string]any `json:"custom_attributes" binding:"required"`
 }
 
 type AssignmentRequest struct {
@@ -1482,6 +1509,540 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 	}
 
 	response.Success(c, retriedMsg)
+}
+
+// UpdateConversation updates editable conversation attributes (status, priority, assignee, team, etc.)
+func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	var req UpdateConversationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	oldStatus := conv.Status
+	oldAssigneeID := conv.AssigneeID
+
+	if req.Status != "" {
+		conv.Status = req.Status
+		if req.Status == domain.ConversationStatusSnoozed {
+			conv.SnoozedUntil = req.SnoozedUntil
+		} else {
+			conv.SnoozedUntil = nil
+		}
+	}
+	if req.Priority != "" {
+		conv.Priority = req.Priority
+	}
+	if req.AssigneeID != nil {
+		if *req.AssigneeID == 0 {
+			conv.AssigneeID = nil
+		} else {
+			conv.AssigneeID = req.AssigneeID
+		}
+	}
+	if req.TeamID != nil {
+		if *req.TeamID == 0 {
+			conv.TeamID = nil
+		} else {
+			conv.TeamID = req.TeamID
+		}
+	}
+	if req.CustomAttributes != nil {
+		switch ca := req.CustomAttributes.(type) {
+		case string:
+			conv.CustomAttributes = ca
+		case map[string]any:
+			bytes, _ := json.Marshal(ca)
+			conv.CustomAttributes = string(bytes)
+		}
+	}
+	conv.LastActivityAt = time.Now().UTC()
+
+	if err := h.convRepo.Update(conv); err != nil {
+		response.InternalError(c, "Failed to update conversation: "+err.Error())
+		return
+	}
+
+	fullConv, _ := h.convRepo.FindByID(accountID, conv.ID)
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationUpdated,
+			AccountID:      accountID,
+			ConversationID: conv.ID,
+			Data:           fullConv,
+		})
+		if req.Status != "" && req.Status != oldStatus {
+			h.hub.Broadcast(&ws.Event{
+				Name:           ws.EventConversationStatus,
+				AccountID:      accountID,
+				ConversationID: conv.ID,
+				Data:           fullConv,
+			})
+		}
+		if req.AssigneeID != nil && ((oldAssigneeID == nil) != (conv.AssigneeID == nil) || (oldAssigneeID != nil && conv.AssigneeID != nil && *oldAssigneeID != *conv.AssigneeID)) {
+			h.hub.Broadcast(&ws.Event{
+				Name:           ws.EventConversationAssigned,
+				AccountID:      accountID,
+				ConversationID: conv.ID,
+				Data:           fullConv,
+			})
+		}
+	}
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "conversation_updated", fullConv)
+		if req.Status != "" && req.Status != oldStatus {
+			h.webhookService.Dispatch(accountID, "conversation_status_changed", fullConv)
+		}
+	}
+
+	response.Success(c, fullConv)
+}
+
+// DeleteConversation deletes a conversation and cascade removes all associated resources
+func (h *ConversationHandler) DeleteConversation(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	if err := h.convRepo.Delete(accountID, uint(id)); err != nil {
+		response.InternalError(c, "Failed to delete conversation: "+err.Error())
+		return
+	}
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationDeleted,
+			AccountID:      accountID,
+			ConversationID: uint(id),
+			Data: gin.H{
+				"id": id,
+			},
+		})
+	}
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "conversation_deleted", gin.H{"id": id})
+	}
+
+	response.Success(c, gin.H{"id": id, "deleted": true})
+}
+
+// GetConversationMeta returns aggregated conversation counters or single conversation meta
+func (h *ConversationHandler) GetConversationMeta(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	rawUserID, _ := c.Get(middleware.ContextUserID)
+	var currentUserID uint
+	if rawUserID != nil {
+		currentUserID = rawUserID.(uint)
+	}
+
+	idParam := c.Param("id")
+	if idParam != "" {
+		id, err := strconv.ParseUint(idParam, 10, 64)
+		if err == nil {
+			conv, err := h.convRepo.FindByID(accountID, uint(id))
+			if err != nil || conv == nil {
+				response.NotFound(c, "Conversation not found")
+				return
+			}
+			response.Success(c, gin.H{
+				"meta": gin.H{
+					"sender":   conv.Contact,
+					"channel":  conv.Inbox,
+					"assignee": conv.Assignee,
+					"team":     conv.Team,
+				},
+			})
+			return
+		}
+	}
+
+	status := c.Query("status")
+	var inboxID, teamID *uint
+	if iStr := c.Query("inbox_id"); iStr != "" {
+		if id, err := strconv.ParseUint(iStr, 10, 64); err == nil {
+			iid := uint(id)
+			inboxID = &iid
+		}
+	}
+	if tStr := c.Query("team_id"); tStr != "" {
+		if id, err := strconv.ParseUint(tStr, 10, 64); err == nil {
+			tid := uint(id)
+			teamID = &tid
+		}
+	}
+
+	metaCounts, err := h.convRepo.GetMeta(accountID, status, inboxID, teamID, currentUserID)
+	if err != nil {
+		response.InternalError(c, "Failed to get conversation meta: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"meta": metaCounts,
+	})
+}
+
+// FilterConversations filters conversations using advanced payload filter expressions
+func (h *ConversationHandler) FilterConversations(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	var req domain.ConversationFilterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid filter payload: "+err.Error())
+		return
+	}
+
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	if req.PageSize < 1 || req.PageSize > 100 {
+		req.PageSize = 25
+	}
+
+	conversations, total, err := h.convRepo.Filter(accountID, req.Payload, req.Page, req.PageSize)
+	if err != nil {
+		response.InternalError(c, "Failed to filter conversations: "+err.Error())
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data": gin.H{
+			"meta": gin.H{
+				"count":        total,
+				"current_page": req.Page,
+			},
+			"payload": conversations,
+		},
+	})
+}
+
+// GetUnreadCount calculates unread count summary across current user and team
+func (h *ConversationHandler) GetUnreadCount(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	rawUserID, _ := c.Get(middleware.ContextUserID)
+	var currentUserID uint
+	if rawUserID != nil {
+		currentUserID = rawUserID.(uint)
+	}
+
+	counts, err := h.convRepo.GetUnreadCounts(accountID, currentUserID)
+	if err != nil {
+		response.InternalError(c, "Failed to get unread counts: "+err.Error())
+		return
+	}
+
+	response.Success(c, counts)
+}
+
+// SetPriority updates the priority level of a conversation
+func (h *ConversationHandler) SetPriority(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	var req SetPriorityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid priority payload: "+err.Error())
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	if err := h.convRepo.UpdatePriority(accountID, uint(id), req.Priority); err != nil {
+		response.InternalError(c, "Failed to update priority: "+err.Error())
+		return
+	}
+
+	conv.Priority = req.Priority
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationPriority,
+			AccountID:      accountID,
+			ConversationID: uint(id),
+			Data:           conv,
+		})
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationUpdated,
+			AccountID:      accountID,
+			ConversationID: uint(id),
+			Data:           conv,
+		})
+	}
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "conversation_priority_changed", conv)
+	}
+
+	response.Success(c, conv)
+}
+
+// UpdateCustomAttributes updates or merges custom attributes on a conversation
+func (h *ConversationHandler) UpdateCustomAttributes(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	var rawBody map[string]any
+	if err := c.ShouldBindJSON(&rawBody); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	targetAttrs := make(map[string]any)
+	if nested, ok := rawBody["custom_attributes"].(map[string]any); ok {
+		targetAttrs = nested
+	} else {
+		targetAttrs = rawBody
+	}
+
+	merged, err := h.convRepo.UpdateCustomAttributes(accountID, uint(id), targetAttrs)
+	if err != nil {
+		response.InternalError(c, "Failed to update custom attributes: "+err.Error())
+		return
+	}
+
+	updatedConv, _ := h.convRepo.FindByID(accountID, uint(id))
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventConversationUpdated,
+			AccountID:      accountID,
+			ConversationID: uint(id),
+			Data:           updatedConv,
+		})
+	}
+	if h.webhookService != nil {
+		h.webhookService.Dispatch(accountID, "conversation_updated", updatedConv)
+	}
+
+	response.Success(c, gin.H{
+		"custom_attributes": merged,
+		"conversation":      updatedConv,
+	})
+}
+
+// ListConversationAttachments retrieves all multimedia attachments in a conversation
+func (h *ConversationHandler) ListConversationAttachments(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	attachments, err := h.convRepo.ListAttachments(accountID, uint(id))
+	if err != nil {
+		response.InternalError(c, "Failed to list attachments: "+err.Error())
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data":    attachments,
+		"payload": attachments,
+	})
+}
+
+// GetConversationAssistant returns the Captain Assistant associated with this conversation's inbox
+func (h *ConversationHandler) GetConversationAssistant(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	if h.captainRepo == nil {
+		response.NotFound(c, "Captain repository not configured")
+		return
+	}
+
+	assistant, err := h.captainRepo.FindAssistantByInbox(accountID, conv.InboxID)
+	if err != nil {
+		response.InternalError(c, "Failed to get conversation assistant: "+err.Error())
+		return
+	}
+	if assistant == nil {
+		response.NotFound(c, "No assistant assigned to this conversation")
+		return
+	}
+
+	response.Success(c, assistant)
+}
+
+// ListConversationReportingEvents returns audit and operational reporting events for this conversation
+func (h *ConversationHandler) ListConversationReportingEvents(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	if h.enterpriseRepo == nil {
+		response.NotFound(c, "Enterprise repository not configured")
+		return
+	}
+
+	events, err := h.enterpriseRepo.ListReportingEventsByConversation(accountID, uint(id))
+	if err != nil {
+		response.InternalError(c, "Failed to list reporting events: "+err.Error())
+		return
+	}
+
+	response.Success(c, events)
+}
+
+// TranslateMessage translates a message into target language or returns cached/fallback content
+func (h *ConversationHandler) TranslateMessage(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	var msgID uint64
+	var convID uint64
+	var err error
+
+	if idStr := c.Param("message_id"); idStr != "" {
+		msgID, err = strconv.ParseUint(idStr, 10, 64)
+		if idStr2 := c.Param("id"); idStr2 != "" {
+			convID, _ = strconv.ParseUint(idStr2, 10, 64)
+		}
+	} else if idStr := c.Param("id"); idStr != "" {
+		msgID, err = strconv.ParseUint(idStr, 10, 64)
+	}
+
+	if err != nil || msgID == 0 {
+		response.BadRequest(c, "Invalid message ID")
+		return
+	}
+
+	var msg *domain.Message
+	if convID > 0 {
+		msg, err = h.msgRepo.FindByIDAndConversation(accountID, uint(convID), uint(msgID))
+	} else {
+		msg, err = h.msgRepo.FindByID(accountID, uint(msgID))
+	}
+
+	if err != nil || msg == nil {
+		response.NotFound(c, "Message not found")
+		return
+	}
+
+	var req struct {
+		TargetLanguage string `json:"target_language"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	targetLang := req.TargetLanguage
+	if targetLang == "" {
+		targetLang = c.Query("target_language")
+	}
+	if targetLang == "" {
+		targetLang = "en"
+	}
+
+	translations := make(map[string]string)
+	if msg.Translations != "" {
+		_ = json.Unmarshal([]byte(msg.Translations), &translations)
+	}
+
+	if trans, ok := translations[targetLang]; ok && trans != "" {
+		c.JSON(200, gin.H{
+			"success": true,
+			"content": trans,
+			"data": gin.H{
+				"content": trans,
+			},
+		})
+		return
+	}
+
+	// 接口做好 但是不做（不调用外部三方翻译引擎），安全回退原文并缓存翻译结果
+	translatedContent := msg.Content
+	translations[targetLang] = translatedContent
+	transBytes, _ := json.Marshal(translations)
+	_ = h.msgRepo.UpdateTranslations(accountID, msg.ID, string(transBytes))
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"content": translatedContent,
+		"data": gin.H{
+			"content": translatedContent,
+		},
+	})
 }
 
 

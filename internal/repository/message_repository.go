@@ -206,3 +206,13 @@ func (r *MessageRepository) RetryMessage(accountID, conversationID, messageID ui
 	return msg, nil
 }
 
+func (r *MessageRepository) GetDB() *gorm.DB {
+	return r.db
+}
+
+func (r *MessageRepository) UpdateTranslations(accountID, id uint, translations string) error {
+	return r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Update("translations", translations).Error
+}
+

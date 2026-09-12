@@ -451,6 +451,28 @@ func (h *ChannelDriverHandler) ListCalls(c *gin.Context) {
 	response.Success(c, calls)
 }
 
+func (h *ChannelDriverHandler) GetCall(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	callID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Call ID must be numeric")
+		return
+	}
+
+	call, err := h.repo.GetCall(uint(accountID), uint(callID))
+	if err != nil || call == nil {
+		response.NotFound(c, "Call not found")
+		return
+	}
+
+	response.Success(c, call)
+}
+
 func (h *ChannelDriverHandler) InitiateContactCall(c *gin.Context) {
 	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
 	if err != nil {
@@ -736,6 +758,311 @@ func (h *ChannelDriverHandler) HandleWhatsAppCallSDP(c *gin.Context) {
 	call.Status = "in_progress"
 	call.UpdatedAt = time.Now()
 	_ = h.repo.UpdateCall(call)
+
+	response.Success(c, call)
+}
+
+// ----------------- WhatsApp & Voice Call Lifecycle Extensions -----------------
+
+// GetWhatsAppCallDetail returns comprehensive details of a WhatsApp / Voice call
+func (h *ChannelDriverHandler) GetWhatsAppCallDetail(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	idParam := c.Param("id")
+	var call *domain.Call
+	if callID, err := strconv.ParseUint(idParam, 10, 64); err == nil {
+		call, _ = h.repo.GetCall(uint(accountID), uint(callID))
+	}
+	if call == nil {
+		call, _ = h.repo.GetCallByProviderCallID(uint(accountID), idParam)
+	}
+
+	if call == nil {
+		response.NotFound(c, "WhatsApp call not found")
+		return
+	}
+
+	elapsedSeconds := 0
+	if call.Duration > 0 {
+		elapsedSeconds = call.Duration
+	} else if (call.Status == "in_progress" || call.Status == "completed") && !call.CreatedAt.IsZero() {
+		elapsedSeconds = int(time.Since(call.CreatedAt).Seconds())
+	}
+
+	caller := gin.H{}
+	if call.ContactID != 0 && h.contactRepo != nil {
+		if contact, err := h.contactRepo.FindByID(call.AccountID, call.ContactID); err == nil && contact != nil {
+			caller = gin.H{
+				"name":   contact.Name,
+				"phone":  contact.PhoneNumber,
+				"avatar": contact.AvatarURL,
+			}
+		}
+	}
+
+	provider := call.Provider
+	if provider == "" {
+		provider = "whatsapp"
+	}
+	providerCallID := call.ProviderCallID
+	if providerCallID == "" {
+		providerCallID = fmt.Sprintf("call_%d", call.ID)
+	}
+
+	response.Success(c, gin.H{
+		"id":                   call.ID,
+		"call_id":              providerCallID,
+		"provider":             provider,
+		"status":               call.Status,
+		"direction":            call.Direction,
+		"conversation_id":      call.ConversationID,
+		"inbox_id":             call.InboxID,
+		"message_id":           nil,
+		"accepted_by_agent_id": call.AgentID,
+		"elapsed_seconds":      elapsedSeconds,
+		"sdp_offer":            call.SDPOffer,
+		"sdp_answer":           call.SDPAnswer,
+		"recording_url":        call.RecordingURL,
+		"recording_sid":        call.RecordingSID,
+		"duration":             call.Duration,
+		"terminate_reason":     call.TerminateReason,
+		"ice_servers": []gin.H{
+			{"urls": "stun:stun.l.google.com:19302"},
+		},
+		"caller": caller,
+	})
+}
+
+// UploadCallRecording handles recording file upload or URL metadata update
+func (h *ChannelDriverHandler) UploadCallRecording(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	idParam := c.Param("id")
+	var call *domain.Call
+	if callID, err := strconv.ParseUint(idParam, 10, 64); err == nil {
+		call, _ = h.repo.GetCall(uint(accountID), uint(callID))
+	}
+	if call == nil {
+		call, _ = h.repo.GetCallByProviderCallID(uint(accountID), idParam)
+	}
+
+	if call == nil {
+		response.NotFound(c, "Call not found")
+		return
+	}
+
+	// 1. Check multipart file
+	file, fileErr := c.FormFile("recording")
+	if fileErr != nil {
+		file, fileErr = c.FormFile("file")
+	}
+
+	if fileErr == nil && file != nil {
+		call.RecordingURL = fmt.Sprintf("/uploads/recordings/%d_%s", call.ID, file.Filename)
+	}
+
+	// 2. Check JSON payload or form values
+	var req struct {
+		RecordingURL string `json:"recording_url" form:"recording_url"`
+		RecordingSID string `json:"recording_sid" form:"recording_sid"`
+		Duration     int    `json:"duration" form:"duration"`
+	}
+	if err := c.ShouldBind(&req); err == nil {
+		if req.RecordingURL != "" {
+			call.RecordingURL = req.RecordingURL
+		}
+		if req.RecordingSID != "" {
+			call.RecordingSID = req.RecordingSID
+		}
+		if req.Duration > 0 {
+			call.Duration = req.Duration
+		}
+	}
+
+	if call.RecordingURL == "" {
+		call.RecordingURL = fmt.Sprintf("/uploads/recordings/call_%d.mp4", call.ID)
+	}
+
+	call.UpdatedAt = time.Now()
+	if err := h.repo.UpdateCall(call); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	logger.WithComponent("call").Info("call recording uploaded",
+		"call_id", call.ID,
+		"recording_url", call.RecordingURL,
+		"duration", call.Duration,
+	)
+
+	response.Success(c, gin.H{
+		"status":        "uploaded",
+		"call_id":       call.ID,
+		"recording_url": call.RecordingURL,
+		"recording_sid": call.RecordingSID,
+		"duration":      call.Duration,
+	})
+}
+
+// DeleteConference tears down a conference session by id or inbox
+func (h *ChannelDriverHandler) DeleteConference(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	idParam := c.Param("id")
+	if idParam == "" {
+		idParam = c.Param("inbox_id")
+	}
+
+	var confID uint
+	if id, err := strconv.ParseUint(idParam, 10, 64); err == nil && id > 0 {
+		// Could be conference ID or inbox ID
+		if conf, err := h.repo.GetConferenceByID(uint(accountID), uint(id)); err == nil && conf != nil {
+			confID = conf.ID
+			_ = h.repo.DeleteConference(uint(accountID), conf.ID)
+		} else if conf, err := h.repo.GetConference(uint(accountID), uint(id)); err == nil && conf != nil {
+			confID = conf.ID
+			_ = h.repo.DeleteConferenceByInbox(uint(accountID), uint(id))
+		}
+	}
+
+	// Also handle query / body call_sid or conversation_id if specified
+	var req struct {
+		CallSID        string `json:"call_sid" form:"call_sid"`
+		ConversationID uint   `json:"conversation_id" form:"conversation_id"`
+	}
+	_ = c.ShouldBind(&req)
+
+	if req.CallSID != "" {
+		if call, err := h.repo.GetCallByProviderCallID(uint(accountID), req.CallSID); err == nil && call != nil {
+			if call.Status == "ringing" && call.AgentID == nil {
+				call.Status = "rejected"
+				call.TerminateReason = "agent_rejected"
+				_ = h.repo.UpdateCall(call)
+			}
+		}
+	}
+
+	logger.WithComponent("conference").Info("conference destroyed",
+		"account_id", accountID,
+		"id", idParam,
+		"conf_id", confID,
+	)
+
+	response.Success(c, gin.H{
+		"status":  "success",
+		"message": "Conference terminated and deleted",
+		"id":      confID,
+	})
+}
+
+// GetConferenceToken generates a WebRTC / signaling conference client access token
+func (h *ChannelDriverHandler) GetConferenceToken(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	userID := c.GetUint("user_id")
+	if userID == 0 {
+		userID = 1
+	}
+
+	inboxID := c.Param("id")
+	if inboxID == "" {
+		inboxID = c.Param("inbox_id")
+	}
+
+	tokenBytes := make([]byte, 32)
+	_, _ = rand.Read(tokenBytes)
+	tokenStr := hex.EncodeToString(tokenBytes)
+
+	response.Success(c, gin.H{
+		"token":      tokenStr,
+		"identity":   fmt.Sprintf("agent_%d", userID),
+		"room":       fmt.Sprintf("conf_acc_%d_inbox_%s", accountID, inboxID),
+		"account_id": accountID,
+		"ice_servers": []gin.H{
+			{"urls": "stun:stun.l.google.com:19302"},
+			{"urls": "turn:turn.example.com:3478", "username": "exchat", "credential": "secret"},
+		},
+	})
+}
+
+// TerminateCall executes complete call termination flow
+func (h *ChannelDriverHandler) TerminateCall(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	idParam := c.Param("id")
+	var call *domain.Call
+	if callID, err := strconv.ParseUint(idParam, 10, 64); err == nil {
+		call, _ = h.repo.GetCall(uint(accountID), uint(callID))
+	}
+	if call == nil {
+		call, _ = h.repo.GetCallByProviderCallID(uint(accountID), idParam)
+	}
+
+	if call == nil {
+		response.NotFound(c, "Call session not found")
+		return
+	}
+
+	var req struct {
+		Reason   string `json:"reason" form:"reason"` // completed, busy, canceled, agent_rejected, failed
+		Duration int    `json:"duration" form:"duration"`
+	}
+	_ = c.ShouldBind(&req)
+
+	if req.Reason == "" {
+		req.Reason = "completed"
+	}
+
+	if req.Reason == "agent_rejected" || req.Reason == "busy" || req.Reason == "rejected" {
+		call.Status = "rejected"
+	} else {
+		call.Status = "completed"
+	}
+
+	call.TerminateReason = req.Reason
+
+	if req.Duration > 0 {
+		call.Duration = req.Duration
+	} else if call.Duration == 0 && !call.CreatedAt.IsZero() {
+		call.Duration = int(time.Since(call.CreatedAt).Seconds())
+	}
+
+	call.UpdatedAt = time.Now()
+	if err := h.repo.UpdateCall(call); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	// Clean up related conference if any
+	_ = h.repo.DeleteConferenceByInbox(call.AccountID, call.InboxID)
+
+	logger.WithComponent("call").Info("call terminated",
+		"call_id", call.ID,
+		"account_id", accountID,
+		"status", call.Status,
+		"reason", call.TerminateReason,
+		"duration", call.Duration,
+	)
 
 	response.Success(c, call)
 }

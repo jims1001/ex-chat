@@ -89,7 +89,28 @@ func (h *MacroNotificationHandler) ListMacros(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	response.Success(c, macros)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": macros,
+		"data":    macros,
+	})
+}
+
+func (h *MacroNotificationHandler) GetMacro(c *gin.Context) {
+	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	macroID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	macro, err := h.macroRepo.GetByID(c.Request.Context(), uint(accID), uint(macroID))
+	if err != nil || macro == nil {
+		response.NotFound(c, "macro not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"payload": macro,
+		"data":    macro,
+	})
 }
 
 type ExecuteMacroRequest struct {

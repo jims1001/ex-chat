@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -18,6 +20,7 @@ type Claims struct {
 	UserID uint   `json:"user_id"`
 	Email  string `json:"email"`
 	Role   string `json:"role"`
+	Type   string `json:"type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -33,11 +36,16 @@ func CheckPasswordHash(password, hash string) bool {
 
 func GenerateToken(user *domain.User, secret string, expirationHours int) (string, error) {
 	expirationTime := time.Now().Add(time.Duration(expirationHours) * time.Hour)
+	jtiBytes := make([]byte, 16)
+	_, _ = rand.Read(jtiBytes)
+
 	claims := &Claims{
 		UserID: user.ID,
 		Email:  user.Email,
 		Role:   user.Role,
+		Type:   user.Type,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        hex.EncodeToString(jtiBytes),
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Subject:   user.Email,

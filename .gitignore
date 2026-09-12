@@ -35,3 +35,5 @@ data/*.db-wal
 *.db
 *.db-journal
 *.db-wal
+uploads/
+test/uploads/

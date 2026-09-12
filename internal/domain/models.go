@@ -1,13 +1,37 @@
 package domain
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 )
 
-// User role constants
+// User role and type constants
 const (
+	RoleSuperAdmin    = "super_admin"
 	RoleAdministrator = "administrator"
 	RoleAgent         = "agent"
+
+	UserTypeSuperAdmin = "SuperAdmin"
+	UserTypeUser       = "User"
+)
+
+// Granular permission constants for CustomRole
+const (
+	PermissionAdministrator      = "administrator"
+	PermissionAgentManage        = "agent_manage"
+	PermissionCustomRoleManage   = "custom_role_manage"
+	PermissionInboxManage        = "inbox_manage"
+	PermissionTeamManage         = "team_manage"
+	PermissionConversationManage = "conversation_manage"
+	PermissionContactManage      = "contact_manage"
+	PermissionReportView         = "report_view"
+	PermissionAutomationManage   = "automation_manage"
+	PermissionSLAManage          = "sla_manage"
+	PermissionAIManage           = "ai_manage"
+	PermissionAuditManage        = "audit_manage"
+	PermissionBillingManage      = "billing_manage"
+	PermissionSettingsManage     = "settings_manage"
 )
 
 // Availability constants
@@ -82,8 +106,11 @@ const (
 
 // Message content type constants
 const (
-	ContentTypeText = "text"
-	ContentTypeForm = "form"
+	ContentTypeText        = "text"
+	ContentTypeForm        = "form"
+	ContentTypeInputSelect = "input_select"
+	ContentTypeCards       = "cards"
+	ContentTypeArticle     = "article"
 )
 
 // Message status constants
@@ -108,37 +135,67 @@ type Account struct {
 	Domain              string    `gorm:"size:255" json:"domain"`
 	SupportEmail        string    `gorm:"size:255" json:"support_email"`
 	AutoResolveDuration int       `gorm:"default:0" json:"auto_resolve_duration"`
+	Status              string    `gorm:"size:50;default:'active'" json:"status,omitempty"`
+	CustomAttributes    string    `gorm:"type:text" json:"custom_attributes,omitempty"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // User represents a system operator, agent, or administrator
 type User struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	Name         string    `gorm:"size:255;not null" json:"name"`
-	Email        string    `gorm:"size:255;uniqueIndex;not null" json:"email"`
-	PasswordHash string    `gorm:"size:255;not null" json:"-"`
-	Role         string    `gorm:"size:50;default:'agent'" json:"role"`
-	Availability string    `gorm:"size:50;default:'online'" json:"availability"`
-	AvatarURL    string    `gorm:"size:512" json:"avatar_url"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Name               string    `gorm:"size:255;not null" json:"name"`
+	DisplayName        string    `gorm:"size:255" json:"display_name"`
+	Email              string    `gorm:"size:255;uniqueIndex;not null" json:"email"`
+	PasswordHash       string    `gorm:"size:255;not null" json:"-"`
+	Role               string    `gorm:"size:50;default:'agent'" json:"role"`
+	Type               string    `gorm:"size:50;default:'User'" json:"type"`
+	Availability       string    `gorm:"size:50;default:'online'" json:"availability"`
+	AvailabilityStatus string    `gorm:"size:50;default:'online'" json:"availability_status"`
+	AvatarURL          string     `gorm:"size:512" json:"avatar_url"`
+	PubsubToken        string     `gorm:"size:255" json:"pubsub_token,omitempty"`
+	ConfirmedAt        *time.Time `json:"confirmed_at,omitempty"`
+	ConfirmationToken  string     `gorm:"size:255;index" json:"-"`
+	ConfirmationSentAt *time.Time `json:"-"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+// IsConfirmed checks if the user's email address has been verified
+func (u *User) IsConfirmed() bool {
+	return u != nil && u.ConfirmedAt != nil
+}
+
+// IsSuperAdmin returns true if the user possesses system-wide super administrator privileges
+func (u *User) IsSuperAdmin() bool {
+	if u == nil {
+		return false
+	}
+	if strings.EqualFold(u.Type, UserTypeSuperAdmin) || strings.EqualFold(u.Type, "super_admin") {
+		return true
+	}
+	if strings.EqualFold(u.Role, RoleSuperAdmin) || strings.EqualFold(u.Role, "superadmin") {
+		return true
+	}
+	return false
 }
 
 // AccountUser associates a user with a tenant account
 type AccountUser struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	AccountID    uint      `gorm:"index;not null" json:"account_id"`
-	UserID       uint      `gorm:"index;not null" json:"user_id"`
+	ID                    uint                 `gorm:"primaryKey" json:"id"`
+	AccountID             uint                 `gorm:"index;not null" json:"account_id"`
+	UserID                uint                 `gorm:"index;not null" json:"user_id"`
 	Role                  string               `gorm:"size:50;default:'agent'" json:"role"`
 	Availability          string               `gorm:"size:50;default:'online'" json:"availability"`
 	AgentCapacityPolicyID *uint                `gorm:"index" json:"agent_capacity_policy_id"`
+	CustomRoleID          *uint                `gorm:"index" json:"custom_role_id"`
 	CreatedAt             time.Time            `json:"created_at"`
 	UpdatedAt             time.Time            `json:"updated_at"`
 
 	Account             *Account             `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 	User                *User                `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	AgentCapacityPolicy *AgentCapacityPolicy `gorm:"foreignKey:AgentCapacityPolicyID" json:"agent_capacity_policy,omitempty"`
+	CustomRole          *CustomRole          `gorm:"foreignKey:CustomRoleID" json:"custom_role,omitempty"`
 }
 
 // Inbox represents a communication channel for customer interactions
@@ -147,19 +204,27 @@ type Inbox struct {
 	AccountID           uint      `gorm:"index;not null" json:"account_id"`
 	Name                string    `gorm:"size:255;not null" json:"name"`
 	ChannelType         string    `gorm:"size:50;not null;default:'Channel::WebWidget'" json:"channel_type"`
-	WebsiteToken        string    `gorm:"size:128;uniqueIndex;not null" json:"website_token"`
-	GreetingMessage     string    `gorm:"type:text" json:"greeting_message"`
-	GreetingEnabled     bool      `gorm:"default:true" json:"greeting_enabled"`
-	WorkingHoursEnabled bool      `gorm:"default:false" json:"working_hours_enabled"`
-	OutOfOfficeMessage  string    `gorm:"type:text" json:"out_of_office_message"`
-	Timezone            string    `gorm:"size:100;default:'UTC'" json:"timezone"`
-	WorkingHours        string    `gorm:"type:text" json:"working_hours"` // JSON array of WorkingHourConfig
-	AssignmentPolicyID  *uint     `gorm:"index" json:"assignment_policy_id"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	AvatarURL           string            `gorm:"size:512" json:"avatar_url"`
+	WebsiteToken        string            `gorm:"size:128;uniqueIndex;not null" json:"website_token"`
+	GreetingMessage     string            `gorm:"type:text" json:"greeting_message"`
+	GreetingEnabled     bool              `gorm:"default:true" json:"greeting_enabled"`
+	WorkingHoursEnabled bool              `gorm:"default:false" json:"working_hours_enabled"`
+	OutOfOfficeMessage  string            `gorm:"type:text" json:"out_of_office_message"`
+	Timezone            string            `gorm:"size:100;default:'UTC'" json:"timezone"`
+	WorkingHours        string            `gorm:"type:text" json:"working_hours"` // JSON array of WorkingHourConfig
+	AssignmentPolicyID  *uint             `gorm:"index" json:"assignment_policy_id"`
+	CSATSurveyEnabled   bool              `gorm:"default:false" json:"csat_survey_enabled"`
+	CSATConfig          string            `gorm:"type:text" json:"csat_config"`
+	ProviderConfig      string            `gorm:"type:text" json:"provider_config"`
+	HMACMandatory       bool              `gorm:"default:false" json:"hmac_mandatory"`
+	HMACToken           string            `gorm:"size:255" json:"hmac_token"`
+	WebhookURL          string            `gorm:"size:1024" json:"webhook_url"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 
 	Members          []User            `gorm:"many2many:inbox_members;" json:"members,omitempty"`
 	AssignmentPolicy *AssignmentPolicy `gorm:"foreignKey:AssignmentPolicyID" json:"assignment_policy,omitempty"`
+	AgentBotInbox    *AgentBotInbox    `gorm:"foreignKey:InboxID" json:"agent_bot_inbox,omitempty"`
 }
 
 // InboxMember links an agent to an inbox
@@ -180,6 +245,7 @@ type Contact struct {
 	PhoneNumber      string    `gorm:"size:50;index" json:"phone_number"`
 	Identifier       string    `gorm:"size:255;index" json:"identifier"`
 	AvatarURL        string    `gorm:"size:512" json:"avatar_url"`
+	PubsubToken      string    `gorm:"size:255" json:"pubsub_token"`
 	CustomAttributes string    `gorm:"type:text" json:"custom_attributes"`
 	ObjectVersion    int       `gorm:"default:1" json:"object_version"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -240,6 +306,28 @@ type Conversation struct {
 	SLAEvents  []SLAEvent  `gorm:"foreignKey:ConversationID" json:"sla_events,omitempty"`
 }
 
+// FilterRule defines a single condition in conversation filter query
+type FilterRule struct {
+	AttributeKey   string `json:"attribute_key"`
+	FilterOperator string `json:"filter_operator"`
+	Values         []any  `json:"values"`
+	QueryOperator  string `json:"query_operator,omitempty"`
+}
+
+// ConversationFilterRequest defines payload for POST /conversations/filter
+type ConversationFilterRequest struct {
+	Payload  []FilterRule `json:"payload"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"page_size"`
+}
+
+// ContactFilterRequest defines payload for POST /contacts/filter
+type ContactFilterRequest struct {
+	Payload  []FilterRule `json:"payload"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"page_size"`
+}
+
 // Message represents an individual text or event entry in a conversation
 type Message struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
@@ -250,6 +338,8 @@ type Message struct {
 	MessageType    string    `gorm:"size:50;default:'incoming'" json:"message_type"`
 	ContentType    string    `gorm:"size:50;default:'text'" json:"content_type"`
 	Content        string    `gorm:"type:text;not null" json:"content"`
+	Translations   string    `gorm:"type:text" json:"translations,omitempty"`
+	ContentAttributes string `gorm:"type:text" json:"content_attributes,omitempty"`
 	Private        bool      `gorm:"default:false" json:"private"`
 	Status         string     `gorm:"size:50;default:'sent'" json:"status"`
 	EchoID         string     `gorm:"size:255;index" json:"echo_id"`
@@ -268,8 +358,9 @@ type Label struct {
 	AccountID   uint      `gorm:"index;not null" json:"account_id"`
 	Title       string    `gorm:"size:100;not null" json:"title"`
 	Description string    `gorm:"size:255" json:"description"`
-	Color       string    `gorm:"size:50;default:'#1f93ff'" json:"color"`
-	CreatedAt   time.Time `json:"created_at"`
+	Color         string    `gorm:"size:50;default:'#1f93ff'" json:"color"`
+	ShowOnSidebar bool      `gorm:"default:false" json:"show_on_sidebar"`
+	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
@@ -481,14 +572,52 @@ type Webhook struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// DashboardAppContentItem represents an embedded frame or web component in a dashboard app
+type DashboardAppContentItem struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+	Link string `json:"link,omitempty"`
+}
+
 // DashboardApp represents an embedded external application in the agent dashboard
 type DashboardApp struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	AccountID  uint      `gorm:"index;not null" json:"account_id"`
-	Title      string    `gorm:"size:255;not null" json:"title"`
-	ContentURL string    `gorm:"size:1024;not null" json:"content_url"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID            uint                      `gorm:"primaryKey" json:"id"`
+	AccountID     uint                      `gorm:"index;not null" json:"account_id"`
+	UserID        *uint                     `gorm:"index" json:"user_id,omitempty"`
+	Title         string                    `gorm:"size:255;not null" json:"title"`
+	Content       string                    `gorm:"type:text" json:"-"`
+	ContentURL    string                    `gorm:"size:1024" json:"content_url,omitempty"`
+	CreatedAt     time.Time                 `json:"created_at"`
+	UpdatedAt     time.Time                 `json:"updated_at"`
+	ParsedContent []DashboardAppContentItem `gorm:"-" json:"content"`
+}
+
+func (app DashboardApp) MarshalJSON() ([]byte, error) {
+	content := app.ParsedContent
+	if len(content) == 0 && app.Content != "" {
+		_ = json.Unmarshal([]byte(app.Content), &content)
+	}
+	if len(content) == 0 && app.ContentURL != "" {
+		content = []DashboardAppContentItem{
+			{Type: "frame", URL: app.ContentURL, Link: app.ContentURL},
+		}
+	}
+	for i := range content {
+		if content[i].Link == "" {
+			content[i].Link = content[i].URL
+		}
+	}
+	if content == nil {
+		content = []DashboardAppContentItem{}
+	}
+	type Alias DashboardApp
+	return json.Marshal(&struct {
+		Alias
+		Content []DashboardAppContentItem `json:"content"`
+	}{
+		Alias:   Alias(app),
+		Content: content,
+	})
 }
 
 // WebhookDelivery records webhook execution attempts and retries
@@ -681,15 +810,18 @@ type NotificationSubscription struct {
 
 // Company represents a customer organization or corporate account
 type Company struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	AccountID     uint      `gorm:"index;not null" json:"account_id"`
-	Name          string    `gorm:"size:255;not null" json:"name"`
-	Domain        string    `gorm:"size:255" json:"domain"`
-	Industry      string    `gorm:"size:100" json:"industry"`
-	Description   string    `gorm:"type:text" json:"description"`
-	ContactsCount int64     `gorm:"-" json:"contacts_count,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                   uint      `gorm:"primaryKey" json:"id"`
+	AccountID            uint      `gorm:"index;not null" json:"account_id"`
+	Name                 string    `gorm:"size:255;not null" json:"name"`
+	Domain               string    `gorm:"size:255" json:"domain"`
+	Industry             string    `gorm:"size:100" json:"industry"`
+	Description          string    `gorm:"type:text" json:"description"`
+	AvatarURL            string    `gorm:"size:512" json:"avatar_url"`
+	CustomAttributes     string    `gorm:"type:text" json:"custom_attributes"`
+	AdditionalAttributes string    `gorm:"type:text" json:"additional_attributes"`
+	ContactsCount        int64     `gorm:"-" json:"contacts_count,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // CompanyNote represents an internal operator note attached to a company profile
@@ -803,8 +935,23 @@ type AgentBot struct {
 	Description string    `gorm:"type:text" json:"description"`
 	OutgoingURL string    `gorm:"size:1024;not null" json:"outgoing_url"`
 	BotType     string    `gorm:"size:50;default:'webhook'" json:"bot_type"`
+	AvatarURL   string    `gorm:"size:1024" json:"avatar_url"`
+	BotConfig   string    `gorm:"type:text" json:"bot_config,omitempty"`
+	AccessToken string    `gorm:"size:255" json:"access_token,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// AgentBotInbox links an AgentBot to an Inbox
+type AgentBotInbox struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	AccountID  uint      `gorm:"index;not null" json:"account_id"`
+	AgentBotID uint      `gorm:"index;not null" json:"agent_bot_id"`
+	InboxID    uint      `gorm:"uniqueIndex;not null" json:"inbox_id"`
+	CreatedAt  time.Time `json:"created_at"`
+
+	AgentBot *AgentBot `gorm:"foreignKey:AgentBotID" json:"agent_bot,omitempty"`
+	Inbox    *Inbox    `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
 }
 
 // ----------------- CONV 消息多媒体附件 -----------------
@@ -857,20 +1004,24 @@ type ConversationParticipant struct {
 
 // Call represents a voice or video call interaction
 type Call struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	AccountID      uint      `gorm:"index;not null" json:"account_id"`
-	ContactID      uint      `gorm:"index;not null" json:"contact_id"`
-	InboxID        uint      `gorm:"index;not null" json:"inbox_id"`
-	ConversationID *uint     `gorm:"index" json:"conversation_id"`
-	AgentID        *uint     `gorm:"index" json:"agent_id"`
-	Status         string    `gorm:"size:50;default:'initiated'" json:"status"` // initiated, ringing, in_progress, completed, failed
-	Direction      string    `gorm:"size:50;default:'outbound'" json:"direction"` // inbound, outbound
-	Duration       int       `gorm:"default:0" json:"duration"`                   // in seconds
-	RecordingURL   string    `gorm:"size:1024" json:"recording_url"`
-	SDPOffer       string    `gorm:"type:text" json:"sdp_offer,omitempty"`
-	SDPAnswer      string    `gorm:"type:text" json:"sdp_answer,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	AccountID       uint      `gorm:"index;not null" json:"account_id"`
+	ContactID       uint      `gorm:"index;not null" json:"contact_id"`
+	InboxID         uint      `gorm:"index;not null" json:"inbox_id"`
+	ConversationID  *uint     `gorm:"index" json:"conversation_id"`
+	AgentID         *uint     `gorm:"index" json:"agent_id"`
+	Status          string    `gorm:"size:50;default:'initiated'" json:"status"` // initiated, ringing, in_progress, completed, failed, rejected
+	Direction       string    `gorm:"size:50;default:'outbound'" json:"direction"` // inbound, outbound
+	Duration        int       `gorm:"default:0" json:"duration"`                   // in seconds
+	RecordingURL    string    `gorm:"size:1024" json:"recording_url"`
+	RecordingSID    string    `gorm:"size:255" json:"recording_sid,omitempty"`
+	TerminateReason string    `gorm:"size:100" json:"terminate_reason,omitempty"`
+	Provider        string    `gorm:"size:50;default:'webrtc'" json:"provider,omitempty"` // webrtc, whatsapp, twilio
+	ProviderCallID  string    `gorm:"size:255" json:"provider_call_id,omitempty"`
+	SDPOffer        string    `gorm:"type:text" json:"sdp_offer,omitempty"`
+	SDPAnswer       string    `gorm:"type:text" json:"sdp_answer,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // Conference represents a room signaling session
@@ -894,6 +1045,9 @@ type SAMLSetting struct {
 	AccountID    uint      `gorm:"uniqueIndex;not null" json:"account_id"`
 	SSOURL       string    `gorm:"size:1024;not null" json:"sso_url"`
 	Certificate  string    `gorm:"type:text;not null" json:"certificate"`
+	Fingerprint  string    `gorm:"size:255" json:"fingerprint,omitempty"`
+	IDPEntityID  string    `gorm:"size:1024" json:"idp_entity_id,omitempty"`
+	SPEntityID   string    `gorm:"size:1024" json:"sp_entity_id,omitempty"`
 	RoleMappings string    `gorm:"type:text" json:"role_mappings"` // JSON mapping SAML groups to roles
 	Enabled      bool      `gorm:"default:true" json:"enabled"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -930,6 +1084,15 @@ type MFAProfile struct {
 	BackupCodes string    `gorm:"type:text" json:"backup_codes"` // JSON string array
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RevokedToken stores invalidated or logged-out authentication tokens
+type RevokedToken struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Token     string    `gorm:"size:512;uniqueIndex;not null" json:"token"`
+	UserID    uint      `gorm:"index;not null" json:"user_id"`
+	ExpiresAt time.Time `gorm:"index;not null" json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ----------------- ROUTE & MIG 数据导入与迁移 -----------------
@@ -972,6 +1135,9 @@ type MigrationJob struct {
 type ReportingEvent struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	AccountID      uint      `gorm:"index;not null" json:"account_id"`
+	ConversationID *uint     `gorm:"index" json:"conversation_id,omitempty"`
+	UserID         *uint     `gorm:"index" json:"user_id,omitempty"`
+	InboxID        *uint     `gorm:"index" json:"inbox_id,omitempty"`
 	Name           string    `gorm:"size:255;index;not null" json:"name"`
 	Value          float64   `gorm:"default:1.0" json:"value"`
 	EventStartTime time.Time `json:"event_start_time"`
@@ -1298,6 +1464,8 @@ type AccountSubscription struct {
 	AccountID          uint              `gorm:"uniqueIndex;not null" json:"account_id"`
 	PlanID             uint              `gorm:"index;not null" json:"plan_id"`
 	Status             string            `gorm:"size:50;default:'active'" json:"status"` // active, past_due, canceled
+	BillingCurrency    string            `gorm:"size:10;default:'usd'" json:"billing_currency,omitempty"`
+	StripeCustomerID   string            `gorm:"size:255" json:"stripe_customer_id,omitempty"`
 	CurrentPeriodStart time.Time         `json:"current_period_start"`
 	CurrentPeriodEnd   time.Time         `json:"current_period_end"`
 	CancelAtPeriodEnd  bool              `gorm:"default:false" json:"cancel_at_period_end"`

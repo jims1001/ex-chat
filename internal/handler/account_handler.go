@@ -33,14 +33,16 @@ type CreateAccountRequest struct {
 }
 
 type AddAgentRequest struct {
-	Name     string `json:"name" binding:"required"`
-	Email    string `json:"email" binding:"required,email"`
-	Role     string `json:"role"`
-	Password string `json:"password"`
+	Name         string `json:"name" binding:"required"`
+	Email        string `json:"email" binding:"required,email"`
+	Role         string `json:"role"`
+	CustomRoleID *uint  `json:"custom_role_id"`
+	Password     string `json:"password"`
 }
 
 type UpdateAgentRequest struct {
 	Role         string `json:"role"`
+	CustomRoleID *uint  `json:"custom_role_id"`
 	Availability string `json:"availability"`
 	Name         string `json:"name"`
 }
@@ -261,7 +263,7 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 		return
 	}
 
-	if err := h.accountRepo.AddMember(accountID, user.ID, role); err != nil {
+	if err := h.accountRepo.AddMemberWithRole(accountID, user.ID, role, req.CustomRoleID); err != nil {
 		logger.WithComponent("agent").Error("failed to add agent to account",
 			"account_id", accountID,
 			"user_id", user.ID,
@@ -307,6 +309,13 @@ func (h *AccountHandler) UpdateAgent(c *gin.Context) {
 
 	if req.Role != "" {
 		membership.Role = req.Role
+	}
+	if req.CustomRoleID != nil {
+		if *req.CustomRoleID == 0 {
+			membership.CustomRoleID = nil
+		} else {
+			membership.CustomRoleID = req.CustomRoleID
+		}
 	}
 	if req.Availability != "" {
 		membership.Availability = req.Availability

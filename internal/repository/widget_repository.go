@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -400,4 +401,200 @@ func (r *WidgetRepository) UpdateContactInfo(ctx context.Context, accountID, con
 	}
 
 	return &contact, nil
+}
+
+// DestroyContactCustomAttributes removes specified custom attribute keys from a contact
+func (r *WidgetRepository) DestroyContactCustomAttributes(ctx context.Context, accountID, contactID uint, keys []string) (map[string]any, error) {
+	var contact domain.Contact
+	if err := r.db.WithContext(ctx).Where("account_id = ? AND id = ?", accountID, contactID).First(&contact).Error; err != nil {
+		return nil, err
+	}
+
+	attrs := make(map[string]any)
+	if strings.TrimSpace(contact.CustomAttributes) != "" {
+		_ = json.Unmarshal([]byte(contact.CustomAttributes), &attrs)
+	}
+
+	for _, k := range keys {
+		delete(attrs, strings.TrimSpace(k))
+	}
+
+	rawJSON, _ := json.Marshal(attrs)
+	if err := r.db.WithContext(ctx).Model(&domain.Contact{}).
+		Where("account_id = ? AND id = ?", accountID, contactID).
+		Update("custom_attributes", string(rawJSON)).Error; err != nil {
+		return nil, err
+	}
+
+	return attrs, nil
+}
+
+// SetUser resolves or creates a contact for window.$chatwoot.setUser, binds ContactInbox, and merges attributes
+func (r *WidgetRepository) SetUser(ctx context.Context, inbox *domain.Inbox, identifier, name, email, phone, avatarURL string, customAttrs map[string]any, sourceID string) (*domain.Contact, error) {
+	var contact *domain.Contact
+
+	identifier = strings.TrimSpace(identifier)
+	email = strings.ToLower(strings.TrimSpace(email))
+	phone = strings.TrimSpace(phone)
+	name = strings.TrimSpace(name)
+	avatarURL = strings.TrimSpace(avatarURL)
+	sourceID = strings.TrimSpace(sourceID)
+
+	// 1. Try finding by identifier in this account
+	if identifier != "" {
+		var c domain.Contact
+		if err := r.db.WithContext(ctx).Where("account_id = ? AND identifier = ?", inbox.AccountID, identifier).First(&c).Error; err == nil && c.ID > 0 {
+			contact = &c
+		}
+	}
+
+	// 2. Try finding by email in this account
+	if contact == nil && email != "" {
+		var c domain.Contact
+		if err := r.db.WithContext(ctx).Where("account_id = ? AND email = ?", inbox.AccountID, email).First(&c).Error; err == nil && c.ID > 0 {
+			contact = &c
+		}
+	}
+
+	// 3. Try finding by sourceID in this inbox
+	if contact == nil && sourceID != "" {
+		var ci domain.ContactInbox
+		if err := r.db.WithContext(ctx).Preload("Contact").
+			Where("inbox_id = ? AND source_id = ?", inbox.ID, sourceID).First(&ci).Error; err == nil && ci.Contact != nil {
+			contact = ci.Contact
+		}
+	}
+
+	// 4. Create new contact if not found
+	if contact == nil {
+		displayName := name
+		if displayName == "" {
+			if email != "" {
+				displayName = strings.Split(email, "@")[0]
+			} else if identifier != "" {
+				displayName = "User " + identifier
+			} else {
+				displayName = "Visitor"
+			}
+		}
+
+		newContact := domain.Contact{
+			AccountID:   inbox.AccountID,
+			Name:        displayName,
+			Email:       email,
+			PhoneNumber: phone,
+			Identifier:  identifier,
+			AvatarURL:   avatarURL,
+		}
+		if customAttrs != nil {
+			b, _ := json.Marshal(customAttrs)
+			newContact.CustomAttributes = string(b)
+		}
+		if err := r.db.WithContext(ctx).Create(&newContact).Error; err != nil {
+			return nil, err
+		}
+		contact = &newContact
+	} else {
+		// Update existing contact
+		updates := make(map[string]any)
+		if name != "" && contact.Name != name {
+			updates["name"] = name
+			contact.Name = name
+		}
+		if email != "" && contact.Email != email {
+			updates["email"] = email
+			contact.Email = email
+		}
+		if phone != "" && contact.PhoneNumber != phone {
+			updates["phone_number"] = phone
+			contact.PhoneNumber = phone
+		}
+		if identifier != "" && contact.Identifier != identifier {
+			updates["identifier"] = identifier
+			contact.Identifier = identifier
+		}
+		if avatarURL != "" && contact.AvatarURL != avatarURL {
+			updates["avatar_url"] = avatarURL
+			contact.AvatarURL = avatarURL
+		}
+		if customAttrs != nil {
+			existing := make(map[string]any)
+			if strings.TrimSpace(contact.CustomAttributes) != "" {
+				_ = json.Unmarshal([]byte(contact.CustomAttributes), &existing)
+			}
+			for k, v := range customAttrs {
+				if v == nil {
+					delete(existing, k)
+				} else {
+					existing[k] = v
+				}
+			}
+			mergedBytes, _ := json.Marshal(existing)
+			updates["custom_attributes"] = string(mergedBytes)
+			contact.CustomAttributes = string(mergedBytes)
+		}
+		if len(updates) > 0 {
+			_ = r.db.WithContext(ctx).Model(&domain.Contact{}).
+				Where("account_id = ? AND id = ?", inbox.AccountID, contact.ID).
+				Updates(updates).Error
+		}
+	}
+
+	// 5. Ensure ContactInbox mapping exists
+	effectiveSourceID := sourceID
+	if effectiveSourceID == "" {
+		if identifier != "" {
+			effectiveSourceID = identifier
+		} else {
+			effectiveSourceID = fmt.Sprintf("src_%d_%d", inbox.ID, contact.ID)
+		}
+	}
+
+	var ci domain.ContactInbox
+	err := r.db.WithContext(ctx).Where("inbox_id = ? AND contact_id = ?", inbox.ID, contact.ID).First(&ci).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		ci = domain.ContactInbox{
+			InboxID:   inbox.ID,
+			ContactID: contact.ID,
+			SourceID:  effectiveSourceID,
+		}
+		_ = r.db.WithContext(ctx).Create(&ci).Error
+	} else if ci.SourceID != "" && effectiveSourceID != "" && ci.SourceID != effectiveSourceID {
+		_ = r.db.WithContext(ctx).Model(&ci).Update("source_id", effectiveSourceID).Error
+	}
+
+	return contact, nil
+}
+
+// UpdateMessageSubmittedValues updates message content, submitted_values or interactive properties
+func (r *WidgetRepository) UpdateMessageSubmittedValues(ctx context.Context, messageID, conversationID uint, submittedValues map[string]any, content string) (*domain.Message, error) {
+	var msg domain.Message
+	if err := r.db.WithContext(ctx).Where("id = ? AND conversation_id = ?", messageID, conversationID).First(&msg).Error; err != nil {
+		return nil, err
+	}
+
+	updates := make(map[string]any)
+	if strings.TrimSpace(content) != "" {
+		updates["content"] = content
+		msg.Content = content
+	}
+
+	if submittedValues != nil {
+		existing := make(map[string]any)
+		if strings.TrimSpace(msg.ContentAttributes) != "" {
+			_ = json.Unmarshal([]byte(msg.ContentAttributes), &existing)
+		}
+		existing["submitted_values"] = submittedValues
+		raw, _ := json.Marshal(existing)
+		updates["content_attributes"] = string(raw)
+		msg.ContentAttributes = string(raw)
+	}
+
+	if len(updates) > 0 {
+		if err := r.db.WithContext(ctx).Model(&domain.Message{}).Where("id = ?", messageID).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	return &msg, nil
 }

@@ -1,7 +1,9 @@
 package repository
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -103,6 +105,10 @@ func (r *ContactRepository) Delete(accountID, id uint) error {
 	})
 }
 
+func (r *ContactRepository) CreateContactInbox(ci *domain.ContactInbox) error {
+	return r.db.Create(ci).Error
+}
+
 func (r *ContactRepository) FindOrCreateContactInbox(contactID, inboxID uint, sourceID string) (*domain.ContactInbox, error) {
 	var ci domain.ContactInbox
 	err := r.db.Where("inbox_id = ? AND source_id = ?", inboxID, sourceID).First(&ci).Error
@@ -187,4 +193,287 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 
 		return nil
 	})
+}
+
+func (r *ContactRepository) GetDB() *gorm.DB {
+	return r.db
+}
+
+// ListActive retrieves contacts with ongoing/active (non-resolved) conversations
+func (r *ContactRepository) ListActive(accountID uint, page, pageSize int, search string) ([]domain.Contact, int64, error) {
+	var contacts []domain.Contact
+	var total int64
+
+	subQuery := r.db.Model(&domain.Conversation{}).
+		Select("DISTINCT contact_id").
+		Where("account_id = ? AND status != ?", accountID, "resolved")
+
+	query := r.db.Model(&domain.Contact{}).
+		Where("account_id = ? AND id IN (?)", accountID, subQuery)
+
+	if search != "" {
+		s := "%" + strings.ToLower(search) + "%"
+		query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR phone_number LIKE ? OR identifier LIKE ?", s, s, s, s)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	err := query.Preload("Company").Preload("Labels").
+		Offset(offset).Limit(pageSize).
+		Order("id DESC").
+		Find(&contacts).Error
+
+	return contacts, total, err
+}
+
+// Search retrieves contacts matching query across name, email, phone, identifier, and custom_attributes
+func (r *ContactRepository) Search(accountID uint, search string, page, pageSize int) ([]domain.Contact, int64, error) {
+	var contacts []domain.Contact
+	var total int64
+
+	query := r.db.Model(&domain.Contact{}).Where("account_id = ?", accountID)
+	if search != "" {
+		s := "%" + strings.ToLower(search) + "%"
+		query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ? OR phone_number LIKE ? OR identifier LIKE ? OR LOWER(custom_attributes) LIKE ?", s, s, s, s, s)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	err := query.Preload("Company").Preload("Labels").
+		Offset(offset).Limit(pageSize).
+		Order("id DESC").
+		Find(&contacts).Error
+
+	return contacts, total, err
+}
+
+// Filter applies structured rules to filter contacts dynamically
+func (r *ContactRepository) Filter(accountID uint, filters []domain.FilterRule, page, pageSize int) ([]domain.Contact, int64, error) {
+	var contacts []domain.Contact
+	var total int64
+
+	query := r.db.Model(&domain.Contact{}).Where("account_id = ?", accountID)
+
+	for _, rule := range filters {
+		op := strings.ToLower(rule.FilterOperator)
+		key := strings.ToLower(rule.AttributeKey)
+
+		switch key {
+		case "name":
+			for _, v := range rule.Values {
+				valStr := fmt.Sprintf("%v", v)
+				if op == "equal_to" {
+					query = query.Where("LOWER(name) = ?", strings.ToLower(valStr))
+				} else if op == "not_equal_to" {
+					query = query.Where("LOWER(name) != ?", strings.ToLower(valStr))
+				} else if op == "contains" {
+					query = query.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(valStr)+"%")
+				} else if op == "does_not_contain" {
+					query = query.Where("LOWER(name) NOT LIKE ?", "%"+strings.ToLower(valStr)+"%")
+				}
+			}
+			if op == "is_present" {
+				query = query.Where("name IS NOT NULL AND name != ''")
+			} else if op == "is_not_present" {
+				query = query.Where("name IS NULL OR name = ''")
+			}
+
+		case "email":
+			for _, v := range rule.Values {
+				valStr := fmt.Sprintf("%v", v)
+				if op == "equal_to" {
+					query = query.Where("LOWER(email) = ?", strings.ToLower(valStr))
+				} else if op == "not_equal_to" {
+					query = query.Where("LOWER(email) != ?", strings.ToLower(valStr))
+				} else if op == "contains" {
+					query = query.Where("LOWER(email) LIKE ?", "%"+strings.ToLower(valStr)+"%")
+				} else if op == "does_not_contain" {
+					query = query.Where("LOWER(email) NOT LIKE ?", "%"+strings.ToLower(valStr)+"%")
+				}
+			}
+			if op == "is_present" {
+				query = query.Where("email IS NOT NULL AND email != ''")
+			} else if op == "is_not_present" {
+				query = query.Where("email IS NULL OR email = ''")
+			}
+
+		case "phone_number", "phone":
+			for _, v := range rule.Values {
+				valStr := fmt.Sprintf("%v", v)
+				if op == "equal_to" {
+					query = query.Where("phone_number = ?", valStr)
+				} else if op == "not_equal_to" {
+					query = query.Where("phone_number != ?", valStr)
+				} else if op == "contains" {
+					query = query.Where("phone_number LIKE ?", "%"+valStr+"%")
+				} else if op == "does_not_contain" {
+					query = query.Where("phone_number NOT LIKE ?", "%"+valStr+"%")
+				}
+			}
+			if op == "is_present" {
+				query = query.Where("phone_number IS NOT NULL AND phone_number != ''")
+			} else if op == "is_not_present" {
+				query = query.Where("phone_number IS NULL OR phone_number = ''")
+			}
+
+		case "identifier":
+			for _, v := range rule.Values {
+				valStr := fmt.Sprintf("%v", v)
+				if op == "equal_to" {
+					query = query.Where("identifier = ?", valStr)
+				} else if op == "not_equal_to" {
+					query = query.Where("identifier != ?", valStr)
+				} else if op == "contains" {
+					query = query.Where("identifier LIKE ?", "%"+valStr+"%")
+				}
+			}
+			if op == "is_present" {
+				query = query.Where("identifier IS NOT NULL AND identifier != ''")
+			} else if op == "is_not_present" {
+				query = query.Where("identifier IS NULL OR identifier = ''")
+			}
+
+		case "company_id":
+			if op == "equal_to" {
+				query = query.Where("company_id IN (?)", rule.Values)
+			} else if op == "not_equal_to" {
+				query = query.Where("company_id NOT IN (?)", rule.Values)
+			} else if op == "is_present" {
+				query = query.Where("company_id IS NOT NULL")
+			} else if op == "is_not_present" {
+				query = query.Where("company_id IS NULL")
+			}
+
+		case "labels":
+			if op == "equal_to" || op == "contains" {
+				query = query.Where("id IN (SELECT contact_id FROM contact_labels JOIN labels ON contact_labels.label_id = labels.id WHERE labels.title IN (?))", rule.Values)
+			}
+
+		default:
+			// custom attribute or generic field
+			for _, v := range rule.Values {
+				valStr := fmt.Sprintf("%v", v)
+				if strings.HasPrefix(key, "custom_attributes.") {
+					attrKey := strings.TrimPrefix(key, "custom_attributes.")
+					query = query.Where("custom_attributes LIKE ? AND custom_attributes LIKE ?", "%"+attrKey+"%", "%"+valStr+"%")
+				} else {
+					query = query.Where("custom_attributes LIKE ?", "%"+valStr+"%")
+				}
+			}
+		}
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	err := query.Preload("Company").Preload("Labels").
+		Offset(offset).Limit(pageSize).
+		Order("id DESC").
+		Find(&contacts).Error
+
+	return contacts, total, err
+}
+
+// ImportContacts handles batch contact import with smart deduplication/upsert
+func (r *ContactRepository) ImportContacts(accountID uint, contacts []domain.Contact) (int, int, error) {
+	importedCount := 0
+	updatedCount := 0
+
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		for i := range contacts {
+			c := contacts[i]
+			c.AccountID = accountID
+
+			var existing domain.Contact
+			found := false
+
+			if c.Email != "" {
+				if err := tx.Where("account_id = ? AND LOWER(email) = ?", accountID, strings.ToLower(c.Email)).First(&existing).Error; err == nil {
+					found = true
+				}
+			}
+			if !found && c.Identifier != "" {
+				if err := tx.Where("account_id = ? AND identifier = ?", accountID, c.Identifier).First(&existing).Error; err == nil {
+					found = true
+				}
+			}
+			if !found && c.PhoneNumber != "" {
+				if err := tx.Where("account_id = ? AND phone_number = ?", accountID, c.PhoneNumber).First(&existing).Error; err == nil {
+					found = true
+				}
+			}
+
+			if found {
+				if c.Name != "" {
+					existing.Name = c.Name
+				}
+				if c.PhoneNumber != "" {
+					existing.PhoneNumber = c.PhoneNumber
+				}
+				if c.Identifier != "" {
+					existing.Identifier = c.Identifier
+				}
+				if c.CustomAttributes != "" {
+					existing.CustomAttributes = c.CustomAttributes
+				}
+				if c.CompanyID != nil {
+					existing.CompanyID = c.CompanyID
+				}
+				if err := tx.Save(&existing).Error; err != nil {
+					return err
+				}
+				updatedCount++
+			} else {
+				if err := tx.Create(&c).Error; err != nil {
+					return err
+				}
+				importedCount++
+			}
+		}
+		return nil
+	})
+
+	return importedCount, updatedCount, err
+}
+
+// DeleteAvatar removes the avatar URL for a contact
+func (r *ContactRepository) DeleteAvatar(accountID, contactID uint) error {
+	return r.db.Model(&domain.Contact{}).
+		Where("account_id = ? AND id = ?", accountID, contactID).
+		Update("avatar_url", "").Error
+}
+
+// DestroyCustomAttributes strips designated key(s) from a contact's custom attributes JSON
+func (r *ContactRepository) DestroyCustomAttributes(accountID, contactID uint, keys []string) (*domain.Contact, error) {
+	contact, err := r.FindByID(accountID, contactID)
+	if err != nil || contact == nil {
+		return nil, err
+	}
+
+	attrs := make(map[string]any)
+	if contact.CustomAttributes != "" {
+		_ = json.Unmarshal([]byte(contact.CustomAttributes), &attrs)
+	}
+
+	for _, k := range keys {
+		delete(attrs, k)
+	}
+
+	newBytes, _ := json.Marshal(attrs)
+	contact.CustomAttributes = string(newBytes)
+	contact.ObjectVersion++
+
+	if err := r.db.Save(contact).Error; err != nil {
+		return nil, err
+	}
+
+	return contact, nil
 }

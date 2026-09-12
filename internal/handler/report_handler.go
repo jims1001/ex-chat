@@ -2,6 +2,8 @@ package handler
 
 import (
 	"encoding/csv"
+	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -248,4 +250,350 @@ func (h *ReportHandler) ExportConversationsCSV(c *gin.Context) {
 		"exported_count", len(convs),
 	)
 }
+
+func parseUintList(c *gin.Context, key string) []uint {
+	rawArr := c.QueryArray(key)
+	if len(rawArr) == 0 {
+		raw := c.Query(key)
+		if raw != "" {
+			rawArr = strings.Split(raw, ",")
+		}
+	}
+	var res []uint
+	for _, item := range rawArr {
+		item = strings.Trim(strings.TrimSpace(item), "[]")
+		for _, part := range strings.Split(item, ",") {
+			part = strings.TrimSpace(part)
+			if id, err := strconv.ParseUint(part, 10, 64); err == nil && id > 0 {
+				res = append(res, uint(id))
+			}
+		}
+	}
+	return res
+}
+
+// GetConversationsReport returns live conversation metrics by account or per-agent breakdown
+func (h *ReportHandler) GetConversationsReport(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	repType := c.DefaultQuery("type", "account")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+
+	data, err := h.reportService.GetConversationsReport(accountID, repType, page, perPage)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get conversations report", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get conversations report")
+		return
+	}
+	c.JSON(http.StatusOK, data)
+}
+
+// GetConversationsSummary returns conversations summary as JSON or CSV
+func (h *ReportHandler) GetConversationsSummary(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	summary, err := h.reportService.GetAccountSummary(accountID, filter)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to generate conversations summary", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to generate conversations summary")
+		return
+	}
+
+	if c.Query("format") == "csv" || strings.Contains(c.GetHeader("Accept"), "text/csv") {
+		c.Header("Content-Type", "text/csv")
+		c.Header("Content-Disposition", "attachment;filename=conversations_summary_report.csv")
+		w := csv.NewWriter(c.Writer)
+		_ = w.Write([]string{"Conversations", "Incoming Messages", "Outgoing Messages", "Avg First Response Time (s)", "Avg Resolution Time (s)", "Resolutions Count", "Reply Time (s)"})
+		_ = w.Write([]string{
+			strconv.FormatInt(summary.ConversationsCount, 10),
+			strconv.FormatInt(summary.IncomingMessagesCount, 10),
+			strconv.FormatInt(summary.OutgoingMessagesCount, 10),
+			strconv.FormatFloat(summary.AvgFirstResponseTime, 'f', 1, 64),
+			strconv.FormatFloat(summary.AvgResolutionTime, 'f', 1, 64),
+			strconv.FormatInt(summary.ResolutionsCount, 10),
+			strconv.FormatFloat(summary.AvgReplyTime, 'f', 1, 64),
+		})
+		w.Flush()
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    summary,
+		"payload": summary,
+	})
+}
+
+// GetConversationTraffic produces an hourly heatmap traffic report
+func (h *ReportHandler) GetConversationTraffic(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	tzOffset := 0.0
+	if tzStr := c.Query("timezone_offset"); tzStr != "" {
+		if val, err := strconv.ParseFloat(tzStr, 64); err == nil {
+			tzOffset = val
+		}
+	}
+
+	traffic, err := h.reportService.GetConversationTraffic(accountID, filter, tzOffset)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get conversation traffic", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get conversation traffic")
+		return
+	}
+
+	if c.Query("format") == "csv" || strings.Contains(c.GetHeader("Accept"), "text/csv") {
+		c.Header("Content-Type", "text/csv")
+		c.Header("Content-Disposition", "attachment;filename=conversation_traffic_reports.csv")
+		w := csv.NewWriter(c.Writer)
+		for _, row := range traffic {
+			strRow := make([]string, len(row))
+			for i, val := range row {
+				strRow[i] = fmt.Sprintf("%v", val)
+			}
+			_ = w.Write(strRow)
+		}
+		w.Flush()
+		return
+	}
+
+	c.JSON(http.StatusOK, traffic)
+}
+
+// GetDrilldown returns paginated records for a specific metric bucket
+func (h *ReportHandler) GetDrilldown(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	metric := strings.TrimSpace(c.Query("metric"))
+	if metric == "" {
+		response.BadRequest(c, "metric is required")
+		return
+	}
+
+	bucketStr := strings.TrimSpace(c.Query("bucket_timestamp"))
+	if bucketStr == "" {
+		response.BadRequest(c, "bucket_timestamp is required")
+		return
+	}
+
+	bucketTime := time.Now().UTC()
+	if sec, err := strconv.ParseInt(bucketStr, 10, 64); err == nil {
+		bucketTime = time.Unix(sec, 0).UTC()
+	} else if t, err := time.Parse(time.RFC3339, bucketStr); err == nil {
+		bucketTime = t.UTC()
+	} else if t, err := time.Parse("2006-01-02", bucketStr); err == nil {
+		bucketTime = t.UTC()
+	}
+
+	dimType := c.DefaultQuery("type", "account")
+	var dimID *uint
+	if idStr := c.Query("id"); idStr != "" {
+		if id, err := strconv.ParseUint(idStr, 10, 64); err == nil {
+			uID := uint(id)
+			dimID = &uID
+		}
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+
+	rep, err := h.reportService.GetDrilldown(accountID, metric, dimType, dimID, bucketTime, filter, page, perPage)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get drilldown report", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get drilldown report")
+		return
+	}
+
+	c.JSON(http.StatusOK, rep)
+}
+
+// GetChannelSummary returns conversation volume and state distribution by channel type
+func (h *ReportHandler) GetChannelSummary(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	summary, err := h.reportService.GetChannelSummary(accountID, filter)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get channel summary", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get channel summary")
+		return
+	}
+
+	c.JSON(http.StatusOK, summary)
+}
+
+// GetBotSummary returns comparison of bot resolutions and handoffs
+func (h *ReportHandler) GetBotSummary(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	summary, err := h.reportService.GetBotSummary(accountID, filter)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get bot summary", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get bot summary")
+		return
+	}
+
+	c.JSON(http.StatusOK, summary)
+}
+
+// GetBotMetrics returns aggregated bot performance metrics
+func (h *ReportHandler) GetBotMetrics(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	metrics, err := h.reportService.GetBotMetrics(accountID, filter)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get bot metrics", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get bot metrics")
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// GetInboxLabelMatrix returns 2D matrix of inboxes vs labels
+func (h *ReportHandler) GetInboxLabelMatrix(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	inboxIDs := parseUintList(c, "inbox_ids")
+	labelIDs := parseUintList(c, "label_ids")
+
+	matrix, err := h.reportService.GetInboxLabelMatrix(accountID, filter, inboxIDs, labelIDs)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get inbox-label matrix", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get inbox-label matrix")
+		return
+	}
+
+	c.JSON(http.StatusOK, matrix)
+}
+
+// GetOutgoingMessagesCount aggregates outgoing messages by group_by dimension
+func (h *ReportHandler) GetOutgoingMessagesCount(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+	filter := parseReportFilter(c)
+
+	groupBy := strings.ToLower(strings.TrimSpace(c.Query("group_by")))
+	if groupBy == "" {
+		groupBy = "agent"
+	}
+
+	allowed := map[string]bool{"agent": true, "user": true, "team": true, "inbox": true, "label": true}
+	if !allowed[groupBy] {
+		response.BadRequest(c, "invalid group_by parameter: must be agent, team, inbox, or label")
+		return
+	}
+
+	counts, err := h.reportService.GetOutgoingMessagesCount(accountID, filter, groupBy)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get outgoing messages count", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get outgoing messages count")
+		return
+	}
+
+	c.JSON(http.StatusOK, counts)
+}
+
+// GetLiveConversationMetrics returns live open, unattended, unassigned conversation counts
+func (h *ReportHandler) GetLiveConversationMetrics(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	var teamID *uint
+	if tStr := c.Query("team_id"); tStr != "" {
+		if tid, err := strconv.ParseUint(tStr, 10, 64); err == nil && tid > 0 {
+			uTid := uint(tid)
+			teamID = &uTid
+		}
+	}
+
+	metrics, err := h.reportService.GetLiveConversationMetrics(accountID, teamID)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get live conversation metrics", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get live conversation metrics")
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// GetGroupedLiveMetrics returns live metrics grouped by team_id or assignee_id
+func (h *ReportHandler) GetGroupedLiveMetrics(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	groupBy := strings.ToLower(strings.TrimSpace(c.Query("group_by")))
+	if groupBy == "" {
+		groupBy = "assignee_id"
+	}
+
+	var teamID *uint
+	if tStr := c.Query("team_id"); tStr != "" {
+		if tid, err := strconv.ParseUint(tStr, 10, 64); err == nil && tid > 0 {
+			uTid := uint(tid)
+			teamID = &uTid
+		}
+	}
+
+	metrics, err := h.reportService.GetGroupedLiveMetrics(accountID, groupBy, teamID)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get grouped live metrics", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get grouped live metrics")
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// GetYearInReview returns annual service highlights for an agent
+func (h *ReportHandler) GetYearInReview(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	rawUserID, _ := c.Get(middleware.ContextUserID)
+	userID := uint(0)
+	if rawUserID != nil {
+		if u, ok := rawUserID.(uint); ok {
+			userID = u
+		}
+	}
+
+	if uStr := c.Query("user_id"); uStr != "" {
+		if uid, err := strconv.ParseUint(uStr, 10, 64); err == nil && uid > 0 {
+			userID = uint(uid)
+		}
+	}
+
+	year := time.Now().Year()
+	if yStr := c.Query("year"); yStr != "" {
+		if y, err := strconv.Atoi(yStr); err == nil && y > 2000 {
+			year = y
+		}
+	}
+
+	review, err := h.reportService.GetYearInReview(accountID, userID, year)
+	if err != nil {
+		logger.WithComponent("report").Error("failed to get year in review", "account_id", accountID, "error", err.Error())
+		response.InternalError(c, "Failed to get year in review")
+		return
+	}
+
+	c.JSON(http.StatusOK, review)
+}
+
 

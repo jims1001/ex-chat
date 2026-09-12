@@ -111,6 +111,32 @@ func TestOps_MacroNotificationAndCSAT(t *testing.T) {
 		t.Fatalf("list macros failed: code=%d", w.Code)
 	}
 
+	// 4.1. Get Macro Details (GET /macros/:id)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/accounts/"+accIDStr+"/macros/"+strconv.Itoa(int(macroID)), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get macro details failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var getMacroResp struct {
+		Payload domain.Macro `json:"payload"`
+		Data    domain.Macro `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &getMacroResp)
+	if getMacroResp.Payload.ID != macroID && getMacroResp.Data.ID != macroID {
+		t.Fatalf("expected macro id %d in payload/data, got %+v", macroID, getMacroResp)
+	}
+
+	// Non-existent macro returns 404
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/accounts/"+accIDStr+"/macros/99999", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-existent macro, got %d", w.Code)
+	}
+
 	// 5. Execute Macro (OPS-03 & OPS-04)
 	execPayload := map[string]any{
 		"conversation_ids": []uint{conv.ID},

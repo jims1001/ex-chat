@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -47,9 +48,10 @@ type CreateCannedResponseRequest struct {
 }
 
 type CreateLabelRequest struct {
-	Title       string `json:"title" binding:"required"`
-	Description string `json:"description"`
-	Color       string `json:"color"`
+	Title         string `json:"title" binding:"required"`
+	Description   string `json:"description"`
+	Color         string `json:"color"`
+	ShowOnSidebar *bool  `json:"show_on_sidebar"`
 }
 
 type AttachLabelsRequest struct {
@@ -205,6 +207,45 @@ func (h *OpsHandler) ListLabels(c *gin.Context) {
 	response.Success(c, labels)
 }
 
+func (h *OpsHandler) GetLabel(c *gin.Context) {
+	rawAccountID, exists := c.Get(middleware.ContextAccountID)
+	var accountID uint
+	if exists && rawAccountID != nil {
+		accountID = rawAccountID.(uint)
+	} else if accParam := c.Param("account_id"); accParam != "" {
+		if parsed, err := strconv.ParseUint(accParam, 10, 32); err == nil {
+			accountID = uint(parsed)
+		}
+	}
+	if accountID == 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "Invalid ID")
+		return
+	}
+
+	label, err := h.labelRepo.FindByID(accountID, uint(id))
+	if err != nil || label == nil {
+		response.NotFound(c, "Label not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":         true,
+		"payload":         label,
+		"data":            label,
+		"id":              label.ID,
+		"title":           label.Title,
+		"description":     label.Description,
+		"color":           label.Color,
+		"show_on_sidebar": label.ShowOnSidebar,
+	})
+}
+
 func (h *OpsHandler) CreateLabel(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -220,11 +261,17 @@ func (h *OpsHandler) CreateLabel(c *gin.Context) {
 		color = "#1f93ff"
 	}
 
+	showOnSidebar := false
+	if req.ShowOnSidebar != nil {
+		showOnSidebar = *req.ShowOnSidebar
+	}
+
 	label := domain.Label{
-		AccountID:   accountID,
-		Title:       strings.TrimSpace(req.Title),
-		Description: req.Description,
-		Color:       color,
+		AccountID:     accountID,
+		Title:         strings.TrimSpace(req.Title),
+		Description:   req.Description,
+		Color:         color,
+		ShowOnSidebar: showOnSidebar,
 	}
 
 	if err := h.labelRepo.Create(&label); err != nil {
@@ -277,6 +324,9 @@ func (h *OpsHandler) UpdateLabel(c *gin.Context) {
 	}
 	if req.Color != "" {
 		label.Color = req.Color
+	}
+	if req.ShowOnSidebar != nil {
+		label.ShowOnSidebar = *req.ShowOnSidebar
 	}
 
 	if err := h.labelRepo.Update(label); err != nil {

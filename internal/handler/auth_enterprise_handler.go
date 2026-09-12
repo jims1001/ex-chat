@@ -2,9 +2,11 @@ package handler
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -128,28 +130,105 @@ func (h *AuthEnterpriseHandler) SaveSAMLSetting(c *gin.Context) {
 		return
 	}
 
-	var req struct {
-		SSOURL       string `json:"sso_url" binding:"required"`
-		Certificate  string `json:"certificate" binding:"required"`
-		RoleMappings string `json:"role_mappings"`
+	type samlPayload struct {
+		SSOURL       string `json:"sso_url"`
+		Certificate  string `json:"certificate"`
+		IDPEntityID  string `json:"idp_entity_id"`
+		SPEntityID   string `json:"sp_entity_id"`
+		RoleMappings any    `json:"role_mappings"`
 		Enabled      *bool  `json:"enabled"`
+	}
+
+	var req struct {
+		SSOURL       string       `json:"sso_url"`
+		Certificate  string       `json:"certificate"`
+		IDPEntityID  string       `json:"idp_entity_id"`
+		SPEntityID   string       `json:"sp_entity_id"`
+		RoleMappings any          `json:"role_mappings"`
+		Enabled      *bool        `json:"enabled"`
+		SAMLSettings *samlPayload `json:"saml_settings"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
 
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
+	if req.SAMLSettings != nil {
+		if req.SAMLSettings.SSOURL != "" {
+			req.SSOURL = req.SAMLSettings.SSOURL
+		}
+		if req.SAMLSettings.Certificate != "" {
+			req.Certificate = req.SAMLSettings.Certificate
+		}
+		if req.SAMLSettings.IDPEntityID != "" {
+			req.IDPEntityID = req.SAMLSettings.IDPEntityID
+		}
+		if req.SAMLSettings.SPEntityID != "" {
+			req.SPEntityID = req.SAMLSettings.SPEntityID
+		}
+		if req.SAMLSettings.RoleMappings != nil {
+			req.RoleMappings = req.SAMLSettings.RoleMappings
+		}
+		if req.SAMLSettings.Enabled != nil {
+			req.Enabled = req.SAMLSettings.Enabled
+		}
 	}
 
-	setting := &domain.SAMLSetting{
-		AccountID:    uint(accountID),
-		SSOURL:       req.SSOURL,
-		Certificate:  req.Certificate,
-		RoleMappings: req.RoleMappings,
-		Enabled:      enabled,
+	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if setting == nil {
+		if req.SSOURL == "" || req.Certificate == "" {
+			response.BadRequest(c, "sso_url and certificate are required for initial SAML configuration")
+			return
+		}
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		setting = &domain.SAMLSetting{
+			AccountID:   uint(accountID),
+			SSOURL:      req.SSOURL,
+			Certificate: req.Certificate,
+			IDPEntityID: req.IDPEntityID,
+			SPEntityID:  req.SPEntityID,
+			Enabled:     enabled,
+		}
+	} else {
+		if req.SSOURL != "" {
+			setting.SSOURL = req.SSOURL
+		}
+		if req.Certificate != "" {
+			setting.Certificate = req.Certificate
+		}
+		if req.IDPEntityID != "" {
+			setting.IDPEntityID = req.IDPEntityID
+		}
+		if req.SPEntityID != "" {
+			setting.SPEntityID = req.SPEntityID
+		}
+		if req.Enabled != nil {
+			setting.Enabled = *req.Enabled
+		}
+	}
+
+	if setting.Certificate != "" {
+		hSha := sha1.New()
+		hSha.Write([]byte(setting.Certificate))
+		setting.Fingerprint = hex.EncodeToString(hSha.Sum(nil))
+	}
+
+	if req.RoleMappings != nil {
+		switch v := req.RoleMappings.(type) {
+		case string:
+			setting.RoleMappings = v
+		default:
+			b, _ := json.Marshal(v)
+			setting.RoleMappings = string(b)
+		}
 	}
 
 	if err := h.repo.SaveSAMLSetting(setting); err != nil {
@@ -160,13 +239,120 @@ func (h *AuthEnterpriseHandler) SaveSAMLSetting(c *gin.Context) {
 	response.Success(c, setting)
 }
 
+func (h *AuthEnterpriseHandler) DeleteSAMLSetting(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	if err := h.repo.DeleteSAMLSetting(uint(accountID)); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"deleted": true,
+		"message": "SAML configuration deleted successfully",
+	})
+}
+
+func (h *AuthEnterpriseHandler) DisableSAMLSetting(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if setting == nil {
+		response.NotFound(c, "SAML setting not configured for this account")
+		return
+	}
+
+	setting, err = h.repo.DisableSAMLSetting(uint(accountID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"message": "SAML configuration disabled successfully",
+		"setting": setting,
+		"enabled": false,
+	})
+}
+
+func (h *AuthEnterpriseHandler) EnableSAMLSetting(c *gin.Context) {
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if setting == nil {
+		response.NotFound(c, "SAML setting not configured for this account")
+		return
+	}
+
+	setting.Enabled = true
+	if err := h.repo.SaveSAMLSetting(setting); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"message": "SAML configuration enabled successfully",
+		"setting": setting,
+		"enabled": true,
+	})
+}
+
 func (h *AuthEnterpriseHandler) InitiateSAMLLogin(c *gin.Context) {
 	var req struct {
-		Email string `json:"email" binding:"required"`
+		Email     string `json:"email" binding:"required"`
+		AccountID *uint  `json:"account_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
 		return
+	}
+
+	ssoURL := "https://idp.example.com/sso/saml"
+	if req.AccountID != nil {
+		setting, err := h.repo.GetSAMLSetting(*req.AccountID)
+		if err == nil && setting != nil {
+			if !setting.Enabled {
+				response.BadRequest(c, "SAML SSO is disabled for this account")
+				return
+			}
+			if setting.SSOURL != "" {
+				ssoURL = setting.SSOURL
+			}
+		}
+	} else if user, _ := h.userRepo.FindByEmail(req.Email); user != nil {
+		accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
+		if len(accounts) > 0 {
+			setting, err := h.repo.GetSAMLSetting(accounts[0].ID)
+			if err == nil && setting != nil {
+				if !setting.Enabled {
+					response.BadRequest(c, "SAML SSO is disabled for this account")
+					return
+				}
+				if setting.SSOURL != "" {
+					ssoURL = setting.SSOURL
+				}
+			}
+		}
 	}
 
 	relayStateBytes := make([]byte, 16)
@@ -174,7 +360,7 @@ func (h *AuthEnterpriseHandler) InitiateSAMLLogin(c *gin.Context) {
 	relayState := hex.EncodeToString(relayStateBytes)
 
 	response.Success(c, gin.H{
-		"sso_url":     "https://idp.example.com/sso/saml",
+		"sso_url":     ssoURL,
 		"relay_state": relayState,
 		"email":       req.Email,
 	})
@@ -261,12 +447,30 @@ func (h *AuthEnterpriseHandler) GetMFAProfile(c *gin.Context) {
 }
 
 func (h *AuthEnterpriseHandler) EnableMFA(c *gin.Context) {
+	h.VerifyMFA(c)
+}
+
+func (h *AuthEnterpriseHandler) VerifyMFA(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	var req struct {
-		OTPCode string `json:"otp_code" binding:"required"`
+		OTPCode    string `json:"otp_code"`
+		Code       string `json:"code"`
+		BackupCode string `json:"backup_code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+
+	codeToVerify := strings.TrimSpace(req.OTPCode)
+	if codeToVerify == "" {
+		codeToVerify = strings.TrimSpace(req.Code)
+	}
+	if codeToVerify == "" {
+		codeToVerify = strings.TrimSpace(req.BackupCode)
+	}
+	if codeToVerify == "" {
+		response.BadRequest(c, "Verification code is required")
 		return
 	}
 
@@ -277,12 +481,12 @@ func (h *AuthEnterpriseHandler) EnableMFA(c *gin.Context) {
 	}
 
 	// Verify standard RFC 6238 TOTP or backup code
-	valid := auth.VerifyTOTPCode(profile.Secret, req.OTPCode)
+	valid := auth.VerifyTOTPCode(profile.Secret, codeToVerify)
 	if !valid {
 		var backupCodes []string
 		_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
 		for i, code := range backupCodes {
-			if code == req.OTPCode {
+			if code == codeToVerify {
 				valid = true
 				backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
 				bBytes, _ := json.Marshal(backupCodes)
@@ -299,9 +503,39 @@ func (h *AuthEnterpriseHandler) EnableMFA(c *gin.Context) {
 	profile.Enabled = true
 	_ = h.repo.SaveMFAProfile(profile)
 
+	var backupCodes []string
+	_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
+	if len(backupCodes) == 0 {
+		backupCodes, _ = h.repo.GenerateMFABackupCodes(userID)
+	}
+
 	response.Success(c, gin.H{
-		"enabled": true,
-		"message": "MFA enabled successfully",
+		"enabled":      true,
+		"backup_codes": backupCodes,
+		"message":      "MFA activated successfully",
+	})
+}
+
+func (h *AuthEnterpriseHandler) GenerateBackupCodes(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	profile, err := h.repo.GetMFAProfile(userID)
+	if err != nil || profile == nil {
+		response.BadRequest(c, "MFA is not set up")
+		return
+	}
+	if !profile.Enabled {
+		response.BadRequest(c, "MFA is not enabled")
+		return
+	}
+
+	codes, err := h.repo.GenerateMFABackupCodes(userID)
+	if err != nil {
+		response.InternalError(c, "Failed to generate backup codes: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"backup_codes": codes,
 	})
 }
 
@@ -314,6 +548,7 @@ func (h *AuthEnterpriseHandler) DisableMFA(c *gin.Context) {
 	}
 	response.Success(c, gin.H{"enabled": false})
 }
+
 
 func (h *AuthEnterpriseHandler) ListSessions(c *gin.Context) {
 	userID := c.GetUint("user_id")
@@ -996,5 +1231,266 @@ func (h *AuthEnterpriseHandler) HandleSubscriptionWebhook(c *gin.Context) {
 	response.Success(c, gin.H{
 		"received": true,
 		"status":   "processed",
+	})
+}
+
+// ----------------- Enterprise Billing & Checkout & Topup -----------------
+
+func (h *AuthEnterpriseHandler) getAccountIDParam(c *gin.Context) (uint, error) {
+	accStr := c.Param("account_id")
+	if accStr == "" {
+		accStr = c.Param("id")
+	}
+	id, err := strconv.ParseUint(accStr, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return uint(id), nil
+}
+
+func (h *AuthEnterpriseHandler) Checkout(c *gin.Context) {
+	accountID, err := h.getAccountIDParam(c)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	sessionBytes := make([]byte, 16)
+	_, _ = rand.Read(sessionBytes)
+	sessionID := hex.EncodeToString(sessionBytes)
+	redirectURL := fmt.Sprintf("https://billing.stripe.com/session/cs_live_%s_%d", sessionID, accountID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"redirect_url": redirectURL,
+		"data": gin.H{
+			"redirect_url": redirectURL,
+		},
+	})
+}
+
+func (h *AuthEnterpriseHandler) SelectBillingCurrency(c *gin.Context) {
+	accountID, err := h.getAccountIDParam(c)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	var req struct {
+		Currency string `json:"currency" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	curr := strings.ToLower(strings.TrimSpace(req.Currency))
+	if curr == "" {
+		curr = "usd"
+	}
+
+	db := h.repo.GetDB()
+	var account domain.Account
+	if err := db.First(&account, accountID).Error; err == nil {
+		var customAttrs map[string]any
+		if account.CustomAttributes != "" {
+			_ = json.Unmarshal([]byte(account.CustomAttributes), &customAttrs)
+		}
+		if customAttrs == nil {
+			customAttrs = make(map[string]any)
+		}
+		customAttrs["billing_currency"] = curr
+		b, _ := json.Marshal(customAttrs)
+		account.CustomAttributes = string(b)
+		_ = db.Save(&account)
+	}
+
+	sub, _ := h.repo.GetAccountSubscription(accountID)
+	if sub != nil {
+		sub.BillingCurrency = curr
+		_ = h.repo.SaveAccountSubscription(sub)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":          true,
+		"billing_currency": curr,
+		"message":          "Billing currency updated successfully",
+		"data": gin.H{
+			"billing_currency": curr,
+		},
+	})
+}
+
+func (h *AuthEnterpriseHandler) ToggleDeletion(c *gin.Context) {
+	accountID, err := h.getAccountIDParam(c)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	var req struct {
+		ActionType string `json:"action_type" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	action := strings.ToLower(strings.TrimSpace(req.ActionType))
+	if action != "delete" && action != "undelete" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "Invalid action_type. Must be either 'delete' or 'undelete'",
+		})
+		return
+	}
+
+	db := h.repo.GetDB()
+	var account domain.Account
+	if err := db.First(&account, accountID).Error; err == nil {
+		var customAttrs map[string]any
+		if account.CustomAttributes != "" {
+			_ = json.Unmarshal([]byte(account.CustomAttributes), &customAttrs)
+		}
+		if customAttrs == nil {
+			customAttrs = make(map[string]any)
+		}
+		if action == "delete" {
+			customAttrs["marked_for_deletion"] = true
+			account.Status = "pending_deletion"
+		} else {
+			delete(customAttrs, "marked_for_deletion")
+			account.Status = "active"
+		}
+		b, _ := json.Marshal(customAttrs)
+		account.CustomAttributes = string(b)
+		_ = db.Save(&account)
+	}
+
+	var msg string
+	if action == "delete" {
+		msg = "Account marked for deletion"
+	} else {
+		msg = "Account unmarked for deletion"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"message":     msg,
+		"action_type": action,
+		"data": gin.H{
+			"message":     msg,
+			"action_type": action,
+		},
+	})
+}
+
+func (h *AuthEnterpriseHandler) TopupOptions(c *gin.Context) {
+	accountID, err := h.getAccountIDParam(c)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	curr := "usd"
+	db := h.repo.GetDB()
+	var account domain.Account
+	if err := db.First(&account, accountID).Error; err == nil && account.CustomAttributes != "" {
+		var customAttrs map[string]any
+		if err := json.Unmarshal([]byte(account.CustomAttributes), &customAttrs); err == nil {
+			if bc, ok := customAttrs["billing_currency"].(string); ok && bc != "" {
+				curr = bc
+			}
+		}
+	}
+
+	options := []gin.H{
+		{"credits": 500, "amount": 10.0, "currency": curr},
+		{"credits": 1000, "amount": 20.0, "currency": curr},
+		{"credits": 2500, "amount": 45.0, "currency": curr},
+		{"credits": 5000, "amount": 80.0, "currency": curr},
+		{"credits": 10000, "amount": 150.0, "currency": curr},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":       accountID,
+		"currency": curr,
+		"options":  options,
+		"success":  true,
+		"data": gin.H{
+			"id":       accountID,
+			"currency": curr,
+			"options":  options,
+		},
+	})
+}
+
+func (h *AuthEnterpriseHandler) TopupCheckout(c *gin.Context) {
+	accountID, err := h.getAccountIDParam(c)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
+
+	var req struct {
+		Credits int `json:"credits"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Credits <= 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "credits is required and must be positive",
+		})
+		return
+	}
+
+	curr := "usd"
+	db := h.repo.GetDB()
+	var account domain.Account
+	if err := db.First(&account, accountID).Error; err == nil && account.CustomAttributes != "" {
+		var customAttrs map[string]any
+		if err := json.Unmarshal([]byte(account.CustomAttributes), &customAttrs); err == nil {
+			if bc, ok := customAttrs["billing_currency"].(string); ok && bc != "" {
+				curr = bc
+			}
+		}
+	}
+
+	amount := float64(req.Credits) * 0.02
+	if req.Credits >= 10000 {
+		amount = float64(req.Credits) * 0.015
+	} else if req.Credits >= 5000 {
+		amount = float64(req.Credits) * 0.016
+	}
+
+	sessionBytes := make([]byte, 16)
+	_, _ = rand.Read(sessionBytes)
+	sessionID := hex.EncodeToString(sessionBytes)
+	redirectURL := fmt.Sprintf("https://checkout.stripe.com/pay/cs_topup_%s_%d", sessionID, req.Credits)
+
+	_ = h.repo.RecordBilling(&domain.AccountBilling{
+		AccountID:   accountID,
+		ActionType:  "topup",
+		Amount:      amount,
+		Currency:    strings.ToUpper(curr),
+		Description: fmt.Sprintf("Top-up %d AI Credits", req.Credits),
+		CreatedAt:   time.Now().UTC(),
+	})
+
+	limits, _ := h.repo.GetAccountLimit(accountID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":           accountID,
+		"credits":      req.Credits,
+		"amount":       amount,
+		"currency":     curr,
+		"redirect_url": redirectURL,
+		"limits":       limits,
+		"success":      true,
+		"data": gin.H{
+			"id":           accountID,
+			"credits":      req.Credits,
+			"amount":       amount,
+			"currency":     curr,
+			"redirect_url": redirectURL,
+			"limits":       limits,
+		},
 	})
 }

@@ -636,8 +636,8 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected sign in without MFA code to be blocked with 401, got %d", w.Code)
+		if w.Code != http.StatusUnauthorized && w.Code != http.StatusPartialContent {
+			t.Fatalf("expected sign in without MFA code to be blocked with 401 or 206, got %d", w.Code)
 		}
 
 		// 2. Sign in with invalid MFA code -> MUST be rejected with 401

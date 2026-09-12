@@ -3,10 +3,10 @@ package repository
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -198,20 +198,35 @@ func (r *PlatformRepository) DeleteUser(ctx context.Context, id uint) error {
 
 // ----------------- AccountUser Membership Management -----------------
 
-// AddUserToAccount associates a user with a tenant account
-func (r *PlatformRepository) AddUserToAccount(ctx context.Context, accountID, userID uint, role string) error {
-	var existing domain.AccountUser
-	err := r.db.WithContext(ctx).Where("account_id = ? AND user_id = ?", accountID, userID).First(&existing).Error
-	if err == nil {
-		return fmt.Errorf("user already belongs to account")
+// AddUserToAccount associates a user with a tenant account, updating role if already exists
+func (r *PlatformRepository) AddUserToAccount(ctx context.Context, accountID, userID uint, role string) (*domain.AccountUser, error) {
+	if role == "" {
+		role = "agent"
 	}
 
-	au := domain.AccountUser{
+	var au domain.AccountUser
+	err := r.db.WithContext(ctx).Where("account_id = ? AND user_id = ?", accountID, userID).First(&au).Error
+	if err == nil {
+		if role != "" {
+			au.Role = role
+			if err := r.db.WithContext(ctx).Save(&au).Error; err != nil {
+				return nil, err
+			}
+		}
+		_ = r.db.WithContext(ctx).Preload("User").First(&au, au.ID)
+		return &au, nil
+	}
+
+	au = domain.AccountUser{
 		AccountID: accountID,
 		UserID:    userID,
 		Role:      role,
 	}
-	return r.db.WithContext(ctx).Create(&au).Error
+	if err := r.db.WithContext(ctx).Create(&au).Error; err != nil {
+		return nil, err
+	}
+	_ = r.db.WithContext(ctx).Preload("User").First(&au, au.ID)
+	return &au, nil
 }
 
 // ListAccountUsers lists all member users within an account
@@ -255,6 +270,9 @@ func (r *PlatformRepository) RemoveUserFromAccount(ctx context.Context, accountI
 
 // CreateAgentBot creates a new agent bot (platform-level if account_id=0, account-level if account_id>0)
 func (r *PlatformRepository) CreateAgentBot(ctx context.Context, bot *domain.AgentBot) error {
+	if bot.AccessToken == "" {
+		bot.AccessToken = uuid.New().String()
+	}
 	return r.db.WithContext(ctx).Create(bot).Error
 }
 
@@ -337,3 +355,16 @@ func (r *PlatformRepository) ListAccountAgentBots(ctx context.Context, accountID
 		Find(&bots).Error
 	return bots, err
 }
+
+// DeleteAgentBotAvatar removes the avatar for an agent bot
+func (r *PlatformRepository) DeleteAgentBotAvatar(ctx context.Context, id uint) error {
+	res := r.db.WithContext(ctx).Model(&domain.AgentBot{}).Where("id = ?", id).Update("avatar_url", "")
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("agent bot not found")
+	}
+	return nil
+}
+
