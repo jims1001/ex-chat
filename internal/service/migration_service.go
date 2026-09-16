@@ -12,16 +12,29 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
 type MigrationService struct {
-	db *gorm.DB
+	db               *gorm.DB
+	contactRepo      *repository.ContactRepository
+	conversationRepo *repository.ConversationRepository
+	messageRepo      *repository.MessageRepository
+	attachmentRepo   *repository.AttachmentRepository
+	inboxRepo        *repository.InboxRepository
 }
 
 func NewMigrationService(db *gorm.DB) *MigrationService {
-	return &MigrationService{db: db}
+	return &MigrationService{
+		db:               db,
+		contactRepo:      repository.NewContactRepository(db),
+		conversationRepo: repository.NewConversationRepository(db),
+		messageRepo:      repository.NewMessageRepository(db),
+		attachmentRepo:   repository.NewAttachmentRepository(db),
+		inboxRepo:        repository.NewInboxRepository(db),
+	}
 }
 
 func toIDString(v any) string {
@@ -219,7 +232,7 @@ func (s *MigrationService) importContacts(accountID uint, contacts []MigrationCo
 				CustomAttributes: item.CustomAttributes,
 				CreatedAt:        createdAt,
 			}
-			if err := s.db.Create(&contact).Error; err == nil {
+			if err := s.contactRepo.Create(&contact); err == nil {
 				stats.ContactsCount++
 			} else {
 				stats.Errors = append(stats.Errors, err.Error())
@@ -233,7 +246,7 @@ func (s *MigrationService) importContacts(accountID uint, contacts []MigrationCo
 			if item.CustomAttributes != "" {
 				contact.CustomAttributes = item.CustomAttributes
 			}
-			_ = s.db.Save(&contact).Error
+			_ = s.contactRepo.Update(&contact)
 			stats.ContactsCount++
 		}
 
@@ -299,7 +312,7 @@ func (s *MigrationService) importConversations(accountID uint, convs []Migration
 				Identifier: item.ContactIdentifier,
 				CreatedAt:  time.Now().UTC(),
 			}
-			if err := s.db.Create(&newContact).Error; err == nil {
+			if err := s.contactRepo.Create(&newContact); err == nil {
 				contactID = newContact.ID
 				stats.ContactsCount++
 			} else {
@@ -335,26 +348,19 @@ func (s *MigrationService) importConversations(accountID uint, convs []Migration
 			createdAt = *item.CreatedAt
 		}
 
-		displayID := item.DisplayID
-		if displayID == 0 {
-			var count int64
-			s.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID).Count(&count)
-			displayID = uint(count + 1)
-		}
-
 		conv := domain.Conversation{
 			AccountID:      accountID,
 			InboxID:        inboxID,
 			ContactID:      contactID,
 			Status:         status,
 			Priority:       priority,
-			DisplayID:      displayID,
+			DisplayID:      item.DisplayID,
 			CreatedAt:      createdAt,
 			LastActivityAt: createdAt,
 			UpdatedAt:      createdAt,
 		}
 
-		if err := s.db.Create(&conv).Error; err != nil {
+		if err := s.conversationRepo.CreateImported(&conv); err != nil {
 			stats.Errors = append(stats.Errors, err.Error())
 			continue
 		}
@@ -430,7 +436,7 @@ func (s *MigrationService) importMessages(accountID uint, messages []MigrationMe
 			UpdatedAt:      createdAt,
 		}
 
-		if err := s.db.Create(&msg).Error; err != nil {
+		if err := s.messageRepo.CreateImported(&msg); err != nil {
 			stats.Errors = append(stats.Errors, err.Error())
 			continue
 		}
@@ -493,7 +499,7 @@ func (s *MigrationService) importAttachments(accountID uint, attachments []Migra
 			CreatedAt: createdAt,
 		}
 
-		if err := s.db.Create(&att).Error; err != nil {
+		if err := s.attachmentRepo.Create(context.Background(), &att); err != nil {
 			stats.Errors = append(stats.Errors, err.Error())
 			continue
 		}
@@ -518,7 +524,7 @@ func (s *MigrationService) ensureDefaultInbox(accountID uint) (uint, error) {
 		WebsiteToken: token,
 		CreatedAt:    time.Now().UTC(),
 	}
-	if err := s.db.Create(&inbox).Error; err != nil {
+	if err := s.inboxRepo.Create(&inbox); err != nil {
 		return 0, err
 	}
 	return inbox.ID, nil

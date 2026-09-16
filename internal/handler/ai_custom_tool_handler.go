@@ -22,15 +22,41 @@ import (
 
 // AICustomToolHandler handles RESTful management and testing of custom AI tools
 type AICustomToolHandler struct {
-	db       *gorm.DB
-	toolRepo *repository.AICustomToolRepository
+	db         *gorm.DB
+	toolRepo   *repository.AICustomToolRepository
+	ticketRepo *repository.TicketRepository
+	msgRepo    *repository.MessageRepository
+	orderRepo  *repository.OrderRepository
+}
+
+type AICustomToolDependencies struct {
+	TicketRepo  *repository.TicketRepository
+	MessageRepo *repository.MessageRepository
+	OrderRepo   *repository.OrderRepository
 }
 
 // NewAICustomToolHandler creates a new instance of AICustomToolHandler
-func NewAICustomToolHandler(db *gorm.DB, toolRepo *repository.AICustomToolRepository) *AICustomToolHandler {
+func NewAICustomToolHandler(db *gorm.DB, toolRepo *repository.AICustomToolRepository, options ...AICustomToolDependencies) *AICustomToolHandler {
+	ticketRepo := repository.NewTicketRepository(db)
+	msgRepo := repository.NewMessageRepository(db)
+	orderRepo := repository.NewOrderRepository(db)
+	if len(options) > 0 {
+		if options[0].TicketRepo != nil {
+			ticketRepo = options[0].TicketRepo
+		}
+		if options[0].MessageRepo != nil {
+			msgRepo = options[0].MessageRepo
+		}
+		if options[0].OrderRepo != nil {
+			orderRepo = options[0].OrderRepo
+		}
+	}
 	return &AICustomToolHandler{
-		db:       db,
-		toolRepo: toolRepo,
+		db:         db,
+		toolRepo:   toolRepo,
+		ticketRepo: ticketRepo,
+		msgRepo:    msgRepo,
+		orderRepo:  orderRepo,
 	}
 }
 
@@ -739,7 +765,7 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 		if convID != nil && *convID > 0 {
 			order.ConversationID = convID
 		}
-		if saveErr := h.db.Save(&order).Error; saveErr != nil {
+		if saveErr := h.orderRepo.Update(accountID, &order); saveErr != nil {
 			return nil, fmt.Errorf("failed to update order in database: %w", saveErr)
 		}
 
@@ -753,7 +779,7 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			}
-			_ = h.db.Create(&actMsg)
+			_ = h.msgRepo.Create(&actMsg)
 		}
 
 		return gin.H{
@@ -782,14 +808,9 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 			assignedGroup = "二线技术支持组"
 		}
 
-		var count int64
-		h.db.Model(&domain.Ticket{}).Where("account_id = ?", accountID).Count(&count)
-		ticketNumber := fmt.Sprintf("TICK-%s-%04d", now.Format("20060102"), count+1)
-
 		dueAt := now.Add(12 * time.Hour)
 		ticket := domain.Ticket{
 			AccountID:      accountID,
-			TicketNumber:   ticketNumber,
 			Title:          title,
 			Description:    desc,
 			Status:         "open",
@@ -801,16 +822,9 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
-		if err := h.db.Create(&ticket).Error; err != nil {
+		if err := h.ticketRepo.Create(&ticket); err != nil {
 			return nil, fmt.Errorf("failed to create ticket in database: %w", err)
 		}
-		_ = h.db.Create(&domain.TicketActivity{
-			AccountID: ticket.AccountID,
-			TicketID:  ticket.ID,
-			Action:    "created",
-			Details:   fmt.Sprintf(`{"creator":"Captain AI","title":%q}`, ticket.Title),
-			CreatedAt: now,
-		})
 
 		if convID != nil && *convID > 0 {
 			actMsg := domain.Message{
@@ -821,7 +835,7 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			}
-			_ = h.db.Create(&actMsg)
+			_ = h.msgRepo.Create(&actMsg)
 		}
 
 		return gin.H{

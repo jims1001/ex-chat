@@ -26,6 +26,8 @@ type CopilotHandler struct {
 	portalRepo  *repository.PortalRepository
 	cannedRepo  *repository.CannedResponseRepository
 	captainRepo *repository.CaptainRepository
+	ticketRepo  *repository.TicketRepository
+	orderRepo   *repository.OrderRepository
 }
 
 func NewCopilotHandler(
@@ -34,7 +36,12 @@ func NewCopilotHandler(
 	msgRepo *repository.MessageRepository,
 	portalRepo *repository.PortalRepository,
 	cannedRepo *repository.CannedResponseRepository,
+	ticketRepos ...*repository.TicketRepository,
 ) *CopilotHandler {
+	ticketRepo := repository.NewTicketRepository(db)
+	if len(ticketRepos) > 0 && ticketRepos[0] != nil {
+		ticketRepo = ticketRepos[0]
+	}
 	return &CopilotHandler{
 		db:          db,
 		convRepo:    convRepo,
@@ -42,6 +49,8 @@ func NewCopilotHandler(
 		portalRepo:  portalRepo,
 		cannedRepo:  cannedRepo,
 		captainRepo: repository.NewCaptainRepository(db),
+		ticketRepo:  ticketRepo,
+		orderRepo:   repository.NewOrderRepository(db),
 	}
 }
 
@@ -1343,7 +1352,7 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 		order.WarehouseSynced = true
 		order.SyncedAt = &now
 		order.UpdatedAt = now
-		_ = h.db.Save(&order)
+		_ = h.orderRepo.Update(uint(accID), &order)
 
 		result = gin.H{
 			"success":          true,
@@ -1361,13 +1370,9 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 		if title == "" {
 			title = "售后加急工单"
 		}
-		var count int64
-		h.db.Model(&domain.Ticket{}).Where("account_id = ?", accID).Count(&count)
-		ticketNo := fmt.Sprintf("TICK-%s-%04d", now.Format("20060102"), count+1)
 		dueAt := now.Add(12 * time.Hour)
 		ticket := domain.Ticket{
 			AccountID:     uint(accID),
-			TicketNumber:  ticketNo,
 			Title:         title,
 			Status:        "open",
 			Priority:      "high",
@@ -1377,14 +1382,10 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		}
-		_ = h.db.Create(&ticket)
-		_ = h.db.Create(&domain.TicketActivity{
-			AccountID: ticket.AccountID,
-			TicketID:  ticket.ID,
-			Action:    "created",
-			Details:   fmt.Sprintf(`{"creator":"AI Copilot","title":%q}`, ticket.Title),
-			CreatedAt: now,
-		})
+		if err := h.ticketRepo.Create(&ticket); err != nil {
+			response.InternalError(c, "Failed to create support ticket")
+			return
+		}
 		result = gin.H{
 			"ticket_id":      ticket.TicketNumber,
 			"id":             ticket.ID,
@@ -1477,4 +1478,3 @@ func (h *CopilotHandler) GetAIQuota(c *gin.Context) {
 	}
 	response.Success(c, quota)
 }
-

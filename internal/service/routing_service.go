@@ -16,6 +16,7 @@ import (
 type RoutingService struct {
 	db       *gorm.DB
 	convRepo *repository.ConversationRepository
+	msgRepo  *repository.MessageRepository
 	hub      *ws.Hub
 	mu       sync.Mutex
 }
@@ -24,6 +25,7 @@ func NewRoutingService(db *gorm.DB, convRepo *repository.ConversationRepository,
 	return &RoutingService{
 		db:       db,
 		convRepo: convRepo,
+		msgRepo:  repository.NewMessageRepository(db),
 		hub:      hub,
 	}
 }
@@ -185,14 +187,14 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 				Where("conversation_id = ? AND content = ?", conv.ID, inbox.OutOfOfficeMessage).
 				Count(&count)
 			if count == 0 {
-				_ = s.db.Create(&domain.Message{
+				_ = s.msgRepo.Create(&domain.Message{
 					AccountID:      conv.AccountID,
 					ConversationID: conv.ID,
 					MessageType:    domain.MessageTypeOutgoing,
 					Content:        inbox.OutOfOfficeMessage,
 					CreatedAt:      time.Now().UTC(),
 					UpdatedAt:      time.Now().UTC(),
-				}).Error
+				})
 			}
 		}
 		return nil, nil
@@ -268,9 +270,7 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 			}
 			if policy.FallbackTeamID != nil && *policy.FallbackTeamID > 0 {
 				conv.TeamID = policy.FallbackTeamID
-				_ = s.db.Model(&domain.Conversation{}).
-					Where("account_id = ? AND id = ?", conv.AccountID, conv.ID).
-					Update("team_id", policy.FallbackTeamID)
+				_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, policy.FallbackTeamID)
 				return nil, nil
 			}
 		}
@@ -429,4 +429,3 @@ func (s *RoutingService) StartSnoozeScheduler(ctx context.Context, interval time
 }
 
 type ginH = map[string]any
-

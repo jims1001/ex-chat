@@ -22,14 +22,20 @@ type AppliedSLAHandler struct {
 	db             *gorm.DB
 	appliedSLARepo *repository.AppliedSLARepository
 	slaService     *service.SLAService
+	convRepo       *repository.ConversationRepository
 }
 
 // NewAppliedSLAHandler creates a new AppliedSLAHandler instance
-func NewAppliedSLAHandler(db *gorm.DB, appliedSLARepo *repository.AppliedSLARepository, slaService *service.SLAService) *AppliedSLAHandler {
+func NewAppliedSLAHandler(db *gorm.DB, appliedSLARepo *repository.AppliedSLARepository, slaService *service.SLAService, convRepos ...*repository.ConversationRepository) *AppliedSLAHandler {
+	convRepo := repository.NewConversationRepository(db)
+	if len(convRepos) > 0 && convRepos[0] != nil {
+		convRepo = convRepos[0]
+	}
 	return &AppliedSLAHandler{
 		db:             db,
 		appliedSLARepo: appliedSLARepo,
 		slaService:     slaService,
+		convRepo:       convRepo,
 	}
 }
 
@@ -165,7 +171,7 @@ func (h *AppliedSLAHandler) ListAppliedSLAs(c *gin.Context) {
 			"sla_description":                   "",
 			"sla_first_response_time_threshold": 0,
 			"sla_next_response_time_threshold":  0,
-			"sla_resolution_time_threshold":    0,
+			"sla_resolution_time_threshold":     0,
 			"sla_only_during_business_hours":    false,
 			"sla_frt_due_at":                    frtDueUnix,
 			"sla_nrt_due_at":                    nrtDueUnix,
@@ -433,7 +439,10 @@ func (h *AppliedSLAHandler) ApplySLA(c *gin.Context) {
 	// Update Conversation's SLA policy
 	pid := req.SLAPolicyID
 	conv.SLAPolicyID = &pid
-	_ = h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Update("sla_policy_id", pid).Error
+	if err := h.convRepo.ApplySLAPolicy(accountID, uint(convID), pid); err != nil {
+		response.InternalError(c, "Failed to apply SLA policy to conversation")
+		return
+	}
 
 	// Ensure AppliedSLA record
 	if _, err := h.appliedSLARepo.EnsureAppliedSLA(accountID, uint(convID), pid); err != nil {

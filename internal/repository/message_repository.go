@@ -21,6 +21,15 @@ func NewMessageRepository(db *gorm.DB) *MessageRepository {
 
 func (r *MessageRepository) Create(msg *domain.Message) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		var conversationCount int64
+		if err := tx.Model(&domain.Conversation{}).
+			Where("account_id = ? AND id = ?", msg.AccountID, msg.ConversationID).
+			Count(&conversationCount).Error; err != nil {
+			return err
+		}
+		if conversationCount != 1 {
+			return gorm.ErrRecordNotFound
+		}
 		if err := tx.Create(msg).Error; err != nil {
 			logger.WithComponent("message").Error("failed to persist message",
 				"account_id", msg.AccountID,
@@ -59,6 +68,40 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 
 		return nil
 	})
+}
+
+// CreateImported persists historical message state without applying live
+// delivery side effects such as unread increments or activity timestamps.
+func (r *MessageRepository) CreateImported(msg *domain.Message) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var conversationCount int64
+		if err := tx.Model(&domain.Conversation{}).
+			Where("account_id = ? AND id = ?", msg.AccountID, msg.ConversationID).
+			Count(&conversationCount).Error; err != nil {
+			return err
+		}
+		if conversationCount != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Create(msg).Error
+	})
+}
+
+func (r *MessageRepository) SaveDraft(accountID, conversationID, userID uint, message string) (*domain.DraftMessage, error) {
+	var draft domain.DraftMessage
+	err := r.db.Where("account_id = ? AND conversation_id = ? AND user_id = ?", accountID, conversationID, userID).First(&draft).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		draft = domain.DraftMessage{AccountID: accountID, ConversationID: conversationID, UserID: userID, Message: message}
+		err = r.db.Create(&draft).Error
+	} else if err == nil {
+		draft.Message = message
+		err = r.db.Save(&draft).Error
+	}
+	return &draft, err
+}
+
+func (r *MessageRepository) DeleteDraft(accountID, conversationID, userID uint) error {
+	return r.db.Where("account_id = ? AND conversation_id = ? AND user_id = ?", accountID, conversationID, userID).Delete(&domain.DraftMessage{}).Error
 }
 
 func (r *MessageRepository) ListByConversation(accountID, conversationID uint, includePrivate bool, page, pageSize int) ([]domain.Message, int64, error) {
@@ -151,6 +194,19 @@ func (r *MessageRepository) UpdateContent(accountID, conversationID, messageID u
 	return msg, nil
 }
 
+func (r *MessageRepository) UpdateContentAttributes(accountID, conversationID, messageID uint, attributes string) error {
+	result := r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND conversation_id = ? AND id = ?", accountID, conversationID, messageID).
+		Update("content_attributes", attributes)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (r *MessageRepository) DeleteMessage(accountID, conversationID, messageID uint) (*domain.Message, error) {
 	msg, err := r.FindByIDAndConversation(accountID, conversationID, messageID)
 	if err != nil {
@@ -226,4 +282,3 @@ func (r *MessageRepository) UpdateTranslations(accountID, id uint, translations 
 		Where("account_id = ? AND id = ?", accountID, id).
 		Update("translations", translations).Error
 }
-

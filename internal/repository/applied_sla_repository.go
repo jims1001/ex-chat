@@ -156,7 +156,8 @@ func (r *AppliedSLARepository) RecordSLAEvent(event *domain.SLAEvent) error {
 	return r.db.Create(event).Error
 }
 
-// UpdateSLAStatus updates the status on AppliedSLA and synchronizes Conversation.SLAStatus
+// UpdateSLAStatus updates the RPT-owned AppliedSLA status. The CON projection
+// is synchronized through ConversationRepository by the application service.
 func (r *AppliedSLARepository) UpdateSLAStatus(accountID, appliedSLAID uint, newStatus string) error {
 	if appliedSLAID == 0 || newStatus == "" {
 		return errors.New("invalid applied_sla_id or status")
@@ -172,11 +173,6 @@ func (r *AppliedSLARepository) UpdateSLAStatus(accountID, appliedSLAID uint, new
 	if err := r.db.Save(&applied).Error; err != nil {
 		return err
 	}
-
-	// Synchronize Conversation SLAStatus
-	_ = r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, applied.ConversationID).
-		Update("sla_status", newStatus).Error
 
 	return nil
 }

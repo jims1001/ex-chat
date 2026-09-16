@@ -34,6 +34,10 @@ type AdvancedHandler struct {
 	slaRepo           *repository.SLARepository
 	agentBotRepo      *repository.AgentBotRepository
 	attachmentRepo    *repository.AttachmentRepository
+	labelRepo         *repository.LabelRepository
+	messageRepo       *repository.MessageRepository
+	contactRepo       *repository.ContactRepository
+	integrationRepo   *repository.IntegrationRepository
 	campaignService   *service.CampaignService
 	slaService        *service.SLAService
 	httpClient        *http.Client
@@ -56,12 +60,17 @@ func NewAdvancedHandler(
 	att *repository.AttachmentRepository,
 ) *AdvancedHandler {
 	return &AdvancedHandler{
-		db:             db,
-		companyRepo:    c,
-		campaignRepo:   cp,
-		slaRepo:        s,
-		agentBotRepo:   b,
-		attachmentRepo: att,
+		db:              db,
+		companyRepo:     c,
+		campaignRepo:    cp,
+		slaRepo:         s,
+		agentBotRepo:    b,
+		attachmentRepo:  att,
+		labelRepo:       repository.NewLabelRepository(db),
+		messageRepo:     repository.NewMessageRepository(db),
+		contactRepo:     repository.NewContactRepository(db),
+		integrationRepo: repository.NewIntegrationRepository(db),
+		convRepo:        repository.NewConversationRepository(db),
 	}
 }
 
@@ -657,16 +666,15 @@ func (h *AdvancedHandler) RemoveCompanyContact(c *gin.Context) {
 	response.Success(c, gin.H{"unlinked": true})
 }
 
-
 // ----------------- SLA Handlers -----------------
 
 type CreateSLAReq struct {
-	Name                        string `json:"name" binding:"required"`
-	Description                 string `json:"description"`
+	Name                       string `json:"name" binding:"required"`
+	Description                string `json:"description"`
 	FirstResponseTimeThreshold int    `json:"first_response_time_threshold"`
 	NextResponseTimeThreshold  int    `json:"next_response_time_threshold"`
 	ResolutionTimeThreshold    int    `json:"resolution_time_threshold"`
-	OnlyDuringBusinessHours     *bool  `json:"only_during_business_hours"`
+	OnlyDuringBusinessHours    *bool  `json:"only_during_business_hours"`
 }
 
 func (h *AdvancedHandler) CreateSLAPolicy(c *gin.Context) {
@@ -683,13 +691,13 @@ func (h *AdvancedHandler) CreateSLAPolicy(c *gin.Context) {
 	}
 
 	sla := domain.SLAPolicy{
-		AccountID:                   uint(accID),
-		Name:                        req.Name,
-		Description:                 req.Description,
+		AccountID:                  uint(accID),
+		Name:                       req.Name,
+		Description:                req.Description,
 		FirstResponseTimeThreshold: req.FirstResponseTimeThreshold,
 		NextResponseTimeThreshold:  req.NextResponseTimeThreshold,
 		ResolutionTimeThreshold:    req.ResolutionTimeThreshold,
-		OnlyDuringBusinessHours:     onlyDuringBiz,
+		OnlyDuringBusinessHours:    onlyDuringBiz,
 	}
 	if sla.FirstResponseTimeThreshold == 0 {
 		sla.FirstResponseTimeThreshold = 3600
@@ -1412,29 +1420,15 @@ func (h *AdvancedHandler) SaveDraft(c *gin.Context) {
 
 	// When message is empty, clear the draft
 	if strings.TrimSpace(req.Message) == "" {
-		_ = h.db.WithContext(c.Request.Context()).
-			Where("account_id = ? AND conversation_id = ? AND user_id = ?", accID, convID, userID).
-			Delete(&domain.DraftMessage{}).Error
+		_ = h.messageRepo.DeleteDraft(uint(accID), uint(convID), userID)
 		response.Success(c, gin.H{"status": "cleared", "message": ""})
 		return
 	}
 
-	var draft domain.DraftMessage
-	err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND conversation_id = ? AND user_id = ?", accID, convID, userID).
-		First(&draft).Error
-
-	if err == nil {
-		draft.Message = req.Message
-		_ = h.db.WithContext(c.Request.Context()).Save(&draft)
-	} else {
-		draft = domain.DraftMessage{
-			AccountID:      uint(accID),
-			ConversationID: uint(convID),
-			UserID:         userID,
-			Message:        req.Message,
-		}
-		_ = h.db.WithContext(c.Request.Context()).Create(&draft)
+	draft, err := h.messageRepo.SaveDraft(uint(accID), uint(convID), userID, req.Message)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	response.Success(c, draft)
@@ -1445,9 +1439,7 @@ func (h *AdvancedHandler) DeleteDraft(c *gin.Context) {
 	convID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
 
-	_ = h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND conversation_id = ? AND user_id = ?", accID, convID, userID).
-		Delete(&domain.DraftMessage{}).Error
+	_ = h.messageRepo.DeleteDraft(uint(accID), uint(convID), userID)
 
 	response.Success(c, gin.H{"status": "deleted", "message": ""})
 }
@@ -1505,7 +1497,7 @@ func (h *AdvancedHandler) CreateContactNote(c *gin.Context) {
 		Content:   req.Content,
 	}
 
-	if err := h.db.WithContext(c.Request.Context()).Create(&note).Error; err != nil {
+	if err := h.contactRepo.CreateNote(&note); err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1564,7 +1556,7 @@ func (h *AdvancedHandler) UpdateContactNote(c *gin.Context) {
 	note.Content = req.Content
 	note.UpdatedAt = time.Now()
 
-	if err := h.db.WithContext(c.Request.Context()).Save(&note).Error; err != nil {
+	if err := h.contactRepo.UpdateNote(&note); err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1586,7 +1578,7 @@ func (h *AdvancedHandler) DeleteContactNote(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.WithContext(c.Request.Context()).Delete(&note).Error; err != nil {
+	if err := h.contactRepo.DeleteNote(uint(accID), uint(contactID), uint(noteID)); err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1714,18 +1706,11 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 
 		now := time.Now().UTC()
 		for _, conv := range conversations {
-			updates := map[string]any{
-				"status":           req.Fields.Status,
-				"updated_at":       now,
-				"last_activity_at": now,
+			snoozedUntil := req.Fields.SnoozedUntil
+			if req.Fields.Status != domain.ConversationStatusSnoozed {
+				snoozedUntil = nil
 			}
-			if req.Fields.Status == domain.ConversationStatusSnoozed && req.Fields.SnoozedUntil != nil {
-				updates["snoozed_until"] = req.Fields.SnoozedUntil
-			} else if req.Fields.Status != domain.ConversationStatusSnoozed {
-				updates["snoozed_until"] = nil
-			}
-
-			if err := h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error; err == nil {
+			if err := h.convRepo.UpdateStatus(uint(accID), conv.ID, req.Fields.Status, snoozedUntil); err == nil {
 				updatedCount++
 				conv.Status = req.Fields.Status
 				conv.UpdatedAt = now
@@ -1800,12 +1785,7 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 				}
 			}
 
-			updates := map[string]any{
-				"assignee_id":      req.Fields.AssigneeID,
-				"updated_at":       now,
-				"last_activity_at": now,
-			}
-			if err := h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error; err == nil {
+			if err := h.convRepo.Assign(uint(accID), conv.ID, req.Fields.AssigneeID); err == nil {
 				updatedCount++
 				conv.AssigneeID = req.Fields.AssigneeID
 				conv.Assignee = targetAgent
@@ -1892,12 +1872,7 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 
 		now := time.Now().UTC()
 		for _, conv := range conversations {
-			updates := map[string]any{
-				"team_id":          req.Fields.TeamID,
-				"updated_at":       now,
-				"last_activity_at": now,
-			}
-			if err := h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error; err == nil {
+			if err := h.convRepo.AssignTeam(uint(accID), conv.ID, req.Fields.TeamID); err == nil {
 				updatedCount++
 				conv.TeamID = req.Fields.TeamID
 				conv.Team = targetTeam
@@ -1934,21 +1909,18 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 			return
 		}
 
-		now := time.Now().UTC()
 		for _, conv := range conversations {
 			for _, title := range req.Labels.Add {
 				title = strings.TrimSpace(title)
 				if title == "" {
 					continue
 				}
-				var label domain.Label
-				h.db.Where("account_id = ? AND title = ?", accID, title).FirstOrCreate(&label, domain.Label{
-					AccountID: uint(accID),
-					Title:     title,
-				})
-				_ = h.db.Exec("INSERT OR IGNORE INTO conversation_labels (conversation_id, label_id) VALUES (?, ?)", conv.ID, label.ID)
+				label, err := h.labelRepo.FindOrCreateByTitle(uint(accID), title)
+				if err == nil {
+					_ = h.convRepo.AttachLabel(uint(accID), conv.ID, label.ID)
+				}
 			}
-			h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]any{"updated_at": now, "last_activity_at": now})
+			_ = h.convRepo.TouchActivity(uint(accID), conv.ID)
 			updatedCount++
 
 			if h.automationService != nil {
@@ -1984,7 +1956,6 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 			return
 		}
 
-		now := time.Now().UTC()
 		for _, conv := range conversations {
 			for _, title := range labelsToRemove {
 				title = strings.TrimSpace(title)
@@ -2000,13 +1971,13 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 					_ = h.db.Where("account_id = ? AND title = ?", accID, title).Find(&labels).Error
 				}
 				for _, lbl := range labels {
-					_ = h.db.Where("conversation_id = ? AND label_id = ?", conv.ID, lbl.ID).Delete(&domain.ConversationLabel{}).Error
+					_ = h.convRepo.DetachLabel(uint(accID), conv.ID, lbl.ID)
 				}
 				if len(labels) == 0 && idNum > 0 {
-					_ = h.db.Where("conversation_id = ? AND label_id = ?", conv.ID, idNum).Delete(&domain.ConversationLabel{}).Error
+					_ = h.convRepo.DetachLabel(uint(accID), conv.ID, idNum)
 				}
 			}
-			h.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]any{"updated_at": now, "last_activity_at": now})
+			_ = h.convRepo.TouchActivity(uint(accID), conv.ID)
 			updatedCount++
 
 			if h.automationService != nil {
@@ -2075,15 +2046,11 @@ func (h *AdvancedHandler) InstallIntegrationApp(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 
-	var inst domain.IntegrationInstallation
-	h.db.Where("account_id = ? AND app_id = ?", accID, appID).FirstOrCreate(&inst, domain.IntegrationInstallation{
-		AccountID: accID,
-		AppID:     appID,
-	})
-	inst.Status = "installed"
-	inst.Settings = req.Settings
-	_ = h.db.Save(&inst)
-
+	inst, err := h.integrationRepo.Install(accID, appID, req.Settings)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	response.Success(c, inst)
 }
 
@@ -2091,9 +2058,7 @@ func (h *AdvancedHandler) UninstallIntegrationApp(c *gin.Context) {
 	accID := c.GetUint("account_id")
 	appID := c.Param("app_id")
 
-	_ = h.db.Model(&domain.IntegrationInstallation{}).
-		Where("account_id = ? AND app_id = ?", accID, appID).
-		Update("status", "disabled")
+	_ = h.integrationRepo.Disable(accID, appID)
 	response.Success(c, gin.H{"uninstalled": true})
 }
 
@@ -2360,11 +2325,11 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 				defer resp.Body.Close()
 				var dfResp struct {
 					QueryResult struct {
-						QueryText                  string  `json:"queryText"`
-						Action                     string  `json:"action"`
-						FulfillmentText            string  `json:"fulfillmentText"`
+						QueryText                 string  `json:"queryText"`
+						Action                    string  `json:"action"`
+						FulfillmentText           string  `json:"fulfillmentText"`
 						IntentDetectionConfidence float64 `json:"intentDetectionConfidence"`
-						Intent                     struct {
+						Intent                    struct {
 							Name        string `json:"name"`
 							DisplayName string `json:"displayName"`
 						} `json:"intent"`
@@ -2466,15 +2431,10 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 			CreatedAt:      time.Now().UTC(),
 			UpdatedAt:      time.Now().UTC(),
 		}
-		_ = h.db.Create(&msg)
+		_ = h.messageRepo.Create(&msg)
 
 		if handoff {
-			_ = h.db.Model(&domain.Conversation{}).
-				Where("account_id = ? AND id = ?", accID, req.ConversationID).
-				Updates(map[string]any{
-					"status":           domain.ConversationStatusOpen,
-					"last_activity_at": time.Now().UTC(),
-				})
+			_ = h.convRepo.UpdateStatus(accID, req.ConversationID, domain.ConversationStatusOpen, nil)
 		}
 	}
 

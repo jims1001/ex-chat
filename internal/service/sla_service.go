@@ -15,12 +15,18 @@ import (
 type SLAService struct {
 	db             *gorm.DB
 	appliedSLARepo *repository.AppliedSLARepository
+	convRepo       *repository.ConversationRepository
 }
 
-func NewSLAService(db *gorm.DB) *SLAService {
+func NewSLAService(db *gorm.DB, convRepos ...*repository.ConversationRepository) *SLAService {
+	convRepo := repository.NewConversationRepository(db)
+	if len(convRepos) > 0 && convRepos[0] != nil {
+		convRepo = convRepos[0]
+	}
 	return &SLAService{
 		db:             db,
 		appliedSLARepo: repository.NewAppliedSLARepository(db),
+		convRepo:       convRepo,
 	}
 }
 
@@ -305,7 +311,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 	updates := map[string]any{
 		"first_response_due_at": frtDeadline,
-		"resolution_due_at":    resDeadline,
+		"resolution_due_at":     resDeadline,
 	}
 
 	isFRTBreached := false
@@ -543,7 +549,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 	}
 	updates["sla_status"] = convStatus
 
-	_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updates).Error
+	_ = s.convRepo.UpdateSLATiming(conv.AccountID, conv.ID, updates)
 	return breaches, nil
 }
 

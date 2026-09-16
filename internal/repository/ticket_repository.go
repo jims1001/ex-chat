@@ -245,6 +245,9 @@ func (r *TicketRepository) Create(ticket *domain.Ticket) error {
 	if strings.TrimSpace(ticket.Title) == "" {
 		return errors.New("title is required")
 	}
+	if err := r.ValidateReferences(ticket.AccountID, ticket.AssigneeID, ticket.ContactID, ticket.ConversationID, ticket.SLAPolicyID); err != nil {
+		return err
+	}
 	if ticket.Status == "" {
 		ticket.Status = "open"
 	}

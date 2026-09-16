@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -55,11 +56,12 @@ type SkippedRecord struct {
 }
 
 type DataImportService struct {
-	db *gorm.DB
+	db          *gorm.DB
+	contactRepo *repository.ContactRepository
 }
 
 func NewDataImportService(db *gorm.DB) *DataImportService {
-	return &DataImportService{db: db}
+	return &DataImportService{db: db, contactRepo: repository.NewContactRepository(db)}
 }
 
 // Prevalidate performs deep static and relational verification of raw import data
@@ -559,7 +561,7 @@ func (s *DataImportService) executeCSVImport(accountID uint, importType, rawCSV 
 			CreatedAt:   time.Now().UTC(),
 		}
 
-		if err := s.db.Create(&contact).Error; err != nil {
+		if err := s.contactRepo.Create(&contact); err != nil {
 			errorsList = append(errorsList, ErrorRecord{
 				Line:   i + 1,
 				Data:   rowStr,
@@ -671,7 +673,7 @@ func (s *DataImportService) executeJSONImport(accountID uint, importType, rawJSO
 			CreatedAt:   time.Now().UTC(),
 		}
 
-		if err := s.db.Create(&contact).Error; err != nil {
+		if err := s.contactRepo.Create(&contact); err != nil {
 			errorsList = append(errorsList, ErrorRecord{
 				Line:   i + 1,
 				Data:   rawStr,

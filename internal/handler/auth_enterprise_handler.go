@@ -29,6 +29,8 @@ type AuthEnterpriseHandler struct {
 	accountRepo       *repository.AccountRepository
 	portalRepo        *repository.PortalRepository
 	contactRepo       *repository.ContactRepository
+	inboxRepo         *repository.InboxRepository
+	conversationRepo  *repository.ConversationRepository
 	migrationService  *service.MigrationService
 	dataImportService *service.DataImportService
 	cfg               *config.Config
@@ -51,12 +53,14 @@ func NewAuthEnterpriseHandler(
 	cfg *config.Config,
 ) *AuthEnterpriseHandler {
 	return &AuthEnterpriseHandler{
-		repo:        repo,
-		userRepo:    userRepo,
-		accountRepo: accountRepo,
-		portalRepo:  portalRepo,
-		contactRepo: contactRepo,
-		cfg:         cfg,
+		repo:             repo,
+		userRepo:         userRepo,
+		accountRepo:      accountRepo,
+		portalRepo:       portalRepo,
+		contactRepo:      contactRepo,
+		inboxRepo:        repository.NewInboxRepository(repo.GetDB()),
+		conversationRepo: repository.NewConversationRepository(repo.GetDB()),
+		cfg:              cfg,
 	}
 }
 
@@ -1119,7 +1123,6 @@ func (h *AuthEnterpriseHandler) EmailChannelMigration(c *gin.Context) {
 		provider = "custom_email"
 	}
 
-	db := h.repo.GetDB()
 	targetInboxID := req.TargetInboxID
 	if targetInboxID == nil {
 		emailAddr := req.TargetEmail
@@ -1139,15 +1142,16 @@ func (h *AuthEnterpriseHandler) EmailChannelMigration(c *gin.Context) {
 			ChannelType:  "Channel::Email",
 			WebsiteToken: "email_" + hex.EncodeToString([]byte(strconv.FormatInt(time.Now().UnixNano(), 36))),
 		}
-		if err := db.Create(&newInbox).Error; err == nil {
+		if err := h.inboxRepo.Create(&newInbox); err == nil {
 			targetInboxID = &newInbox.ID
 		}
 	}
 
 	if req.SourceInboxID != nil && targetInboxID != nil {
-		_ = db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND inbox_id = ?", accountID, *req.SourceInboxID).
-			Update("inbox_id", *targetInboxID).Error
+		if err := h.conversationRepo.MoveInbox(uint(accountID), *req.SourceInboxID, *targetInboxID); err != nil {
+			response.BadRequest(c, "source or target inbox does not belong to account")
+			return
+		}
 	}
 
 	mig := &domain.EmailChannelMigration{
@@ -1340,7 +1344,7 @@ func (h *AuthEnterpriseHandler) SelectBillingCurrency(c *gin.Context) {
 		customAttrs["billing_currency"] = curr
 		b, _ := json.Marshal(customAttrs)
 		account.CustomAttributes = string(b)
-		_ = db.Save(&account)
+		_ = h.accountRepo.Update(&account)
 	}
 
 	sub, _ := h.repo.GetAccountSubscription(accountID)
@@ -1401,7 +1405,7 @@ func (h *AuthEnterpriseHandler) ToggleDeletion(c *gin.Context) {
 		}
 		b, _ := json.Marshal(customAttrs)
 		account.CustomAttributes = string(b)
-		_ = db.Save(&account)
+		_ = h.accountRepo.Update(&account)
 	}
 
 	var msg string

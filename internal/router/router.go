@@ -117,12 +117,12 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	routingService := service.NewRoutingService(db, convRepo, hub)
 	reportService := service.NewReportService(db)
 	pushService := service.NewPushService(db, deviceRepo)
-	automationService := service.NewAutomationService(db, convRepo, msgRepo)
+	automationService := service.NewAutomationService(db, convRepo, msgRepo, labelRepo)
 	webhookService := service.NewWebhookService(db, webhookRepo)
 	if options.WebhookHTTPClient != nil {
 		webhookService.SetHTTPClient(options.WebhookHTTPClient)
 	}
-	slaService := service.NewSLAService(db)
+	slaService := service.NewSLAService(db, convRepo)
 	slaService.SetAppliedSLARepo(appliedSLARepo)
 	campaignService := service.NewCampaignService(db, convRepo, msgRepo, contactRepo)
 	campaignService.SetHub(hub)
@@ -189,15 +189,18 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	authEnterpriseHandler.SetDataImportService(dataImportService)
 	authHandler.SetEnterpriseRepo(channelEnterpriseRepo)
 	authHandler.SetEmailService(emailService)
-	copilotHandler := handler.NewCopilotHandler(db, convRepo, msgRepo, portalRepo, cannedRepo)
+	copilotHandler := handler.NewCopilotHandler(db, convRepo, msgRepo, portalRepo, cannedRepo, ticketRepo)
 	searchHandler := handler.NewSearchHandler(db)
 	assignmentPolicyHandler := handler.NewAssignmentPolicyHandler(assignmentPolicyRepo)
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
 	csatHandler := handler.NewCSATHandler(csatExtensionRepo)
 	csatHandler.SetJWTSecret(cfg.JWTSecret)
-	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService)
+	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService, convRepo)
 	copilotThreadHandler := handler.NewCopilotThreadHandler(db, copilotThreadRepo, convRepo, msgRepo, captainRepo)
-	aiCustomToolHandler := handler.NewAICustomToolHandler(db, aiCustomToolRepo)
+	aiCustomToolHandler := handler.NewAICustomToolHandler(db, aiCustomToolRepo, handler.AICustomToolDependencies{
+		TicketRepo:  ticketRepo,
+		MessageRepo: msgRepo,
+	})
 	widgetHandler := handler.NewWidgetHandler(db, widgetRepo, convRepo, contactRepo)
 	widgetHandler.SetJWTSecret(cfg.JWTSecret)
 	widgetHandler.SetHub(hub)

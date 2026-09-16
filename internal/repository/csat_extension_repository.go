@@ -36,10 +36,10 @@ type CSATAgentMetric struct {
 
 // CSATMetrics provides complete statistical breakdown of CSAT results
 type CSATMetrics struct {
-	TotalResponses    int64             `json:"total_responses"`
-	ApprovedResponses int64             `json:"approved_responses"`
-	PendingReview     int64             `json:"pending_review"`
-	RejectedResponses int64             `json:"rejected_responses"`
+	TotalResponses        int64             `json:"total_responses"`
+	ApprovedResponses     int64             `json:"approved_responses"`
+	PendingReview         int64             `json:"pending_review"`
+	RejectedResponses     int64             `json:"rejected_responses"`
 	AverageRating         float64           `json:"average_rating"`
 	SatisfactionRate      float64           `json:"satisfaction_rate"` // (Rating 4+5) / Total * 100%
 	RatingBreakdown       map[int]int64     `json:"rating_breakdown"`
@@ -50,6 +50,10 @@ type CSATMetrics struct {
 // CSATExtensionRepository manages advanced queries and audit operations for CSAT surveys
 type CSATExtensionRepository struct {
 	db *gorm.DB
+}
+
+func (r *CSATExtensionRepository) GetDB() *gorm.DB {
+	return r.db
 }
 
 // NewCSATExtensionRepository creates a new repository instance

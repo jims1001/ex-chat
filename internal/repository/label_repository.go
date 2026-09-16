@@ -33,6 +33,23 @@ func (r *LabelRepository) FindByID(accountID, id uint) (*domain.Label, error) {
 	return &label, nil
 }
 
+func (r *LabelRepository) FindByTitle(accountID uint, title string) (*domain.Label, error) {
+	var label domain.Label
+	err := r.db.Where("account_id = ? AND title = ?", accountID, title).First(&label).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &label, err
+}
+
+func (r *LabelRepository) FindOrCreateByTitle(accountID uint, title string) (*domain.Label, error) {
+	label := domain.Label{AccountID: accountID, Title: title}
+	if err := r.db.Where("account_id = ? AND title = ?", accountID, title).FirstOrCreate(&label).Error; err != nil {
+		return nil, err
+	}
+	return &label, nil
+}
+
 func (r *LabelRepository) List(accountID uint) ([]domain.Label, error) {
 	var labels []domain.Label
 	err := r.db.Where("account_id = ?", accountID).Find(&labels).Error

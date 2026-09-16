@@ -21,12 +21,13 @@ import (
 // CSATHandler manages CSAT survey details, moderation, report generation and lifecycle
 type CSATHandler struct {
 	csatRepo  *repository.CSATExtensionRepository
+	msgRepo   *repository.MessageRepository
 	jwtSecret string
 }
 
 // NewCSATHandler creates a new handler instance
 func NewCSATHandler(csatRepo *repository.CSATExtensionRepository) *CSATHandler {
-	return &CSATHandler{csatRepo: csatRepo}
+	return &CSATHandler{csatRepo: csatRepo, msgRepo: repository.NewMessageRepository(csatRepo.GetDB())}
 }
 
 // SetJWTSecret sets the secret key used for signing visitor tokens
@@ -953,7 +954,7 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 		}
 		subBytes, _ := json.Marshal(subVals)
 		csatMsg.ContentAttributes = string(subBytes)
-		_ = db.Save(&csatMsg)
+		_ = h.msgRepo.UpdateContentAttributes(conv.AccountID, conv.ID, csatMsg.ID, csatMsg.ContentAttributes)
 	}
 
 	// 5. Construct return response

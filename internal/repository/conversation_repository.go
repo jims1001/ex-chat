@@ -41,6 +41,33 @@ func (r *ConversationRepository) Create(c *domain.Conversation) error {
 	})
 }
 
+// CreateImported preserves a source display ID when one is supplied while
+// keeping display-ID allocation inside the CON owner boundary.
+func (r *ConversationRepository) CreateImported(c *domain.Conversation) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var inboxCount, contactCount int64
+		if err := tx.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", c.AccountID, c.InboxID).Count(&inboxCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", c.AccountID, c.ContactID).Count(&contactCount).Error; err != nil {
+			return err
+		}
+		if inboxCount != 1 || contactCount != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if c.DisplayID == 0 {
+			var maxDisplayID uint
+			row := tx.Model(&domain.Conversation{}).
+				Where("account_id = ?", c.AccountID).
+				Select("COALESCE(MAX(display_id), 0)").
+				Row()
+			_ = row.Scan(&maxDisplayID)
+			c.DisplayID = maxDisplayID + 1
+		}
+		return tx.Create(c).Error
+	})
+}
+
 func (r *ConversationRepository) FindByID(accountID, id uint) (*domain.Conversation, error) {
 	var conv domain.Conversation
 	err := r.db.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").Preload("Team").
@@ -137,6 +164,22 @@ func (r *ConversationRepository) AssignTeam(accountID, id uint, teamID *uint) er
 		Updates(updates).Error
 }
 
+func (r *ConversationRepository) MoveInbox(accountID, sourceInboxID, targetInboxID uint) error {
+	var sourceCount, targetCount int64
+	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, sourceInboxID).Count(&sourceCount).Error; err != nil {
+		return err
+	}
+	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, targetInboxID).Count(&targetCount).Error; err != nil {
+		return err
+	}
+	if sourceCount != 1 || targetCount != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND inbox_id = ?", accountID, sourceInboxID).
+		Update("inbox_id", targetInboxID).Error
+}
+
 func (r *ConversationRepository) AssignWithTeam(accountID, id uint, hasAssignee bool, assigneeID *uint, hasTeam bool, teamID *uint) error {
 	updates := map[string]any{
 		"last_activity_at": time.Now().UTC(),
@@ -173,6 +216,28 @@ func (r *ConversationRepository) UpdatePriority(accountID, id uint, priority str
 			"priority":         priority,
 			"last_activity_at": time.Now().UTC(),
 		}).Error
+}
+
+func (r *ConversationRepository) ApplySLAPolicy(accountID, id, policyID uint) error {
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Update("sla_policy_id", policyID).Error
+}
+
+func (r *ConversationRepository) UpdateSLATiming(accountID, id uint, updates map[string]any) error {
+	allowed := map[string]bool{"first_response_due_at": true, "next_response_due_at": true, "resolution_due_at": true, "sla_status": true}
+	filtered := make(map[string]any, len(updates))
+	for key, value := range updates {
+		if allowed[key] {
+			filtered[key] = value
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(filtered).Error
 }
 
 // UpdateLastSeen updates agent read position and clears unread count
@@ -236,6 +301,35 @@ func (r *ConversationRepository) ToggleMute(accountID, id uint, muted bool) erro
 	return r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND id = ?", accountID, id).
 		Update("muted", muted).Error
+}
+
+// AttachLabel records the CON-owned relationship between a conversation and a
+// CUS-owned label. The account guard prevents cross-tenant relation writes.
+func (r *ConversationRepository) AttachLabel(accountID, conversationID, labelID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var conversationCount, labelCount int64
+		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Count(&conversationCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&domain.Label{}).Where("account_id = ? AND id = ?", accountID, labelID).Count(&labelCount).Error; err != nil {
+			return err
+		}
+		if conversationCount != 1 || labelCount != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		relation := domain.ConversationLabel{ConversationID: conversationID, LabelID: labelID}
+		return tx.Where(relation).FirstOrCreate(&relation).Error
+	})
+}
+
+// DetachLabel removes a CON-owned label relationship with tenant guards on
+// both referenced objects.
+func (r *ConversationRepository) DetachLabel(accountID, conversationID, labelID uint) error {
+	return r.db.Where(
+		"conversation_id IN (?) AND label_id IN (?)",
+		r.db.Model(&domain.Conversation{}).Select("id").Where("account_id = ? AND id = ?", accountID, conversationID),
+		r.db.Model(&domain.Label{}).Select("id").Where("account_id = ? AND id = ?", accountID, labelID),
+	).Delete(&domain.ConversationLabel{}).Error
 }
 
 // Delete cascades deletion of conversation and associated records
@@ -405,12 +499,12 @@ func (r *ConversationRepository) GetUnreadCounts(accountID, currentUserID uint) 
 	_ = rowUnassigned.Scan(&unassignedUnread)
 
 	return map[string]int64{
-		"total":                    totalUnread,
-		"mine":                     mineUnread,
-		"unassigned":               unassignedUnread,
-		"total_unread_count":       totalUnread,
-		"mine_unread_count":        mineUnread,
-		"unassigned_unread_count":  unassignedUnread,
+		"total":                   totalUnread,
+		"mine":                    mineUnread,
+		"unassigned":              unassignedUnread,
+		"total_unread_count":      totalUnread,
+		"mine_unread_count":       mineUnread,
+		"unassigned_unread_count": unassignedUnread,
 	}, nil
 }
 
@@ -539,4 +633,3 @@ func (r *ConversationRepository) ListAttachments(accountID, conversationID uint)
 		Find(&attachments).Error
 	return attachments, err
 }
-

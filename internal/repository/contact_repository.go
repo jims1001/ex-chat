@@ -97,6 +97,18 @@ func (r *ContactRepository) Update(contact *domain.Contact) error {
 	return r.db.Save(contact).Error
 }
 
+func (r *ContactRepository) CreateNote(note *domain.ContactNote) error {
+	return r.db.Create(note).Error
+}
+
+func (r *ContactRepository) UpdateNote(note *domain.ContactNote) error {
+	return r.db.Save(note).Error
+}
+
+func (r *ContactRepository) DeleteNote(accountID, contactID, noteID uint) error {
+	return r.db.Where("account_id = ? AND contact_id = ? AND id = ?", accountID, contactID, noteID).Delete(&domain.ContactNote{}).Error
+}
+
 var ErrContactHasActiveConversations = errors.New("cannot delete contact with active conversations")
 
 func (r *ContactRepository) Delete(accountID, id uint) error {

@@ -39,20 +39,26 @@ func GetAutomationDepth(ctx context.Context) int {
 }
 
 type AutomationService struct {
-	db       *gorm.DB
-	convRepo *repository.ConversationRepository
-	msgRepo  *repository.MessageRepository
+	db        *gorm.DB
+	convRepo  *repository.ConversationRepository
+	msgRepo   *repository.MessageRepository
+	labelRepo *repository.LabelRepository
 
 	// Idempotency cache to prevent same-second duplicated execution for same conversation+event+rule
 	recentExecMu sync.Mutex
 	recentExec   map[string]time.Time
 }
 
-func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository) *AutomationService {
+func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepos ...*repository.LabelRepository) *AutomationService {
+	labelRepo := repository.NewLabelRepository(db)
+	if len(labelRepos) > 0 && labelRepos[0] != nil {
+		labelRepo = labelRepos[0]
+	}
 	return &AutomationService{
 		db:         db,
 		convRepo:   convRepo,
 		msgRepo:    msgRepo,
+		labelRepo:  labelRepo,
 		recentExec: make(map[string]time.Time),
 	}
 }
@@ -747,7 +753,7 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 		newStatus := "resolved"
 		_ = s.convRepo.UpdateStatus(conv.AccountID, conv.ID, newStatus, nil)
 		conv.Status = newStatus
-		_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Update("muted", true).Error
+		_ = s.convRepo.ToggleMute(conv.AccountID, conv.ID, true)
 	case "snooze_conversation", "snooze":
 		newStatus := domain.ConversationStatusSnoozed
 		snoozeDuration := 24 * time.Hour
@@ -839,10 +845,8 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 		for _, lblTitle := range labelsToAdd {
 			lblTitle = strings.TrimSpace(lblTitle)
 			if lblTitle != "" {
-				var label domain.Label
-				if err := s.db.Where("account_id = ? AND title = ?", conv.AccountID, lblTitle).FirstOrCreate(&label, domain.Label{AccountID: conv.AccountID, Title: lblTitle}).Error; err == nil {
-					cl := domain.ConversationLabel{ConversationID: conv.ID, LabelID: label.ID}
-					_ = s.db.Where(cl).FirstOrCreate(&cl).Error
+				if label, err := s.labelRepo.FindOrCreateByTitle(conv.AccountID, lblTitle); err == nil {
+					_ = s.convRepo.AttachLabel(conv.AccountID, conv.ID, label.ID)
 
 					found := false
 					for _, existing := range conv.Labels {
@@ -852,7 +856,7 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 						}
 					}
 					if !found {
-						conv.Labels = append(conv.Labels, label)
+						conv.Labels = append(conv.Labels, *label)
 					}
 				}
 			}
@@ -895,16 +899,20 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 
 			var labels []domain.Label
 			if idNum > 0 {
-				_ = s.db.Where("account_id = ? AND (title = ? OR id = ?)", conv.AccountID, lblTarget, idNum).Find(&labels).Error
+				if label, err := s.labelRepo.FindByID(conv.AccountID, idNum); err == nil && label != nil {
+					labels = append(labels, *label)
+				}
 			} else {
-				_ = s.db.Where("account_id = ? AND title = ?", conv.AccountID, lblTarget).Find(&labels).Error
+				if label, err := s.labelRepo.FindByTitle(conv.AccountID, lblTarget); err == nil && label != nil {
+					labels = append(labels, *label)
+				}
 			}
 
 			for _, l := range labels {
-				_ = s.db.Where("conversation_id = ? AND label_id = ?", conv.ID, l.ID).Delete(&domain.ConversationLabel{}).Error
+				_ = s.convRepo.DetachLabel(conv.AccountID, conv.ID, l.ID)
 			}
 			if len(labels) == 0 && idNum > 0 {
-				_ = s.db.Where("conversation_id = ? AND label_id = ?", conv.ID, idNum).Delete(&domain.ConversationLabel{}).Error
+				_ = s.convRepo.DetachLabel(conv.AccountID, conv.ID, idNum)
 			}
 		}
 
@@ -930,21 +938,5 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 	now := time.Now().UTC()
 	conv.LastActivityAt = now
 	conv.UpdatedAt = now
-	updateFields := map[string]any{
-		"last_activity_at": now,
-		"updated_at":       now,
-		"status":           conv.Status,
-		"priority":         conv.Priority,
-	}
-	if conv.AssigneeID != nil {
-		updateFields["assignee_id"] = conv.AssigneeID
-	} else if action.ActionName == "remove_assigned_agent" {
-		updateFields["assignee_id"] = nil
-	}
-	if conv.TeamID != nil {
-		updateFields["team_id"] = conv.TeamID
-	} else if action.ActionName == "remove_assigned_team" {
-		updateFields["team_id"] = nil
-	}
-	return s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updateFields).Error
+	return s.convRepo.TouchActivity(conv.AccountID, conv.ID)
 }
