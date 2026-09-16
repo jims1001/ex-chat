@@ -1,0 +1,33 @@
+{
+  "version": "module-dependencies-v1",
+  "foundationVersion": "foundation-v1",
+  "reopenTask": "ARCH-03",
+  "modules": [
+    {"name":"IAM","layer":1,"order":1,"synchronous":[],"events":[],"shared":[],"startup":[]},
+    {"name":"TEN","layer":1,"order":2,"synchronous":["IAM"],"events":[],"shared":[],"startup":[]},
+    {"name":"ENT","layer":1,"order":3,"synchronous":["TEN"],"events":[],"shared":[],"startup":[]},
+    {"name":"SYS","layer":1,"order":4,"synchronous":["IAM","TEN","ENT"],"events":[],"shared":[],"startup":["IAM","TEN"]},
+    {"name":"CHN","layer":2,"order":5,"synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":["TEN"]},
+    {"name":"CUS","layer":2,"order":6,"synchronous":["TEN","CHN"],"events":[],"shared":["CHN"],"startup":[]},
+    {"name":"MED","layer":2,"order":7,"synchronous":["TEN"],"events":[],"shared":[],"startup":[]},
+    {"name":"CON","layer":3,"order":8,"synchronous":["TEN","CHN","CUS"],"events":[],"shared":["CHN","CUS"],"startup":[]},
+    {"name":"MSG","layer":3,"order":9,"synchronous":["TEN","CHN","CON","MED"],"events":[],"shared":["CON"],"startup":[]},
+    {"name":"RTE","layer":3,"order":10,"synchronous":["TEN","CHN","CON","MSG"],"events":["MSG"],"shared":["CON"],"startup":[]},
+    {"name":"TKT","layer":3,"order":11,"synchronous":["TEN","CUS","CON"],"events":["MSG"],"shared":[],"startup":[]},
+    {"name":"QLT","layer":3,"order":12,"synchronous":["TEN","CUS","CON","MSG","RTE"],"events":[],"shared":[],"startup":[]},
+    {"name":"KB","layer":2,"order":13,"synchronous":["TEN","MED"],"events":[],"shared":[],"startup":[]},
+    {"name":"BIL","layer":1,"order":14,"synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":[]},
+    {"name":"EXT","layer":4,"order":15,"synchronous":["IAM","TEN","ENT","CHN"],"events":["CON","MSG"],"shared":[],"startup":[]},
+    {"name":"NTF","layer":4,"order":16,"synchronous":["IAM","TEN","CON"],"events":["MSG","RTE","TKT","QLT"],"shared":[],"startup":[]},
+    {"name":"AUT","layer":4,"order":17,"synchronous":["TEN","ENT","CUS","CON","MSG","RTE","NTF","EXT"],"events":["CHN","CUS","TKT","QLT"],"shared":[],"startup":[]},
+    {"name":"OPS","layer":4,"order":18,"synchronous":["TEN","ENT","CHN","CUS","CON","MSG","RTE","QLT","EXT","NTF","AUT"],"events":["MSG"],"shared":[],"startup":[]},
+    {"name":"AIC","layer":4,"order":19,"synchronous":["TEN","ENT","BIL","KB","CON","MSG","TKT","EXT","OPS"],"events":[],"shared":["KB"],"startup":[]},
+    {"name":"MIG","layer":4,"order":20,"synchronous":["TEN","CHN","CUS","MED","CON","MSG"],"events":[],"shared":[],"startup":[]},
+    {"name":"RPT","layer":4,"order":21,"synchronous":["TEN","CON"],"events":["CHN","CUS","CON","MSG","RTE","TKT","QLT","AUT","OPS","AIC","EXT","BIL","MIG"],"shared":[],"startup":[]},
+    {"name":"SRH","layer":4,"order":22,"synchronous":["TEN"],"events":["CUS","CON","MSG","TKT","KB"],"shared":[],"startup":[]},
+    {"name":"ORC","layer":5,"order":23,"synchronous":["IAM","TEN","ENT","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH"],"events":[],"shared":[],"startup":[]},
+    {"name":"API","layer":5,"order":24,"synchronous":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC"],"events":[],"shared":[],"startup":["IAM","TEN"]},
+    {"name":"RTM","layer":5,"order":25,"synchronous":["IAM","TEN"],"events":["API","CON","MSG","RTE","TKT","QLT","NTF","AUT","OPS"],"shared":[],"startup":[]},
+    {"name":"AUD","layer":6,"order":26,"synchronous":[],"events":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC","API","RTM"],"shared":[],"startup":[]}
+  ]
+}
