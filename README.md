@@ -21,7 +21,8 @@ Customer conversation and live chat support platform backend in Go.
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.25+
+- Docker Desktop or Docker Engine with Compose (for PostgreSQL integration tests)
 
 ### Running the Server
 
@@ -32,5 +33,45 @@ go run ./cmd/server
 ### Running Tests
 
 ```bash
-go test -v ./...
+make test
+```
+
+`go test ./...` intentionally does not discover every integration test in this
+workspace. Use the Make target above or the isolated script:
+
+```bash
+./scripts/test.sh
+```
+
+Run the same suite against local PostgreSQL 16 while also verifying that the
+local Redis container starts and passes its authenticated health check:
+
+```bash
+make test-docker
+```
+
+The Docker test target uses its own Compose project, ports, and disposable data
+volumes. It cleans them up when the test finishes and does not touch development
+environment data.
+
+Additional concurrency and stability checks:
+
+```bash
+make test-race
+make test-stress STRESS_COUNT=10
+make test-soak SOAK_DURATION=10m
+```
+
+The Docker services bind only to localhost. For manual startup, copy
+`.env.example` to `.env`, replace every placeholder secret, then run:
+
+```bash
+docker compose up -d --wait
+```
+
+### Frontend prototype checks
+
+```bash
+cd Chatwoot客服系统界面原型
+npm test
 ```

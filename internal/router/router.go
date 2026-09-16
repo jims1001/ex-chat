@@ -25,18 +25,16 @@ import (
 	"gorm.io/gorm"
 )
 
-var globalWebhookHTTPClient *http.Client
-var globalAdvancedHTTPClient *http.Client
-
-func SetWebhookHTTPClient(client *http.Client) {
-	globalWebhookHTTPClient = client
-}
-
-func SetAdvancedHTTPClient(client *http.Client) {
-	globalAdvancedHTTPClient = client
+type Options struct {
+	WebhookHTTPClient  *http.Client
+	AdvancedHTTPClient *http.Client
 }
 
 func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
+	return SetupRouterWithOptions(cfg, db, hub, Options{})
+}
+
+func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, options Options) *gin.Engine {
 	r := gin.New()
 	if len(cfg.TrustedProxies) == 0 {
 		_ = r.SetTrustedProxies(nil)
@@ -121,8 +119,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	pushService := service.NewPushService(db, deviceRepo)
 	automationService := service.NewAutomationService(db, convRepo, msgRepo)
 	webhookService := service.NewWebhookService(db, webhookRepo)
-	if globalWebhookHTTPClient != nil {
-		webhookService.SetHTTPClient(globalWebhookHTTPClient)
+	if options.WebhookHTTPClient != nil {
+		webhookService.SetHTTPClient(options.WebhookHTTPClient)
 	}
 	slaService := service.NewSLAService(db)
 	slaService.SetAppliedSLARepo(appliedSLARepo)
@@ -180,8 +178,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	advancedHandler.SetEventServices(convRepo, routingService, automationService, webhookService, pushService, notificationRepo, hub)
 	storageService := service.NewLocalStorageService("uploads", cfg.JWTSecret)
 	advancedHandler.SetStorageService(storageService)
-	if globalAdvancedHTTPClient != nil {
-		advancedHandler.SetHTTPClient(globalAdvancedHTTPClient)
+	if options.AdvancedHTTPClient != nil {
+		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)
 	}
 	channelDriverHandler := handler.NewChannelDriverHandler(channelEnterpriseRepo, inboxRepo, contactRepo, convRepo, msgRepo)
 	authEnterpriseHandler := handler.NewAuthEnterpriseHandler(channelEnterpriseRepo, userRepo, accountRepo, portalRepo, contactRepo, cfg)

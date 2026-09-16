@@ -318,9 +318,6 @@ func TestBusinessCapabilitiesEnhancement(t *testing.T) {
 			}),
 		}
 
-		router.SetAdvancedHTTPClient(mockDFClient)
-		defer router.SetAdvancedHTTPClient(nil)
-
 		// Setup inbox and conversation
 		inbox := domain.Inbox{AccountID: accountID, Name: "客服中心", ChannelType: "Channel::WebWidget", WebsiteToken: "tok_df_test"}
 		db.Create(&inbox)
@@ -330,7 +327,7 @@ func TestBusinessCapabilitiesEnhancement(t *testing.T) {
 		db.Create(&conv)
 
 		// Rebuild router to pick up mock client
-		dfEngine := router.SetupRouter(cfg, db, hub)
+		dfEngine := router.SetupRouterWithOptions(cfg, db, hub, router.Options{AdvancedHTTPClient: mockDFClient})
 
 		dfBody, _ := json.Marshal(map[string]any{
 			"conversation_id": conv.ID,

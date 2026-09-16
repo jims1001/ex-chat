@@ -57,10 +57,8 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 			},
 		},
 	}
-	router.SetWebhookHTTPClient(mockClient)
-
 	hub := ws.NewHub()
-	r := router.SetupRouter(cfg, db, hub)
+	r := router.SetupRouterWithOptions(cfg, db, hub, router.Options{WebhookHTTPClient: mockClient})
 
 	// 1. Seed Account & User
 	account := domain.Account{Name: "Retry Actual Delivery Account"}

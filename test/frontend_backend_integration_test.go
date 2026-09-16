@@ -38,7 +38,7 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 	}
 
 	var receivedWebhookReq *http.Request
-	router.SetWebhookHTTPClient(&http.Client{
+	webhookClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			receivedWebhookReq = req
 			res := httptest.NewRecorder()
@@ -46,12 +46,12 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 			_, _ = res.Write([]byte(`{"received":true,"status":"delivered"}`))
 			return res.Result(), nil
 		}),
-	})
+	}
 
 	hub := ws.NewHub()
 	go hub.Run()
 
-	engine := router.SetupRouter(cfg, db, hub)
+	engine := router.SetupRouterWithOptions(cfg, db, hub, router.Options{WebhookHTTPClient: webhookClient})
 
 	// Step 0: Create initial admin & account
 	signUpBody, _ := json.Marshal(map[string]string{
@@ -353,7 +353,7 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 			"name":                          "基础服务 SLA",
 			"description":                   "默认客诉响应标准",
 			"first_response_time_threshold": 3600,
-			"resolution_time_threshold":    86400,
+			"resolution_time_threshold":     86400,
 		})
 		wCreateSLA := httptest.NewRecorder()
 		reqCreateSLA, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/sla_policies", accountID), bytes.NewBuffer(slaCreateBody))
@@ -376,7 +376,7 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 			"name":                          "VIP 加急保障 SLA",
 			"description":                   "VIP 客户极速响应通道",
 			"first_response_time_threshold": 300,
-			"resolution_time_threshold":    1800,
+			"resolution_time_threshold":     1800,
 		})
 		wPutSLA := httptest.NewRecorder()
 		reqPutSLA, _ := http.NewRequest("PUT", fmt.Sprintf("/api/v1/accounts/%d/sla_policies/%d", accountID, createdSLAResp.Data.ID), bytes.NewBuffer(slaPutBody))
@@ -681,4 +681,3 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 		}
 	})
 }
-
