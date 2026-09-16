@@ -38,6 +38,11 @@ func SetAdvancedHTTPClient(client *http.Client) {
 
 func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	r := gin.New()
+	if len(cfg.TrustedProxies) == 0 {
+		_ = r.SetTrustedProxies(nil)
+	} else if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	// 1. 全局拦截器：统一上下文与全链路跟踪 (API-03 规范)
 	r.Use(foundation.UnifiedContextMiddleware())
@@ -1412,6 +1417,10 @@ func serveSecureUploadFile(storageService service.StorageService, userRepo *repo
 		if tokenStr != "" {
 			claims, err := auth.ValidateToken(tokenStr, cfg.JWTSecret)
 			if err == nil && claims != nil {
+				if !strings.HasPrefix(cleanRelPath, "widget/inbox_") && !strings.HasPrefix(cleanRelPath, "account_") {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "signed URL required for this file"})
+					return
+				}
 				if strings.HasPrefix(cleanRelPath, "widget/inbox_") {
 					var inboxID uint64
 					if _, err := fmt.Sscanf(cleanRelPath, "widget/inbox_%d/", &inboxID); err != nil || inboxID == 0 {

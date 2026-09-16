@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1170,7 +1171,7 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 		}
 
 		blobKey := fmt.Sprintf("blobs/%d_%s", time.Now().UnixNano(), cleanFilename)
-		visitorToken, tokenErr := auth.GenerateVisitorToken(inbox.ID, contact.ID, sourceID, h.jwtSecret, 15*time.Minute)
+		visitorToken, tokenErr := auth.GenerateVisitorUploadToken(inbox.ID, contact.ID, sourceID, blobKey, h.jwtSecret, blobReq.Blob.ByteSize, 15*time.Minute)
 		if tokenErr != nil {
 			response.InternalError(c, "Failed to authorize direct upload")
 			return
@@ -1220,6 +1221,17 @@ func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
 		return
 	}
 
+	visitorToken := c.Query("visitor_token")
+	if visitorToken == "" {
+		visitorToken = c.GetHeader("X-Visitor-Token")
+	}
+	uploadClaims, tokenErr := auth.ParseVisitorToken(visitorToken, h.jwtSecret)
+	if tokenErr != nil || uploadClaims == nil || uploadClaims.InboxID != inbox.ID || uploadClaims.ContactID == 0 ||
+		uploadClaims.UploadKey == "" || uploadClaims.UploadKey != key || uploadClaims.MaxBytes <= 0 || uploadClaims.MaxBytes > 25*1024*1024 {
+		response.Forbidden(c, "Upload capability is invalid or does not match this key")
+		return
+	}
+
 	cleanBase := filepath.Base(key)
 	ext := strings.ToLower(filepath.Ext(cleanBase))
 	allowedExts := map[string]bool{
@@ -1239,42 +1251,59 @@ func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
 	uploadDir := filepath.Join("uploads", "widget", fmt.Sprintf("inbox_%d", inbox.ID))
 	_ = os.MkdirAll(uploadDir, 0755)
 	destPath := filepath.Join(uploadDir, cleanBase)
-	if _, err := os.Stat(destPath); err == nil {
+	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
 		c.JSON(http.StatusConflict, gin.H{"success": false, "error": "Upload key has already been used"})
 		return
 	}
+	if err != nil {
+		response.InternalError(c, "Failed to create destination file: "+err.Error())
+		return
+	}
+	keepFile := false
+	defer func() {
+		_ = dst.Close()
+		if !keepFile {
+			_ = os.Remove(destPath)
+		}
+	}()
+	maxBytes := uploadClaims.MaxBytes
 
 	// Check if submitted as multipart form
 	if file, fileErr := c.FormFile("file"); fileErr == nil && file != nil {
-		if file.Size > 25*1024*1024 {
+		if file.Size > maxBytes {
 			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
 			return
 		}
-		if err := c.SaveUploadedFile(file, destPath); err != nil {
-			response.InternalError(c, "Failed to save file: "+err.Error())
+		src, err := file.Open()
+		if err != nil {
+			response.BadRequest(c, "Failed to read uploaded file")
+			return
+		}
+		defer src.Close()
+		written, err := io.Copy(dst, io.LimitReader(src, maxBytes+1))
+		if err != nil || written > maxBytes {
+			response.BadRequest(c, "Failed to save file or negotiated size exceeded")
 			return
 		}
 	} else {
 		// Read raw request body directly (PUT stream)
-		dst, err := os.Create(destPath)
-		if err != nil {
-			response.InternalError(c, "Failed to create destination file: "+err.Error())
-			return
-		}
-		defer dst.Close()
-
-		limitedReader := io.LimitReader(c.Request.Body, 25*1024*1024+1)
+		limitedReader := io.LimitReader(c.Request.Body, maxBytes+1)
 		written, err := io.Copy(dst, limitedReader)
 		if err != nil {
 			response.InternalError(c, "Failed to write upload stream: "+err.Error())
 			return
 		}
-		if written > 25*1024*1024 {
-			_ = os.Remove(destPath)
+		if written > maxBytes {
 			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
 			return
 		}
 	}
+	if err := dst.Close(); err != nil {
+		response.InternalError(c, "Failed to finalize uploaded file")
+		return
+	}
+	keepFile = true
 
 	fileURL := "/" + filepath.ToSlash(destPath)
 	c.JSON(http.StatusOK, gin.H{

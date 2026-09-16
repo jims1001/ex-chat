@@ -18,6 +18,7 @@ type Config struct {
 	LogLevel           string
 	LogFormat          string
 	SuperAdminEmails   []string
+	TrustedProxies     []string
 }
 
 func (c *Config) IsSuperAdminEmail(email string) bool {
@@ -48,6 +49,13 @@ func LoadConfig() *Config {
 	}
 	logLevel := getEnv("LOG_LEVEL", "info")
 	logFormat := getEnv("LOG_FORMAT", "json")
+	trustedProxiesRaw := getEnv("TRUSTED_PROXIES", "")
+	var trustedProxies []string
+	for _, proxy := range strings.Split(trustedProxiesRaw, ",") {
+		if trimmed := strings.TrimSpace(proxy); trimmed != "" {
+			trustedProxies = append(trustedProxies, trimmed)
+		}
+	}
 
 	superAdminEmailsRaw := getEnv("SUPER_ADMIN_EMAILS", "")
 	var superAdminEmails []string
@@ -72,6 +80,7 @@ func LoadConfig() *Config {
 		LogLevel:           logLevel,
 		LogFormat:          logFormat,
 		SuperAdminEmails:   superAdminEmails,
+		TrustedProxies:     trustedProxies,
 	}
 }
 

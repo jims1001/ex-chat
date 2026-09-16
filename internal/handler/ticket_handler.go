@@ -943,6 +943,10 @@ func (h *TicketHandler) CreateForConversation(c *gin.Context) {
 	}
 
 	cid := uint(convID)
+	if err := h.repo.ValidateReferences(accountID, req.AssigneeID, req.ContactID, &cid, req.SLAPolicyID); err != nil {
+		response.BadRequest(c, "Invalid ticket reference: "+err.Error())
+		return
+	}
 	priority := req.Priority
 	if priority == "" {
 		priority = "high"
@@ -1043,6 +1047,10 @@ func (h *TicketHandler) CreateForContact(c *gin.Context) {
 	}
 
 	cntID := uint(contactID)
+	if err := h.repo.ValidateReferences(accountID, req.AssigneeID, &cntID, req.ConversationID, req.SLAPolicyID); err != nil {
+		response.BadRequest(c, "Invalid ticket reference: "+err.Error())
+		return
+	}
 	priority := req.Priority
 	if priority == "" {
 		priority = "high"
@@ -1091,6 +1099,15 @@ func (h *TicketHandler) AddWatcher(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+	if _, err := h.repo.FindByID(accountID, uint(tid)); err != nil {
+		response.NotFound(c, "Ticket not found")
+		return
+	}
+	uid := req.UserID
+	if err := h.repo.ValidateReferences(accountID, &uid, nil, nil, nil); err != nil {
+		response.BadRequest(c, "Watcher does not belong to this account")
 		return
 	}
 	if err := h.repo.AddWatcher(accountID, uint(tid), req.UserID); err != nil {

@@ -32,20 +32,24 @@ func (b *bucket) take(now time.Time, n float64) bool {
 
 // Limiter manages multi-key token bucket rate limiters
 type Limiter struct {
-	rate     float64
-	capacity float64
-	buckets  map[string]*bucket
-	mu       sync.Mutex
-	ttl      time.Duration
+	rate        float64
+	capacity    float64
+	buckets     map[string]*bucket
+	mu          sync.Mutex
+	ttl         time.Duration
+	lastCleanup time.Time
+	maxBuckets  int
 }
 
 // New creates a new Limiter with rate (tokens/sec) and capacity
 func New(rate float64, capacity float64) *Limiter {
 	return &Limiter{
-		rate:     rate,
-		capacity: capacity,
-		buckets:  make(map[string]*bucket),
-		ttl:      10 * time.Minute,
+		rate:        rate,
+		capacity:    capacity,
+		buckets:     make(map[string]*bucket),
+		ttl:         10 * time.Minute,
+		lastCleanup: time.Now(),
+		maxBuckets:  100000,
 	}
 }
 
@@ -60,8 +64,14 @@ func (l *Limiter) AllowN(key string, n float64) bool {
 	defer l.mu.Unlock()
 
 	now := time.Now()
+	if now.Sub(l.lastCleanup) >= time.Minute || len(l.buckets) >= l.maxBuckets {
+		l.cleanupLocked(now)
+	}
 	b, exists := l.buckets[key]
 	if !exists {
+		if len(l.buckets) >= l.maxBuckets {
+			return false
+		}
 		b = &bucket{
 			tokens:     l.capacity,
 			capacity:   l.capacity,
@@ -79,10 +89,14 @@ func (l *Limiter) Cleanup() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := time.Now()
+	l.cleanupLocked(time.Now())
+}
+
+func (l *Limiter) cleanupLocked(now time.Time) {
 	for k, b := range l.buckets {
 		if now.Sub(b.lastRefill) > l.ttl {
 			delete(l.buckets, k)
 		}
 	}
+	l.lastCleanup = now
 }

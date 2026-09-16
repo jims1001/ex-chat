@@ -18,6 +18,8 @@ type VisitorClaims struct {
 	InboxID   uint   `json:"inbox_id"`
 	ContactID uint   `json:"contact_id"`
 	SourceID  string `json:"source_id"`
+	UploadKey string `json:"upload_key,omitempty"`
+	MaxBytes  int64  `json:"max_bytes,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -43,6 +45,32 @@ func GenerateVisitorToken(inboxID, contactID uint, sourceID string, secret strin
 		},
 	}
 
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// GenerateVisitorUploadToken creates a short-lived capability bound to one
+// visitor, inbox, upload key, and negotiated maximum size.
+func GenerateVisitorUploadToken(inboxID, contactID uint, sourceID, uploadKey, secret string, maxBytes int64, ttl time.Duration) (string, error) {
+	if uploadKey == "" || maxBytes <= 0 {
+		return "", ErrInvalidVisitorToken
+	}
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+
+	claims := &VisitorClaims{
+		InboxID:   inboxID,
+		ContactID: contactID,
+		SourceID:  sourceID,
+		UploadKey: uploadKey,
+		MaxBytes:  maxBytes,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   sourceID,
+		},
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
 }

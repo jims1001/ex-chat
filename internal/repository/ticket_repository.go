@@ -1110,6 +1110,22 @@ func (r *TicketRepository) UpdateWithVersion(ticket *domain.Ticket, currentVersi
 
 // Watcher management
 func (r *TicketRepository) AddWatcher(accountID, ticketID, userID uint) error {
+	if accountID == 0 || ticketID == 0 || userID == 0 {
+		return errors.New("account_id, ticket_id and user_id are required")
+	}
+	var ticketCount, memberCount int64
+	if err := r.db.Model(&domain.Ticket{}).Where("account_id = ? AND id = ?", accountID, ticketID).Count(&ticketCount).Error; err != nil {
+		return err
+	}
+	if ticketCount == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	if err := r.db.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", accountID, userID).Count(&memberCount).Error; err != nil {
+		return err
+	}
+	if memberCount == 0 {
+		return errors.New("watcher does not belong to account")
+	}
 	var watcher domain.TicketWatcher
 	return r.db.Where(domain.TicketWatcher{AccountID: accountID, TicketID: ticketID, UserID: userID}).
 		FirstOrCreate(&watcher, domain.TicketWatcher{
