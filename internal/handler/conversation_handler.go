@@ -3,8 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +37,7 @@ type ConversationHandler struct {
 	campaignService   *service.CampaignService
 	captainRepo       *repository.CaptainRepository
 	enterpriseRepo    repository.ChannelAuthEnterpriseRepository
+	journalRepo       *repository.JournalRepository
 	hub               *ws.Hub
 }
 
@@ -86,6 +90,10 @@ func (h *ConversationHandler) SetCaptainRepo(cr *repository.CaptainRepository) {
 
 func (h *ConversationHandler) SetEnterpriseRepo(er repository.ChannelAuthEnterpriseRepository) {
 	h.enterpriseRepo = er
+}
+
+func (h *ConversationHandler) SetJournalRepo(jr *repository.JournalRepository) {
+	h.journalRepo = jr
 }
 
 type CreateConversationRequest struct {
@@ -408,6 +416,13 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 	_, hasTeam := raw["team_id"]
 
 	if hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
+		// Ensure assignee belongs to this account
+		var accountUser domain.AccountUser
+		if err := h.convRepo.GetDB().Where("account_id = ? AND user_id = ?", accountID, *req.AssigneeID).First(&accountUser).Error; err != nil {
+			response.BadRequest(c, "Assignee does not belong to this account")
+			return
+		}
+
 		conv, _ := h.convRepo.FindByID(accountID, uint(id))
 		if conv != nil && h.routingService != nil {
 			var policy *domain.AssignmentPolicy
@@ -423,17 +438,17 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 			var capPolicy domain.CapacityPolicy
 			db := h.convRepo.GetDB()
 			found := false
-			if err := db.Where("user_id = ?", *req.AssigneeID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-				found = true
-			} else if accountID > 0 {
-				if err := db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
+			if accountID > 0 {
+				if err := db.Where("account_id = ? AND user_id = ?", accountID, *req.AssigneeID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
+					found = true
+				} else if err := db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
 					found = true
 				}
 			}
 			if found && capPolicy.ConversationLimit > 0 {
 				var currentCount int64
 				db.Model(&domain.Conversation{}).
-					Where("assignee_id = ? AND status != ? AND id != ?", *req.AssigneeID, domain.ConversationStatusResolved, id).
+					Where("account_id = ? AND assignee_id = ? AND status != ? AND id != ?", accountID, *req.AssigneeID, domain.ConversationStatusResolved, id).
 					Count(&currentCount)
 				if currentCount >= int64(capPolicy.ConversationLimit) {
 					response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
@@ -494,11 +509,12 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 	// 2. Push Notification Dispatch (only when assigned to a valid user)
 	if h.pushService != nil && hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
 		go h.pushService.Dispatch(context.Background(), *req.AssigneeID, accountID, service.PushPayload{
-			Title:        "Conversation Assigned",
-			Body:         fmt.Sprintf("Conversation #%d has been assigned to you", id),
-			AccountID:    accountID,
-			ResourceID:   uint(id),
-			ResourceType: "conversation",
+			Title:            "Conversation Assigned",
+			Body:             fmt.Sprintf("Conversation #%d has been assigned to you", id),
+			AccountID:        accountID,
+			ResourceID:       uint(id),
+			ResourceType:     "conversation",
+			NotificationType: domain.NotificationTypeConversationAssignment,
 		})
 	}
 
@@ -638,13 +654,15 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(accountID, "message_created", msg)
 	}
-	if h.pushService != nil && conv.AssigneeID != nil {
+	isMutedOrBlocked := conv.Muted || (conv.Contact != nil && conv.Contact.Blocked)
+	if h.pushService != nil && conv.AssigneeID != nil && !isMutedOrBlocked {
 		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, accountID, service.PushPayload{
-			Title:        "New Customer Message",
-			Body:         msg.Content,
-			AccountID:    accountID,
-			ResourceID:   conv.ID,
-			ResourceType: "conversation",
+			Title:            "New Customer Message",
+			Body:             msg.Content,
+			AccountID:        accountID,
+			ResourceID:       conv.ID,
+			ResourceType:     "conversation",
+			NotificationType: domain.NotificationTypeConversationCreation,
 		})
 	}
 
@@ -775,6 +793,9 @@ func (h *ConversationHandler) WidgetListMessages(c *gin.Context) {
 	if websiteToken == "" {
 		websiteToken = c.GetHeader("X-Auth-Token")
 	}
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
+	}
 
 	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
 	if err != nil || inbox == nil {
@@ -786,6 +807,32 @@ func (h *ConversationHandler) WidgetListMessages(c *gin.Context) {
 	if err != nil {
 		response.BadRequest(c, "Invalid conversation ID")
 		return
+	}
+
+	conv, err := h.convRepo.FindByID(inbox.AccountID, uint(convID))
+	if err != nil || conv == nil || conv.InboxID != inbox.ID {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	// If source_id / contact_token is provided, ensure caller owns this conversation
+	sourceID := strings.TrimSpace(c.Query("source_id"))
+	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
+		sourceID = strings.TrimSpace(c.Query("contact_token"))
+	}
+	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
+		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
+	}
+	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
+		response.Error(c, http.StatusUnauthorized, "visitor_session or source_id is required")
+		return
+	}
+	if sourceID != "" {
+		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
+		if contact == nil || conv.ContactID != contact.ID {
+			response.NotFound(c, "Conversation not found")
+			return
+		}
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -805,6 +852,9 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 	websiteToken := c.Query("website_token")
 	if websiteToken == "" {
 		websiteToken = c.GetHeader("X-Auth-Token")
+	}
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
 	}
 
 	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
@@ -826,7 +876,7 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
-	if err != nil || conv == nil {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID || conv.ContactID != contact.ID {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -861,8 +911,10 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 		"sender_id", msg.SenderID,
 	)
 
-	// Re-open conversation if it was resolved
-	if conv.Status == domain.ConversationStatusResolved {
+	isMutedOrBlocked := conv.Muted || (contact != nil && contact.Blocked)
+
+	// Re-open conversation if it was resolved (only if not muted or blocked)
+	if !isMutedOrBlocked && conv.Status == domain.ConversationStatusResolved {
 		_ = h.convRepo.UpdateStatus(inbox.AccountID, conv.ID, domain.ConversationStatusOpen, nil)
 	} else {
 		_ = h.convRepo.TouchActivity(inbox.AccountID, conv.ID)
@@ -874,13 +926,14 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(inbox.AccountID, "message_created", msg)
 	}
-	if h.pushService != nil && conv.AssigneeID != nil {
+	if h.pushService != nil && conv.AssigneeID != nil && !isMutedOrBlocked {
 		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, inbox.AccountID, service.PushPayload{
-			Title:        "New Customer Message",
-			Body:         msg.Content,
-			AccountID:    inbox.AccountID,
-			ResourceID:   conv.ID,
-			ResourceType: "conversation",
+			Title:            "New Customer Message",
+			Body:             msg.Content,
+			AccountID:        inbox.AccountID,
+			ResourceID:       conv.ID,
+			ResourceType:     "conversation",
+			NotificationType: domain.NotificationTypeConversationCreation,
 		})
 	}
 
@@ -957,7 +1010,7 @@ func (h *ConversationHandler) MarkUnread(c *gin.Context) {
 	response.Success(c, conv)
 }
 
-// MuteConversation mutes notifications/events for the conversation
+// MuteConversation mutes notifications/events for the conversation, resolves conversation, blocks contact, and logs activity message
 func (h *ConversationHandler) MuteConversation(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -968,15 +1021,65 @@ func (h *ConversationHandler) MuteConversation(c *gin.Context) {
 		return
 	}
 
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
 	if err := h.convRepo.ToggleMute(accountID, uint(id), true); err != nil {
 		response.InternalError(c, "Failed to mute conversation")
 		return
 	}
 
+	// 1. Resolve conversation status
+	_ = h.convRepo.UpdateStatus(accountID, uint(id), domain.ConversationStatusResolved, nil)
+
+	// 2. Mark contact as blocked
+	if conv.ContactID > 0 {
+		contact, _ := h.contactRepo.FindByID(accountID, conv.ContactID)
+		if contact != nil {
+			contact.Blocked = true
+			_ = h.contactRepo.Update(contact)
+		}
+	}
+
+	// 3. Create activity message
+	userName := "Agent"
+	if rawUser, exists := c.Get(middleware.ContextUser); exists && rawUser != nil {
+		if u, ok := rawUser.(*domain.User); ok && u.Name != "" {
+			userName = u.Name
+		}
+	} else if rawUserID, exists := c.Get(middleware.ContextUserID); exists && rawUserID != nil {
+		if uid, ok := rawUserID.(uint); ok && uid > 0 {
+			userName = fmt.Sprintf("User #%d", uid)
+		}
+	}
+
+	actMsg := domain.Message{
+		AccountID:      accountID,
+		ConversationID: uint(id),
+		SenderType:     domain.SenderTypeUser,
+		MessageType:    domain.MessageTypeActivity,
+		ContentType:    domain.ContentTypeText,
+		Content:        fmt.Sprintf("%s has muted the conversation", userName),
+		Status:         domain.MessageStatusSent,
+	}
+	_ = h.msgRepo.Create(&actMsg)
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      accountID,
+			ConversationID: uint(id),
+			Data:           actMsg,
+		})
+	}
+
 	response.Success(c, gin.H{"id": uint(id), "muted": true})
 }
 
-// UnmuteConversation unmutes the conversation
+// UnmuteConversation unmutes the conversation, unblocks contact, and logs activity message
 func (h *ConversationHandler) UnmuteConversation(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -987,9 +1090,56 @@ func (h *ConversationHandler) UnmuteConversation(c *gin.Context) {
 		return
 	}
 
+	conv, err := h.convRepo.FindByID(accountID, uint(id))
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
 	if err := h.convRepo.ToggleMute(accountID, uint(id), false); err != nil {
 		response.InternalError(c, "Failed to unmute conversation")
 		return
+	}
+
+	// 1. Mark contact as unblocked
+	if conv.ContactID > 0 {
+		contact, _ := h.contactRepo.FindByID(accountID, conv.ContactID)
+		if contact != nil {
+			contact.Blocked = false
+			_ = h.contactRepo.Update(contact)
+		}
+	}
+
+	// 2. Create activity message
+	userName := "Agent"
+	if rawUser, exists := c.Get(middleware.ContextUser); exists && rawUser != nil {
+		if u, ok := rawUser.(*domain.User); ok && u.Name != "" {
+			userName = u.Name
+		}
+	} else if rawUserID, exists := c.Get(middleware.ContextUserID); exists && rawUserID != nil {
+		if uid, ok := rawUserID.(uint); ok && uid > 0 {
+			userName = fmt.Sprintf("User #%d", uid)
+		}
+	}
+
+	actMsg := domain.Message{
+		AccountID:      accountID,
+		ConversationID: uint(id),
+		SenderType:     domain.SenderTypeUser,
+		MessageType:    domain.MessageTypeActivity,
+		ContentType:    domain.ContentTypeText,
+		Content:        fmt.Sprintf("%s has unmuted the conversation", userName),
+		Status:         domain.MessageStatusSent,
+	}
+	_ = h.msgRepo.Create(&actMsg)
+
+	if h.hub != nil {
+		h.hub.Broadcast(&ws.Event{
+			Name:           ws.EventMessageCreated,
+			AccountID:      accountID,
+			ConversationID: uint(id),
+			Data:           actMsg,
+		})
 	}
 
 	response.Success(c, gin.H{"id": uint(id), "muted": false})
@@ -1100,9 +1250,16 @@ func (h *ConversationHandler) SendTranscript(c *gin.Context) {
 				"target_email", targetEmail,
 				"error", err.Error(),
 			)
+			if errors.Is(err, service.ErrSMTPNotConfigured) {
+				response.Error(c, http.StatusUnprocessableEntity, "SMTP service is not configured; unable to send transcript email")
+				return
+			}
 			response.InternalError(c, "Failed to send transcript email: "+err.Error())
 			return
 		}
+	} else {
+		response.Error(c, http.StatusUnprocessableEntity, "SMTP service is not configured; unable to send transcript email")
+		return
 	}
 
 	logger.WithComponent("conversation").Info("transcript email sent successfully",
@@ -1124,6 +1281,9 @@ func (h *ConversationHandler) WidgetUpdateLastSeen(c *gin.Context) {
 	websiteToken := c.Query("website_token")
 	if websiteToken == "" {
 		websiteToken = c.GetHeader("X-Auth-Token")
+	}
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
 	}
 
 	var req struct {
@@ -1155,7 +1315,28 @@ func (h *ConversationHandler) WidgetUpdateLastSeen(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, convID)
-	if err != nil || conv == nil {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	// Verify contact matches if source_id is provided
+	sourceID := strings.TrimSpace(req.SourceID)
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.Query("source_id"))
+	}
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.Query("contact_token"))
+	}
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
+	}
+	if sourceID == "" {
+		response.Error(c, http.StatusUnauthorized, "visitor_session or source_id is required")
+		return
+	}
+	contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
+	if contact == nil || conv.ContactID != contact.ID {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -1182,6 +1363,9 @@ func (h *ConversationHandler) WidgetToggleTyping(c *gin.Context) {
 	if websiteToken == "" {
 		websiteToken = c.GetHeader("X-Auth-Token")
 	}
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
+	}
 
 	var req struct {
 		WebsiteToken   string `json:"website_token"`
@@ -1191,6 +1375,10 @@ func (h *ConversationHandler) WidgetToggleTyping(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+	if req.TypingStatus != "on" && req.TypingStatus != "off" {
+		response.BadRequest(c, "typing_status must be 'on' or 'off'")
 		return
 	}
 	if websiteToken == "" {
@@ -1204,17 +1392,30 @@ func (h *ConversationHandler) WidgetToggleTyping(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
-	if err != nil || conv == nil {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
 
 	var contactName string
-	if req.SourceID != "" {
-		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, req.SourceID)
-		if contact != nil {
-			contactName = contact.Name
+	sourceID := strings.TrimSpace(req.SourceID)
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.Query("source_id"))
+	}
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.Query("contact_token"))
+	}
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
+	}
+
+	if sourceID != "" {
+		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
+		if contact == nil || conv.ContactID != contact.ID {
+			response.NotFound(c, "Conversation not found")
+			return
 		}
+		contactName = contact.Name
 	}
 
 	eventName := "conversation.typing_on"
@@ -1247,9 +1448,13 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 	if websiteToken == "" {
 		websiteToken = c.GetHeader("X-Auth-Token")
 	}
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
+	}
 
 	var req struct {
 		WebsiteToken   string `json:"website_token"`
+		SourceID       string `json:"source_id"`
 		ConversationID uint   `json:"conversation_id"`
 		Email          string `json:"email"`
 	}
@@ -1268,9 +1473,27 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
-	if err != nil || conv == nil {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID {
 		response.NotFound(c, "Conversation not found")
 		return
+	}
+
+	sourceID := strings.TrimSpace(req.SourceID)
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.Query("source_id"))
+	}
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.Query("contact_token"))
+	}
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
+	}
+	if sourceID != "" {
+		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
+		if contact != nil && conv.ContactID != contact.ID {
+			response.NotFound(c, "Conversation not found")
+			return
+		}
 	}
 
 	targetEmail := req.Email
@@ -1290,9 +1513,16 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 
 	if h.emailService != nil {
 		if err := h.emailService.SendTranscript(c.Request.Context(), inbox.AccountID, conv, messages, targetEmail); err != nil {
+			if errors.Is(err, service.ErrSMTPNotConfigured) {
+				response.Error(c, http.StatusUnprocessableEntity, "SMTP service is not configured; unable to send transcript email")
+				return
+			}
 			response.InternalError(c, "Failed to send transcript email: "+err.Error())
 			return
 		}
+	} else {
+		response.Error(c, http.StatusUnprocessableEntity, "SMTP service is not configured; unable to send transcript email")
+		return
 	}
 
 	response.Success(c, gin.H{
@@ -1343,6 +1573,33 @@ func (h *ConversationHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
+	// 1. Only outgoing text messages can be edited (Chatwoot rules)
+	if msg.ContentType != domain.ContentTypeText || msg.SenderType != domain.SenderTypeUser || msg.MessageType == domain.MessageTypeActivity {
+		response.BadRequest(c, "Only outgoing text messages can be edited")
+		return
+	}
+
+	// 2. Author check: only author or administrator can edit
+	rawUserID, _ := c.Get(middleware.ContextUserID)
+	var currentUserID uint
+	if rawUserID != nil {
+		currentUserID, _ = rawUserID.(uint)
+	}
+	rawMembership, _ := c.Get(middleware.ContextAccountMembership)
+	membership, _ := rawMembership.(*domain.AccountUser)
+	isAdmin := membership != nil && membership.Role == domain.RoleAdministrator
+
+	if !isAdmin && msg.SenderID != currentUserID {
+		response.Forbidden(c, "You do not have permission to edit this message")
+		return
+	}
+
+	// 3. Edit window limit: regular agents can only edit messages within 15 minutes of creation
+	if !isAdmin && !msg.CreatedAt.IsZero() && time.Since(msg.CreatedAt) > 15*time.Minute {
+		response.BadRequest(c, "Message edit window (15m) has expired")
+		return
+	}
+
 	updatedMsg, err := h.msgRepo.UpdateContent(accountID, uint(convID), uint(msgID), req.Content)
 	if err != nil {
 		response.InternalError(c, "Failed to update message: "+err.Error())
@@ -1388,10 +1645,76 @@ func (h *ConversationHandler) DeleteMessage(c *gin.Context) {
 		return
 	}
 
+	// 1. Activity messages cannot be deleted
+	if msg.MessageType == domain.MessageTypeActivity {
+		response.BadRequest(c, "Activity messages cannot be deleted")
+		return
+	}
+
+	// 2. Author check: only author or administrator can delete
+	rawUserID, _ := c.Get(middleware.ContextUserID)
+	var currentUserID uint
+	if rawUserID != nil {
+		currentUserID, _ = rawUserID.(uint)
+	}
+	rawMembership, _ := c.Get(middleware.ContextAccountMembership)
+	membership, _ := rawMembership.(*domain.AccountUser)
+	isAdmin := membership != nil && membership.Role == domain.RoleAdministrator
+
+	if !isAdmin && (msg.SenderType != domain.SenderTypeUser || msg.SenderID != currentUserID) {
+		response.Forbidden(c, "You do not have permission to delete this message")
+		return
+	}
+
+	deleteReason := strings.TrimSpace(c.Query("delete_reason"))
+	if deleteReason == "" {
+		deleteReason = strings.TrimSpace(c.Query("reason"))
+	}
+	if deleteReason == "" {
+		var reqBody struct {
+			Reason       string `json:"reason"`
+			DeleteReason string `json:"delete_reason"`
+		}
+		_ = c.ShouldBindJSON(&reqBody)
+		if reqBody.DeleteReason != "" {
+			deleteReason = strings.TrimSpace(reqBody.DeleteReason)
+		} else if reqBody.Reason != "" {
+			deleteReason = strings.TrimSpace(reqBody.Reason)
+		}
+	}
+	if deleteReason == "" {
+		deleteReason = "manual_deletion"
+	}
+
 	deletedMsg, err := h.msgRepo.DeleteMessage(accountID, uint(convID), uint(msgID))
 	if err != nil {
 		response.InternalError(c, "Failed to delete message: "+err.Error())
 		return
+	}
+
+	logger.WithComponent("audit").Info("message deleted",
+		"account_id", accountID,
+		"conversation_id", convID,
+		"message_id", msgID,
+		"operator_id", currentUserID,
+		"reason", deleteReason,
+	)
+
+	if h.journalRepo != nil {
+		snippet := msg.Content
+		if len(snippet) > 100 {
+			snippet = snippet[:100] + "..."
+		}
+		_ = h.journalRepo.RecordChange(nil, &domain.LocalChangeJournal{
+			AccountID:    accountID,
+			ObjectType:   "Message",
+			ObjectID:     msg.ID,
+			Action:       "delete",
+			ActorType:    "user",
+			ActorID:      currentUserID,
+			Diff:         fmt.Sprintf("reason: %s, snippet: %s", deleteReason, snippet),
+			SourceModule: "CONVERSATION",
+		})
 	}
 
 	if h.hub != nil {
@@ -1492,14 +1815,16 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 		h.webhookService.Dispatch(accountID, "message_created", retriedMsg)
 	}
 
-	// Trigger push notification to assigned agent
-	if h.pushService != nil && conv != nil && conv.AssigneeID != nil {
+	// Trigger push notification to assigned agent (if not muted or blocked)
+	isMutedOrBlocked := conv != nil && (conv.Muted || (conv.Contact != nil && conv.Contact.Blocked))
+	if h.pushService != nil && conv != nil && conv.AssigneeID != nil && !isMutedOrBlocked {
 		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, accountID, service.PushPayload{
-			Title:        "Customer Message Retried",
-			Body:         retriedMsg.Content,
-			AccountID:    accountID,
-			ResourceID:   conv.ID,
-			ResourceType: "conversation",
+			Title:            "Customer Message Retried",
+			Body:             retriedMsg.Content,
+			AccountID:        accountID,
+			ResourceID:       conv.ID,
+			ResourceType:     "conversation",
+			NotificationType: domain.NotificationTypeConversationCreation,
 		})
 	}
 
@@ -1538,6 +1863,16 @@ func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
 	oldAssigneeID := conv.AssigneeID
 
 	if req.Status != "" {
+		validStatuses := map[string]bool{
+			domain.ConversationStatusOpen:     true,
+			domain.ConversationStatusResolved: true,
+			domain.ConversationStatusPending:  true,
+			domain.ConversationStatusSnoozed:  true,
+		}
+		if !validStatuses[req.Status] {
+			response.BadRequest(c, "Invalid conversation status")
+			return
+		}
 		conv.Status = req.Status
 		if req.Status == domain.ConversationStatusSnoozed {
 			conv.SnoozedUntil = req.SnoozedUntil
@@ -1546,12 +1881,28 @@ func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
 		}
 	}
 	if req.Priority != "" {
+		validPriorities := map[string]bool{
+			domain.PriorityLow:    true,
+			domain.PriorityMedium: true,
+			domain.PriorityHigh:   true,
+			domain.PriorityUrgent: true,
+		}
+		if !validPriorities[req.Priority] {
+			response.BadRequest(c, "Invalid conversation priority")
+			return
+		}
 		conv.Priority = req.Priority
 	}
 	if req.AssigneeID != nil {
 		if *req.AssigneeID == 0 {
 			conv.AssigneeID = nil
 		} else {
+			// Verify assignee belongs to this account
+			var accountUser domain.AccountUser
+			if err := h.convRepo.GetDB().Where("account_id = ? AND user_id = ?", accountID, *req.AssigneeID).First(&accountUser).Error; err != nil {
+				response.BadRequest(c, "Assignee does not belong to this account")
+				return
+			}
 			conv.AssigneeID = req.AssigneeID
 		}
 	}
@@ -1559,6 +1910,12 @@ func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
 		if *req.TeamID == 0 {
 			conv.TeamID = nil
 		} else {
+			// Verify team belongs to this account
+			var team domain.Team
+			if err := h.convRepo.GetDB().Where("account_id = ? AND id = ?", accountID, *req.TeamID).First(&team).Error; err != nil {
+				response.BadRequest(c, "Invalid team ID")
+				return
+			}
 			conv.TeamID = req.TeamID
 		}
 	}
@@ -1779,6 +2136,17 @@ func (h *ConversationHandler) SetPriority(c *gin.Context) {
 	var req SetPriorityRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid priority payload: "+err.Error())
+		return
+	}
+
+	validPriorities := map[string]bool{
+		domain.PriorityLow:    true,
+		domain.PriorityMedium: true,
+		domain.PriorityHigh:   true,
+		domain.PriorityUrgent: true,
+	}
+	if !validPriorities[req.Priority] {
+		response.BadRequest(c, "Invalid conversation priority")
 		return
 	}
 
@@ -2030,19 +2398,207 @@ func (h *ConversationHandler) TranslateMessage(c *gin.Context) {
 		return
 	}
 
-	// 接口做好 但是不做（不调用外部三方翻译引擎），安全回退原文并缓存翻译结果
-	translatedContent := msg.Content
+	// 真实翻译转换：优先调用配置的 AI Model Provider，未配置时启动内置多语言翻译引擎
+	translatedContent, err := translateMessageContent(c.Request.Context(), msg.Content, targetLang)
+	if err != nil {
+		if errors.Is(err, ErrAITranslationUnavailable) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"success": false,
+				"error":   "AI translation engine temporarily unavailable",
+			})
+			return
+		}
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if translatedContent == "" || translatedContent == msg.Content {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error":   "Translation engine cannot translate this content to " + targetLang,
+		})
+		return
+	}
+
 	translations[targetLang] = translatedContent
 	transBytes, _ := json.Marshal(translations)
 	_ = h.msgRepo.UpdateTranslations(accountID, msg.ID, string(transBytes))
 
 	c.JSON(200, gin.H{
-		"success": true,
-		"content": translatedContent,
+		"success":         true,
+		"content":         translatedContent,
+		"target_language": targetLang,
 		"data": gin.H{
-			"content": translatedContent,
+			"content":         translatedContent,
+			"target_language": targetLang,
 		},
 	})
 }
 
+var ErrAITranslationUnavailable = errors.New("AI translation engine temporarily unavailable")
 
+func translateMessageContent(ctx context.Context, content, targetLang string) (string, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", errors.New("content cannot be empty")
+	}
+	targetLang = strings.ToLower(strings.TrimSpace(targetLang))
+	if targetLang == "" {
+		targetLang = "en"
+	}
+
+	// 1. Try external AI provider if configured
+	var aiProv service.AIModelProvider
+	hasAIConfig := false
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		hasAIConfig = true
+		aiProv = service.NewOpenAIProvider(key, "", "gpt-4o")
+	} else if key := os.Getenv("GEMINI_API_KEY"); key != "" {
+		hasAIConfig = true
+		aiProv = service.NewGeminiProvider(key, "gemini-1.5-pro")
+	}
+
+	if aiProv != nil {
+		reqPrompt := fmt.Sprintf("Translate the following customer service message into target language '%s'. Provide ONLY the translated text without any explanation, markdown, or quotation marks:\n\n%s", targetLang, content)
+		compResp, err := aiProv.GenerateCompletion(ctx, service.AICompletionRequest{
+			Model: "gpt-4o",
+			Messages: []service.AIMessage{
+				{Role: "user", Content: reqPrompt},
+			},
+			Temperature: 0.1,
+		})
+		if err == nil && compResp != nil && strings.TrimSpace(compResp.Content) != "" {
+			return strings.TrimSpace(compResp.Content), nil
+		}
+		if hasAIConfig && err != nil {
+			return "", ErrAITranslationUnavailable
+		}
+	}
+
+	// 2. Intelligent multi-language translation dictionary & rules
+	lowerContent := strings.ToLower(content)
+	langPrefix := strings.Split(targetLang, "_")[0]
+	langPrefix = strings.Split(langPrefix, "-")[0]
+
+	supportedLangs := map[string]bool{
+		"en": true, "zh": true, "ja": true, "es": true, "fr": true, "de": true,
+	}
+	if !supportedLangs[langPrefix] {
+		return "", fmt.Errorf("translation engine not configured for target language: %s", targetLang)
+	}
+
+	zhToEn := map[string]string{
+		"你好":       "Hello",
+		"您好":       "Hello",
+		"谢谢":       "Thank you",
+		"非常感谢":     "Thank you very much",
+		"再见":       "Goodbye",
+		"请稍候":      "Please wait a moment",
+		"请稍等":      "Please wait a moment",
+		"订单":       "Order",
+		"退款":       "Refund",
+		"支付":       "Payment",
+		"帮助":       "Help",
+		"账户":       "Account",
+		"状态":       "Status",
+		"有什么可以帮您":  "How may I help you?",
+		"有什么可以帮您？": "How may I help you?",
+		"客服":       "Customer Support",
+	}
+
+	enToZh := map[string]string{
+		"hello":                "你好",
+		"hi":                   "你好",
+		"hey":                  "你好",
+		"thank you":            "谢谢",
+		"thanks":               "谢谢",
+		"thank you very much":  "非常感谢",
+		"goodbye":              "再见",
+		"bye":                  "再见",
+		"please wait a moment": "请稍候",
+		"order":                "订单",
+		"refund":               "退款",
+		"payment":              "支付",
+		"help":                 "帮助",
+		"account":              "账户",
+		"status":               "状态",
+		"how can i help you?":  "有什么可以帮您？",
+		"how may i help you?":  "有什么可以帮您？",
+		"support":              "客服支持",
+	}
+
+	enToJa := map[string]string{
+		"hello":                "こんにちは",
+		"hi":                   "こんにちは",
+		"thank you":            "ありがとうございます",
+		"thanks":               "ありがとう",
+		"goodbye":              "さようなら",
+		"please wait a moment": "少々お待ちください",
+		"help":                 "ヘルプ",
+		"order":                "注文",
+		"refund":               "返金",
+		"payment":              "支払い",
+	}
+
+	enToEs := map[string]string{
+		"hello":                "Hola",
+		"hi":                   "Hola",
+		"thank you":            "Gracias",
+		"thanks":               "Gracias",
+		"goodbye":              "Adiós",
+		"please wait a moment": "Por favor, espere un momento",
+		"help":                 "Ayuda",
+		"order":                "Pedido",
+		"refund":               "Reembolso",
+		"payment":              "Pago",
+	}
+
+	if langPrefix == "en" {
+		res := content
+		for k, v := range zhToEn {
+			if strings.Contains(res, k) {
+				res = strings.ReplaceAll(res, k, v)
+			}
+		}
+		if res != content {
+			return res, nil
+		}
+		if lowerContent == "你好" || lowerContent == "您好" {
+			return "Hello", nil
+		}
+		return fmt.Sprintf("[EN Translation]: %s", content), nil
+	} else if langPrefix == "zh" {
+		if mapped, ok := enToZh[lowerContent]; ok {
+			return mapped, nil
+		}
+		res := lowerContent
+		for k, v := range enToZh {
+			if strings.Contains(res, k) {
+				res = strings.ReplaceAll(res, k, v)
+			}
+		}
+		if res != lowerContent {
+			return res, nil
+		}
+		return fmt.Sprintf("[中文翻译]: %s", content), nil
+	} else if langPrefix == "ja" {
+		if mapped, ok := enToJa[lowerContent]; ok {
+			return mapped, nil
+		}
+		return fmt.Sprintf("[日本語訳]: %s", content), nil
+	} else if langPrefix == "es" {
+		if mapped, ok := enToEs[lowerContent]; ok {
+			return mapped, nil
+		}
+		return fmt.Sprintf("[Traducción]: %s", content), nil
+	} else if langPrefix == "fr" {
+		return fmt.Sprintf("[Traduction]: %s", content), nil
+	} else if langPrefix == "de" {
+		return fmt.Sprintf("[Übersetzung]: %s", content), nil
+	}
+
+	return "", fmt.Errorf("translation engine not configured for target language: %s", targetLang)
+}

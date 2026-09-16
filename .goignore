@@ -1,0 +1,7 @@
+# Exclude frontend node_modules and web assets from Go toolchain scanning
+node_modules/
+Chatwoot客服系统界面原型/node_modules/
+.next/
+.wrangler/
+dist/
+build/

@@ -76,7 +76,7 @@ func (r *WidgetRepository) ListContactConversations(ctx context.Context, account
 
 	offset := (page - 1) * pageSize
 	err := query.Preload("Messages", func(db *gorm.DB) *gorm.DB {
-		return db.Order("messages.id ASC")
+		return db.Where("messages.private = ?", false).Order("messages.id ASC")
 	}).Preload("Assignee").Preload("Labels").
 		Order("id DESC").
 		Offset(offset).Limit(pageSize).
@@ -94,7 +94,7 @@ func (r *WidgetRepository) GetConversationDetail(ctx context.Context, accountID,
 	err := r.db.WithContext(ctx).
 		Where("account_id = ? AND inbox_id = ? AND contact_id = ? AND id = ?", accountID, inboxID, contactID, conversationID).
 		Preload("Messages", func(db *gorm.DB) *gorm.DB {
-			return db.Order("messages.id ASC")
+			return db.Where("messages.private = ?", false).Order("messages.id ASC")
 		}).Preload("Assignee").Preload("Labels").
 		First(&conv).Error
 

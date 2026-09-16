@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -239,7 +241,19 @@ func (r *ConversationRepository) ToggleMute(accountID, id uint, muted bool) erro
 // Delete cascades deletion of conversation and associated records
 func (r *ConversationRepository) Delete(accountID, id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		// Find message IDs to delete attachments
+		// 1. Find message IDs and remove physical attachment files from disk
+		var attachments []domain.Attachment
+		tx.Table("attachments").
+			Joins("INNER JOIN messages ON attachments.message_id = messages.id").
+			Where("messages.account_id = ? AND messages.conversation_id = ?", accountID, id).
+			Find(&attachments)
+		for _, att := range attachments {
+			if strings.HasPrefix(att.DataURL, "/uploads/") || strings.HasPrefix(att.DataURL, "uploads/") {
+				cleanPath := strings.TrimPrefix(att.DataURL, "/")
+				_ = os.Remove(cleanPath)
+			}
+		}
+
 		var msgIDs []uint
 		tx.Model(&domain.Message{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Pluck("id", &msgIDs)
 		if len(msgIDs) > 0 {
@@ -248,35 +262,75 @@ func (r *ConversationRepository) Delete(accountID, id uint) error {
 			}
 		}
 
-		// Delete messages
+		// Also remove directory uploads/account_X/conv_Y if exists
+		convUploadDir := filepath.Join("uploads", fmt.Sprintf("account_%d", accountID), fmt.Sprintf("conv_%d", id))
+		_ = os.RemoveAll(convUploadDir)
+
+		// 2. Delete messages
 		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.Message{}).Error; err != nil {
 			return err
 		}
 
-		// Delete conversation labels
+		// 3. Delete conversation labels
 		if err := tx.Where("conversation_id = ?", id).Delete(&domain.ConversationLabel{}).Error; err != nil {
 			return err
 		}
 
-		// Delete conversation participants
+		// 4. Delete conversation participants
 		if err := tx.Where("conversation_id = ?", id).Delete(&domain.ConversationParticipant{}).Error; err != nil {
 			return err
 		}
 
-		// Delete draft messages
+		// 5. Delete draft messages
 		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.DraftMessage{}).Error; err != nil {
 			return err
 		}
 
-		// Delete applied SLAs & events
+		// 6. Delete applied SLAs & events
 		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.AppliedSLA{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.SLAEvent{}).Error; err != nil {
 			return err
 		}
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.SLABreachLog{}).Error
 
-		// Delete conversation
+		// 7. Delete CSAT survey responses
+		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.CSATSurvey{}).Error; err != nil {
+			return err
+		}
+
+		// 8. Delete / Unlink Calls and ICE Candidates
+		var callIDs []uint
+		tx.Model(&domain.Call{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Pluck("id", &callIDs)
+		if len(callIDs) > 0 {
+			_ = tx.Where("call_id IN (?)", callIDs).Delete(&domain.CallICECandidate{}).Error
+			_ = tx.Where("account_id = ? AND id IN (?)", accountID, callIDs).Delete(&domain.Call{}).Error
+		}
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.Conference{}).Error
+
+		// 9. Unlink Tickets (preserve ticket but nullify conversation reference to prevent dangling foreign key)
+		_ = tx.Model(&domain.Ticket{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Update("conversation_id", nil).Error
+
+		// 10. Delete Widget Events
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.WidgetEvent{}).Error
+
+		// 11. Delete Copilot Threads
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.CopilotThread{}).Error
+
+		// 12. Delete Email Logs
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.EmailLog{}).Error
+
+		// 13. Delete Campaign Deliveries
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.CampaignDelivery{}).Error
+
+		// 14. Delete Reporting Events
+		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.ReportingEvent{}).Error
+
+		// 15. Delete Order associations if any
+		_ = tx.Model(&domain.Order{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Update("conversation_id", nil).Error
+
+		// 16. Delete conversation
 		res := tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Conversation{})
 		if res.Error != nil {
 			return res.Error

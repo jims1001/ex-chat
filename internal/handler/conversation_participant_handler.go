@@ -26,24 +26,22 @@ type RemoveParticipantReq struct {
 	UserIDs []uint `json:"user_ids"`
 }
 
-// verifyConversationBelongsToAccount checks cross-tenant boundary if conversation exists
+// verifyConversationBelongsToAccount checks cross-tenant boundary and ensures conversation exists
 func (h *AdvancedHandler) verifyConversationBelongsToAccount(c *gin.Context, accID, convID, operatorID uint, action string) bool {
 	if accID == 0 || convID == 0 {
-		return true
+		response.NotFound(c, "Conversation not found")
+		return false
 	}
 	var conv domain.Conversation
-	if err := h.db.WithContext(c.Request.Context()).Where("id = ?", convID).First(&conv).Error; err == nil {
-		if conv.AccountID != accID {
-			logger.WithComponent("conversation_participant").Warn("conversation access denied (cross-tenant violation)",
-				"action", action,
-				"account_id", accID,
-				"conversation_id", convID,
-				"actual_account_id", conv.AccountID,
-				"operator_id", operatorID,
-			)
-			response.NotFound(c, "Conversation not found")
-			return false
-		}
+	if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND account_id = ?", convID, accID).First(&conv).Error; err != nil {
+		logger.WithComponent("conversation_participant").Warn("conversation access denied or not found",
+			"action", action,
+			"account_id", accID,
+			"conversation_id", convID,
+			"operator_id", operatorID,
+		)
+		response.NotFound(c, "Conversation not found")
+		return false
 	}
 	return true
 }

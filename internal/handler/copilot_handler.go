@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -118,31 +120,45 @@ func (h *CopilotHandler) ReplySuggestions(c *gin.Context) {
 		}
 	}
 
-	// 3. Fallback standard courteous suggestions
-	if len(suggestions) == 0 {
-		suggestions = append(suggestions,
-			ReplySuggestion{
-				Reply:      "您好！已收到您反馈的问题，正在为您核实处理，请您稍候。",
-				Confidence: 0.75,
-				Source:     "Heuristic Copilot",
+	// 3. Attempt AI model completion if configured
+	var aiProv service.AIModelProvider
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		aiProv = service.NewOpenAIProvider(key, "", "gpt-4o")
+	} else if key := os.Getenv("GEMINI_API_KEY"); key != "" {
+		aiProv = service.NewGeminiProvider(key, "gemini-1.5-pro")
+	}
+
+	aiConfigured := aiProv != nil
+	if aiConfigured && lastIncomingText != "" {
+		reqPrompt := fmt.Sprintf("请根据客户最新发来的消息：“%s”，提供一条专业、简明、礼貌的客服回复建议。", lastIncomingText)
+		compResp, err := aiProv.GenerateCompletion(c.Request.Context(), service.AICompletionRequest{
+			Model: "gpt-4o",
+			Messages: []service.AIMessage{
+				{Role: "user", Content: reqPrompt},
 			},
-			ReplySuggestion{
-				Reply:      "非常抱歉给您带来不便，请问您可以提供更多具体的订单号或详细信息吗？以便我们尽快协助您。",
-				Confidence: 0.70,
-				Source:     "Heuristic Copilot",
-			},
-		)
+		})
+		if err == nil && compResp != nil && strings.TrimSpace(compResp.Content) != "" {
+			suggestions = append([]ReplySuggestion{
+				{
+					Reply:      strings.TrimSpace(compResp.Content),
+					Confidence: 0.95,
+					Source:     fmt.Sprintf("AI (%s)", aiProv.Name()),
+				},
+			}, suggestions...)
+		}
 	}
 
 	logger.WithComponent("copilot").Info("generated reply suggestions",
 		"account_id", accID,
 		"conversation_id", convID,
 		"suggestions_count", len(suggestions),
+		"ai_configured", aiConfigured,
 	)
 
 	response.Success(c, gin.H{
 		"conversation_id": convID,
 		"suggestions":     suggestions,
+		"ai_configured":   aiConfigured,
 	})
 }
 
@@ -162,11 +178,13 @@ func (h *CopilotHandler) SummarizeConversation(c *gin.Context) {
 			"summary":         "该会话暂无充分消息进行AI提炼与摘要。",
 			"sentiment":       "neutral",
 			"key_points":      []string{},
+			"source":          "rule-heuristic",
+			"ai_configured":   false,
 		})
 		return
 	}
 
-	// Heuristic summarization & Sentiment analysis based on message history
+	// Sentiment & key points heuristic extraction
 	sentiment := "neutral"
 	keyPoints := []string{}
 	var fullText strings.Builder
@@ -183,7 +201,36 @@ func (h *CopilotHandler) SummarizeConversation(c *gin.Context) {
 		sentiment = "positive"
 	}
 
-	summaryText := fmt.Sprintf("会话共计 %d 条消息沟通。客户情绪评估为【%s】，最新诉求为：“%s”。目前正处于处理链路中。",
+	// Check if AI model is configured
+	var aiProv service.AIModelProvider
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		aiProv = service.NewOpenAIProvider(key, "", "gpt-4o")
+	} else if key := os.Getenv("GEMINI_API_KEY"); key != "" {
+		aiProv = service.NewGeminiProvider(key, "gemini-1.5-pro")
+	}
+
+	if aiProv != nil {
+		prompt := fmt.Sprintf("请对以下会话消息进行提炼与摘要并判断客户情绪（positive/neutral/negative）：\n%s", fullText.String())
+		compResp, err := aiProv.GenerateCompletion(c.Request.Context(), service.AICompletionRequest{
+			Model: "gpt-4o",
+			Messages: []service.AIMessage{
+				{Role: "user", Content: prompt},
+			},
+		})
+		if err == nil && compResp != nil && strings.TrimSpace(compResp.Content) != "" {
+			response.Success(c, gin.H{
+				"conversation_id": convID,
+				"summary":         strings.TrimSpace(compResp.Content),
+				"sentiment":       sentiment,
+				"key_points":      keyPoints,
+				"source":          aiProv.Name(),
+				"ai_configured":   true,
+			})
+			return
+		}
+	}
+
+	summaryText := fmt.Sprintf("【AI 模型未配置】未接入 OpenAI/Gemini 大语言模型。会话共计 %d 条消息沟通。客户情绪评估为【%s】，最新诉求为：“%s”。目前正处于处理链路中。",
 		len(messages), sentiment, messages[0].Content)
 
 	logger.WithComponent("copilot").Info("summarized conversation",
@@ -191,6 +238,7 @@ func (h *CopilotHandler) SummarizeConversation(c *gin.Context) {
 		"conversation_id", convID,
 		"messages_count", len(messages),
 		"sentiment", sentiment,
+		"ai_configured", false,
 	)
 
 	response.Success(c, gin.H{
@@ -198,6 +246,8 @@ func (h *CopilotHandler) SummarizeConversation(c *gin.Context) {
 		"summary":         summaryText,
 		"sentiment":       sentiment,
 		"key_points":      keyPoints,
+		"source":          "rule-heuristic",
+		"ai_configured":   false,
 	})
 }
 
@@ -681,7 +731,17 @@ func (h *CopilotHandler) Playground(c *gin.Context) {
 	}
 
 	// 5. Invoke AI provider
-	aiProv := service.GetAIProvider(assistant.Model, "", assistant.Model)
+	var apiKey string
+	if assistant.Config != "" {
+		var cfg map[string]any
+		if json.Unmarshal([]byte(assistant.Config), &cfg) == nil {
+			if keyVal, ok := cfg["api_key"].(string); ok {
+				apiKey = keyVal
+			}
+		}
+	}
+
+	aiProv := service.GetAIProvider(assistant.Model, apiKey, assistant.Model)
 	completionResp, err := aiProv.GenerateCompletion(c.Request.Context(), service.AICompletionRequest{
 		Model:    assistant.Model,
 		Messages: aiMessages,
@@ -705,12 +765,16 @@ func (h *CopilotHandler) Playground(c *gin.Context) {
 			"total_tokens":      completionResp.TotalTokens,
 		}
 	} else {
-		replyText = fmt.Sprintf("您好！已收到您的消息：“%s”。我正在为您查询相关解答，请稍候。", content)
-		usage = map[string]int{
-			"prompt_tokens":     len(content) + 20,
-			"completion_tokens": len(replyText) + 10,
-			"total_tokens":      len(content) + len(replyText) + 30,
+		if errors.Is(err, service.ErrAPIKeyMissing) || errors.Is(err, service.ErrModelNotConfigured) {
+			response.Error(c, http.StatusUnprocessableEntity, fmt.Sprintf("AI 助手配置的模型 [%s] 未配置或缺少 API Key，无法生成智能回答", assistant.Model))
+			return
 		}
+		if err != nil {
+			response.Error(c, http.StatusInternalServerError, fmt.Sprintf("AI 模型调用失败: %s", err.Error()))
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, "AI 模型未能生成有效回复")
+		return
 	}
 
 	// 6. Record quota
@@ -1107,6 +1171,10 @@ func (h *CopilotHandler) GenerateCompletion(c *gin.Context) {
 		},
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrAPIKeyMissing) || errors.Is(err, service.ErrModelNotConfigured) {
+			response.Error(c, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -1225,22 +1293,156 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 
 	var result any
 	consumedTokens := 20
+	now := time.Now().UTC()
+
 	switch req.ToolName {
-	case "order_lookup":
+	case "order_lookup", "query_order":
 		orderID, _ := req.Params["order_id"].(string)
-		result = gin.H{
-			"order_id": orderID,
-			"status":   "shipped",
-			"carrier":  "FedEx",
-			"tracking": "FX-9823412",
+		if orderID == "" {
+			if o, ok := req.Params["order_no"].(string); ok && o != "" {
+				orderID = o
+			}
 		}
+		if orderID == "" {
+			response.BadRequest(c, "order_id parameter is required")
+			return
+		}
+
+		var order domain.Order
+		err := h.db.Where("account_id = ? AND (order_id = ? OR tracking_number = ?)", accID, orderID, orderID).First(&order).Error
+		if err != nil {
+			response.NotFound(c, fmt.Sprintf("Order '%s' not found", orderID))
+			return
+		}
+		result = gin.H{
+			"order_id":         order.OrderID,
+			"customer_name":    order.CustomerName,
+			"amount_yuan":      order.AmountYuan,
+			"status":           order.OrderStatus,
+			"carrier":          order.Carrier,
+			"tracking":         order.TrackingNumber,
+			"shipping_address": order.ShippingAddress,
+			"warehouse_synced": order.WarehouseSynced,
+			"created_at":       order.CreatedAt.Format("2006-01-02 15:04:05"),
+		}
+
+	case "update_shipping_address":
+		orderID, _ := req.Params["order_id"].(string)
+		newAddr, _ := req.Params["new_address"].(string)
+		if orderID == "" || newAddr == "" {
+			response.BadRequest(c, "order_id and new_address parameters are required")
+			return
+		}
+		var order domain.Order
+		err := h.db.Where("account_id = ? AND order_id = ?", accID, orderID).First(&order).Error
+		if err != nil {
+			response.NotFound(c, fmt.Sprintf("Order '%s' not found; cannot update shipping address", orderID))
+			return
+		}
+		order.ShippingAddress = newAddr
+		order.WarehouseSynced = true
+		order.SyncedAt = &now
+		order.UpdatedAt = now
+		_ = h.db.Save(&order)
+
+		result = gin.H{
+			"success":          true,
+			"action":           "update_shipping_address",
+			"order_id":         orderID,
+			"updated_address":  newAddr,
+			"sync_status":      "synced_to_warehouse",
+			"warehouse_synced": true,
+			"synced_at":        now.Format(time.RFC3339),
+			"message":          "收货地址修改成功，已持久化至业务系统并实时同步仓库",
+		}
+
+	case "create_ticket":
+		title, _ := req.Params["title"].(string)
+		if title == "" {
+			title = "售后加急工单"
+		}
+		var count int64
+		h.db.Model(&domain.Ticket{}).Where("account_id = ?", accID).Count(&count)
+		ticketNo := fmt.Sprintf("TICK-%s-%04d", now.Format("20060102"), count+1)
+		dueAt := now.Add(12 * time.Hour)
+		ticket := domain.Ticket{
+			AccountID:     uint(accID),
+			TicketNumber:  ticketNo,
+			Title:         title,
+			Status:        "open",
+			Priority:      "high",
+			AssignedGroup: "二线技术支持组",
+			DueAt:         &dueAt,
+			SLAStatus:     "normal",
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		_ = h.db.Create(&ticket)
+		_ = h.db.Create(&domain.TicketActivity{
+			AccountID: ticket.AccountID,
+			TicketID:  ticket.ID,
+			Action:    "created",
+			Details:   fmt.Sprintf(`{"creator":"AI Copilot","title":%q}`, ticket.Title),
+			CreatedAt: now,
+		})
+		result = gin.H{
+			"ticket_id":      ticket.TicketNumber,
+			"id":             ticket.ID,
+			"title":          ticket.Title,
+			"status":         ticket.Status,
+			"priority":       ticket.Priority,
+			"assigned_group": ticket.AssignedGroup,
+			"created_at":     ticket.CreatedAt.Format("2006-01-02 15:04:05"),
+		}
+
+	case "lookup_logistics", "query_logistics":
+		trackingNo, _ := req.Params["tracking_number"].(string)
+		orderID, _ := req.Params["order_id"].(string)
+		if trackingNo == "" && orderID == "" {
+			response.BadRequest(c, "tracking_number or order_id parameter is required for logistics lookup")
+			return
+		}
+		var order domain.Order
+		err := h.db.Where("account_id = ? AND (tracking_number = ? OR order_id = ?)", accID, trackingNo, orderID).First(&order).Error
+		if err != nil {
+			response.NotFound(c, "Logistics record not found for provided tracking_number or order_id")
+			return
+		}
+		var checkpoints []gin.H
+		if order.CheckpointsJSON != "" {
+			_ = json.Unmarshal([]byte(order.CheckpointsJSON), &checkpoints)
+		}
+		if checkpoints == nil {
+			checkpoints = []gin.H{}
+		}
+		result = gin.H{
+			"tracking_number":  order.TrackingNumber,
+			"carrier":          order.Carrier,
+			"status":           order.OrderStatus,
+			"shipping_address": order.ShippingAddress,
+			"warehouse_synced": order.WarehouseSynced,
+			"checkpoints":      checkpoints,
+		}
+
 	case "kb_search":
 		kw, _ := req.Params["keyword"].(string)
 		var chunks []domain.CaptainDocChunk
 		_ = h.db.Where("account_id = ? AND LOWER(content) LIKE ?", accID, "%"+strings.ToLower(kw)+"%").Limit(3).Find(&chunks)
 		result = chunks
+
 	default:
-		result = gin.H{"executed": true, "tool": req.ToolName, "output": "Tool executed successfully"}
+		var customTool domain.AICustomTool
+		if err := h.db.Where("account_id = ? AND name = ?", accID, req.ToolName).First(&customTool).Error; err == nil && strings.TrimSpace(customTool.EndpointURL) != "" {
+			out, err := executeHTTPTool(&customTool, req.Params, 10*time.Second)
+			if err != nil {
+				response.Error(c, http.StatusBadGateway, fmt.Sprintf("Tool execution failed: %v", err))
+				return
+			}
+			result = out
+		} else {
+			response.BadRequest(c, fmt.Sprintf("Tool '%s' is not implemented or has no valid endpoint configured", req.ToolName))
+			return
+		}
 	}
 
 	quota.UsedRequests++

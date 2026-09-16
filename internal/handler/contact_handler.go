@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/security"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -44,7 +47,7 @@ type CreateContactRequest struct {
 	Email            string   `json:"email"`
 	PhoneNumber      string   `json:"phone_number"`
 	Identifier       string   `json:"identifier"`
-	CustomAttributes string   `json:"custom_attributes"`
+	CustomAttributes any      `json:"custom_attributes"`
 	CompanyID        *uint    `json:"company_id"`
 	Labels           []string `json:"labels"`
 }
@@ -54,7 +57,7 @@ type UpdateContactRequest struct {
 	Email            string   `json:"email"`
 	PhoneNumber      string   `json:"phone_number"`
 	Identifier       string   `json:"identifier"`
-	CustomAttributes string   `json:"custom_attributes"`
+	CustomAttributes any      `json:"custom_attributes"`
 	CompanyID        *uint    `json:"company_id"`
 	Labels           []string `json:"labels"`
 }
@@ -70,7 +73,24 @@ type WidgetContactRequest struct {
 	Email            string `json:"email"`
 	PhoneNumber      string `json:"phone_number"`
 	Identifier       string `json:"identifier"`
-	CustomAttributes string `json:"custom_attributes"`
+	CustomAttributes any    `json:"custom_attributes"`
+}
+
+// normalizeCustomAttributes accepts both the legacy JSON-string form and the
+// object/array form used by Chatwoot clients, while retaining the existing
+// text-backed persistence format.
+func normalizeCustomAttributes(value any) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func (h *ContactHandler) ListContacts(c *gin.Context) {
@@ -140,7 +160,7 @@ func (h *ContactHandler) CreateContact(c *gin.Context) {
 		Email:            req.Email,
 		PhoneNumber:      req.PhoneNumber,
 		Identifier:       req.Identifier,
-		CustomAttributes: req.CustomAttributes,
+		CustomAttributes: normalizeCustomAttributes(req.CustomAttributes),
 		CompanyID:        req.CompanyID,
 	}
 
@@ -227,8 +247,8 @@ func (h *ContactHandler) UpdateContact(c *gin.Context) {
 	if req.Identifier != "" {
 		contact.Identifier = req.Identifier
 	}
-	if req.CustomAttributes != "" {
-		contact.CustomAttributes = req.CustomAttributes
+	if customAttributes := normalizeCustomAttributes(req.CustomAttributes); customAttributes != "" {
+		contact.CustomAttributes = customAttributes
 	}
 	if req.CompanyID != nil {
 		if *req.CompanyID > 0 {
@@ -283,6 +303,10 @@ func (h *ContactHandler) DeleteContact(c *gin.Context) {
 	}
 
 	if err := h.contactRepo.Delete(accountID, uint(contactID)); err != nil {
+		if errors.Is(err, repository.ErrContactHasActiveConversations) {
+			response.BadRequest(c, "Cannot delete contact with active conversations. Please resolve them first.")
+			return
+		}
 		logger.WithComponent("contact").Error("failed to delete contact",
 			"account_id", accountID,
 			"contact_id", contactID,
@@ -344,6 +368,29 @@ func (h *ContactHandler) MergeContact(c *gin.Context) {
 		"mergee_contact_id", req.MergeeContactID,
 	)
 
+	if h.db != nil {
+		userID := c.GetUint(middleware.ContextUserID)
+		_ = repository.NewJournalRepository(h.db).RecordChange(h.db, &domain.LocalChangeJournal{
+			AccountID:     accountID,
+			EntityType:    "Contact",
+			EntityID:      req.BaseContactID,
+			ObjectType:    "Contact",
+			ObjectID:      req.BaseContactID,
+			Action:        "contact_merge",
+			ActorType:     "User",
+			ActorID:       userID,
+			Reason:        fmt.Sprintf("Merged contact #%d into #%d", req.MergeeContactID, req.BaseContactID),
+			ChangedFields: fmt.Sprintf(`{"mergee_contact_id":%d,"base_contact_id":%d}`, req.MergeeContactID, req.BaseContactID),
+			Result:        "applied",
+			OccurredAt:    time.Now().UTC(),
+		})
+	}
+
+	updatedBase, err := h.contactRepo.FindByID(accountID, req.BaseContactID)
+	if err == nil && updatedBase != nil {
+		baseContact = updatedBase
+	}
+
 	response.Success(c, baseContact)
 }
 
@@ -379,7 +426,7 @@ func (h *ContactHandler) WidgetIdentify(c *gin.Context) {
 			Email:            strings.ToLower(strings.TrimSpace(req.Email)),
 			PhoneNumber:      req.PhoneNumber,
 			Identifier:       req.Identifier,
-			CustomAttributes: req.CustomAttributes,
+			CustomAttributes: normalizeCustomAttributes(req.CustomAttributes),
 		}
 		if newContact.Name == "" {
 			newContact.Name = "Visitor " + req.SourceID[:min(8, len(req.SourceID))]
@@ -404,8 +451,8 @@ func (h *ContactHandler) WidgetIdentify(c *gin.Context) {
 			contact.PhoneNumber = req.PhoneNumber
 			updated = true
 		}
-		if req.CustomAttributes != "" {
-			contact.CustomAttributes = req.CustomAttributes
+		if customAttributes := normalizeCustomAttributes(req.CustomAttributes); customAttributes != "" {
+			contact.CustomAttributes = customAttributes
 			updated = true
 		}
 		if updated {
@@ -595,16 +642,16 @@ func (h *ContactHandler) ExportContacts(c *gin.Context) {
 			case "id":
 				row = append(row, strconv.FormatUint(uint64(ct.ID), 10))
 			case "name":
-				row = append(row, ct.Name)
+				row = append(row, security.SanitizeCSVCell(ct.Name))
 			case "email":
-				row = append(row, ct.Email)
+				row = append(row, security.SanitizeCSVCell(ct.Email))
 			case "phone_number", "phone":
-				row = append(row, ct.PhoneNumber)
+				row = append(row, security.SanitizeCSVCell(ct.PhoneNumber))
 			case "identifier":
-				row = append(row, ct.Identifier)
+				row = append(row, security.SanitizeCSVCell(ct.Identifier))
 			case "company":
 				if ct.Company != nil {
-					row = append(row, ct.Company.Name)
+					row = append(row, security.SanitizeCSVCell(ct.Company.Name))
 				} else {
 					row = append(row, "")
 				}
@@ -613,11 +660,11 @@ func (h *ContactHandler) ExportContacts(c *gin.Context) {
 				for _, l := range ct.Labels {
 					lNames = append(lNames, l.Title)
 				}
-				row = append(row, strings.Join(lNames, "; "))
+				row = append(row, security.SanitizeCSVCell(strings.Join(lNames, "; ")))
 			case "created_at":
 				row = append(row, ct.CreatedAt.Format("2006-01-02 15:04:05"))
 			case "custom_attributes":
-				row = append(row, ct.CustomAttributes)
+				row = append(row, security.SanitizeCSVCell(ct.CustomAttributes))
 			default:
 				row = append(row, "")
 			}
@@ -773,12 +820,22 @@ func (h *ContactHandler) ImportContacts(c *gin.Context) {
 	// 1. Check if multipart form upload
 	contentType := c.GetHeader("Content-Type")
 	if strings.Contains(contentType, "multipart/form-data") {
-		file, _, err := c.Request.FormFile("import_file")
+		fileHeader, err := c.FormFile("import_file")
 		if err != nil {
-			file, _, err = c.Request.FormFile("file")
+			fileHeader, err = c.FormFile("file")
 		}
 		if err != nil {
 			response.BadRequest(c, "No file uploaded: "+err.Error())
+			return
+		}
+		if fileHeader.Size > 10*1024*1024 {
+			response.BadRequest(c, "File size exceeds 10MB limit")
+			return
+		}
+
+		file, err := fileHeader.Open()
+		if err != nil {
+			response.BadRequest(c, "Failed to open uploaded file: "+err.Error())
 			return
 		}
 		defer file.Close()
@@ -791,6 +848,10 @@ func (h *ContactHandler) ImportContacts(c *gin.Context) {
 		}
 		if len(records) < 2 {
 			response.BadRequest(c, "CSV must contain at least header and one data row")
+			return
+		}
+		if len(records)-1 > 5000 {
+			response.BadRequest(c, "Import exceeds maximum limit of 5000 contacts per batch")
 			return
 		}
 
@@ -850,6 +911,11 @@ func (h *ContactHandler) ImportContacts(c *gin.Context) {
 
 	if len(contactsToImport) == 0 {
 		response.BadRequest(c, "No valid contacts found in import payload")
+		return
+	}
+
+	if len(contactsToImport) > 5000 {
+		response.BadRequest(c, "Import exceeds maximum limit of 5000 contacts per batch")
 		return
 	}
 

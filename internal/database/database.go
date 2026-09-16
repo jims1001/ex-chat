@@ -8,6 +8,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	pkglogger "github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -15,6 +16,11 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	var dialector gorm.Dialector
 
 	switch cfg.DBDriver {
+	case "postgres", "postgresql":
+		if cfg.DBDSN == "" {
+			return nil, fmt.Errorf("DB_DSN is required when DB_DRIVER is postgres")
+		}
+		dialector = postgres.Open(cfg.DBDSN)
 	case "sqlite":
 		dialector = sqlite.Open(cfg.DBPath)
 	default:
@@ -139,5 +145,21 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.AICustomTool{},
 		&domain.AIToolExecutionLog{},
 		&domain.WidgetEvent{},
+		&domain.Order{},
+		&domain.Ticket{},
+		&domain.TicketComment{},
+		&domain.TicketActivity{},
+		&domain.TicketStatusHistory{},
+		&domain.TicketAttachment{},
+		&domain.TicketWatcher{},
+		&domain.AutomationRuleExecution{},
+		&domain.QAScorecard{},
+		&domain.QACriterion{},
+		&domain.QASamplingRule{},
+		&domain.QATask{},
+		&domain.QAEvaluationScore{},
+		&domain.QAAppeal{},
+		&domain.QAAppealActivity{},
+		&domain.InboxMessageTemplate{},
 	)
 }

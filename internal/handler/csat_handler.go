@@ -2,11 +2,15 @@ package handler
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
+	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
@@ -16,12 +20,18 @@ import (
 
 // CSATHandler manages CSAT survey details, moderation, report generation and lifecycle
 type CSATHandler struct {
-	csatRepo *repository.CSATExtensionRepository
+	csatRepo  *repository.CSATExtensionRepository
+	jwtSecret string
 }
 
 // NewCSATHandler creates a new handler instance
 func NewCSATHandler(csatRepo *repository.CSATExtensionRepository) *CSATHandler {
 	return &CSATHandler{csatRepo: csatRepo}
+}
+
+// SetJWTSecret sets the secret key used for signing visitor tokens
+func (h *CSATHandler) SetJWTSecret(secret string) {
+	h.jwtSecret = secret
 }
 
 func (h *CSATHandler) getAccountID(c *gin.Context) uint {
@@ -44,7 +54,7 @@ func (h *CSATHandler) getUserID(c *gin.Context) uint {
 			return u
 		}
 	}
-	return 1
+	return 0
 }
 
 // ListSurveys lists CSAT surveys with filtering and pagination
@@ -172,6 +182,9 @@ func (h *CSATHandler) ReviewSurvey(c *gin.Context) {
 	}
 
 	reviewerID := h.getUserID(c)
+	if reviewerID == 0 {
+		reviewerID = 1
+	}
 	updated, err := h.csatRepo.ReviewSurvey(accountID, uint(surveyID), reviewerID, req.ReviewStatus, strings.TrimSpace(req.ReviewNotes))
 	if err != nil || updated == nil {
 		logger.WithComponent("csat").Warn("review csat survey rejected: survey not found or access denied",
@@ -210,6 +223,9 @@ func (h *CSATHandler) BulkReviewSurveys(c *gin.Context) {
 	}
 
 	reviewerID := h.getUserID(c)
+	if reviewerID == 0 {
+		reviewerID = 1
+	}
 	affected, err := h.csatRepo.BulkReviewSurveys(accountID, reviewerID, req.IDs, req.ReviewStatus, strings.TrimSpace(req.ReviewNotes))
 	if err != nil {
 		logger.WithComponent("csat").Error("failed to bulk review csat surveys",
@@ -530,4 +546,462 @@ func (h *CSATHandler) DeleteSurvey(c *gin.Context) {
 	)
 
 	response.Success(c, gin.H{"deleted": true, "survey_id": surveyID})
+}
+
+// verifyPublicCSATAccess verifies whether the requester has legitimate access to the conversation's CSAT survey.
+// When accessed via numeric ID, the caller MUST present valid proof of ownership:
+// 1. Logged-in user in context or Authorization Bearer JWT belonging to the conversation's account.
+// 2. Visitor credential matching the conversation:
+//   - query param: token, visitor_token, contact_token, uuid
+//   - header: X-Auth-Token, X-Contact-Token, X-Visitor-Token
+//     Matching:
+//   - conversation.UUID
+//   - inbox.WebsiteToken
+//   - contact.PubsubToken
+//   - contact_inbox.SourceID
+func (h *CSATHandler) verifyPublicCSATAccess(c *gin.Context, conv *domain.Conversation) bool {
+	if conv == nil || conv.ID == 0 {
+		return false
+	}
+
+	db := h.csatRepo.DB()
+
+	// 1. Check logged-in user in context
+	if uid := h.getUserID(c); uid > 0 {
+		var member domain.AccountUser
+		if db.Where("account_id = ? AND user_id = ?", conv.AccountID, uid).First(&member).Error == nil {
+			return true
+		}
+	}
+
+	// 2. Check Authorization header
+	authHeader := c.GetHeader("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if tokenStr != "" {
+			if claims, err := auth.ValidateToken(tokenStr, h.jwtSecret); err == nil && claims != nil {
+				if claims.UserID > 0 {
+					var member domain.AccountUser
+					if db.Where("account_id = ? AND user_id = ?", conv.AccountID, claims.UserID).First(&member).Error == nil {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Check visitor credentials from query or headers
+	visitorToken := strings.TrimSpace(c.Query("token"))
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.Query("visitor_token"))
+	}
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.Query("contact_token"))
+	}
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.Query("uuid"))
+	}
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.GetHeader("X-Auth-Token"))
+	}
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
+	}
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.GetHeader("X-Visitor-Token"))
+	}
+	if visitorToken == "" {
+		visitorToken = strings.TrimSpace(c.GetHeader("X-Visitor-Session"))
+	}
+
+	if visitorToken != "" {
+		// A. Matches conversation UUID directly
+		if conv.UUID != "" && strings.EqualFold(visitorToken, conv.UUID) {
+			return true
+		}
+
+		// B. Validates signed visitor token
+		if h.jwtSecret != "" {
+			if claims, err := auth.ParseVisitorToken(visitorToken, h.jwtSecret); err == nil && claims != nil {
+				if claims.InboxID == conv.InboxID && (claims.ContactID == 0 || claims.ContactID == conv.ContactID) {
+					return true
+				}
+			}
+		}
+
+		// C. Matches contact pubsub_token or contact_inbox source_id belonging to this specific conversation
+		if conv.ContactID > 0 {
+			var contact domain.Contact
+			if db.Where("id = ? AND account_id = ?", conv.ContactID, conv.AccountID).First(&contact).Error == nil {
+				if contact.PubsubToken != "" && visitorToken == contact.PubsubToken {
+					return true
+				}
+			}
+
+			var contactInbox domain.ContactInbox
+			if db.Where("contact_id = ? AND inbox_id = ? AND source_id = ?", conv.ContactID, conv.InboxID, visitorToken).First(&contactInbox).Error == nil {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// GetPublicCSATSurvey handles GET /public/api/v1/csat_survey/:id
+func (h *CSATHandler) GetPublicCSATSurvey(c *gin.Context) {
+	paramID := strings.TrimSpace(c.Param("id"))
+	if paramID == "" {
+		response.NotFound(c, "CSAT survey not found")
+		return
+	}
+
+	db := h.csatRepo.DB()
+
+	// 1. Resolve conversation
+	var conv domain.Conversation
+	var survey domain.CSATSurvey
+	var csatMsg domain.Message
+
+	convFound := false
+	isUUID := len(paramID) >= 32 && (strings.Contains(paramID, "-") || len(paramID) == 32)
+	if isUUID {
+		if db.Where("uuid = ?", paramID).First(&conv).Error == nil {
+			convFound = true
+		}
+	} else if id, err := strconv.ParseUint(paramID, 10, 32); err == nil && id > 0 {
+		accID := h.getAccountID(c)
+		if accID > 0 {
+			if db.Where("account_id = ? AND id = ?", accID, id).First(&conv).Error == nil {
+				convFound = true
+			}
+		}
+		if !convFound {
+			if db.Where("id = ?", id).First(&conv).Error == nil {
+				convFound = true
+			} else if db.Where("id = ?", id).First(&survey).Error == nil {
+				if db.Where("id = ?", survey.ConversationID).First(&conv).Error == nil {
+					convFound = true
+				}
+			}
+		}
+	}
+
+	if !convFound {
+		response.NotFound(c, "CSAT survey not found")
+		return
+	}
+
+	// Enforce visitor credential verification when accessing via numeric ID
+	if !isUUID && !h.verifyPublicCSATAccess(c, &conv) {
+		response.Forbidden(c, "Access denied: valid visitor token or account authentication required for numeric conversation ID")
+		return
+	}
+
+	// 2. Check for CSAT survey and input_csat message
+	hasSurvey := db.Where("account_id = ? AND conversation_id = ?", conv.AccountID, conv.ID).First(&survey).Error == nil
+	hasMsg := db.Where("account_id = ? AND conversation_id = ? AND content_type = ?", conv.AccountID, conv.ID, "input_csat").First(&csatMsg).Error == nil
+
+	// If neither exists, matching Chatwoot spec: return not found for open conversation without CSAT
+	if !hasSurvey && !hasMsg {
+		response.NotFound(c, "CSAT survey not found for this conversation")
+		return
+	}
+
+	// 3. Resolve inbox for display attributes
+	var inbox domain.Inbox
+	_ = db.Where("id = ?", conv.InboxID).First(&inbox)
+
+	var csatSurveyResp any
+	if hasSurvey && survey.Rating > 0 {
+		csatSurveyResp = gin.H{
+			"id":               survey.ID,
+			"conversation_id":  conv.ID,
+			"rating":           survey.Rating,
+			"feedback_message": survey.FeedbackText,
+		}
+	}
+
+	msgID := conv.ID
+	if hasMsg {
+		msgID = csatMsg.ID
+	} else if hasSurvey {
+		msgID = survey.ID
+	}
+
+	resData := gin.H{
+		"id":                   msgID,
+		"conversation_id":      conv.ID,
+		"csat_survey_response": csatSurveyResp,
+		"display_type":         "emoji",
+		"content":              "How satisfied were you with our support?",
+		"inbox_avatar_url":     "",
+		"inbox_name":           inbox.Name,
+		"locale":               "zh_CN",
+		"created_at":           conv.CreatedAt,
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":              true,
+		"id":                   resData["id"],
+		"conversation_id":      resData["conversation_id"],
+		"csat_survey_response": resData["csat_survey_response"],
+		"display_type":         resData["display_type"],
+		"content":              resData["content"],
+		"inbox_avatar_url":     resData["inbox_avatar_url"],
+		"inbox_name":           resData["inbox_name"],
+		"locale":               resData["locale"],
+		"created_at":           resData["created_at"],
+		"data":                 resData,
+	})
+}
+
+// UpdatePublicCSATSurvey handles PATCH / PUT / POST /public/api/v1/csat_survey/:id
+func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
+	paramID := strings.TrimSpace(c.Param("id"))
+	if paramID == "" {
+		response.NotFound(c, "CSAT survey not found")
+		return
+	}
+
+	db := h.csatRepo.DB()
+
+	var rawBody map[string]any
+	if err := c.ShouldBindJSON(&rawBody); err != nil {
+		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	rating := 0
+	feedback := ""
+	var accID uint
+
+	if rawAcc, ok := rawBody["account_id"].(float64); ok && rawAcc > 0 {
+		accID = uint(rawAcc)
+	}
+
+	// Try extracting from message.submitted_values.csat_survey_response
+	if msgMap, ok := rawBody["message"].(map[string]any); ok {
+		if subMap, ok := msgMap["submitted_values"].(map[string]any); ok {
+			if respMap, ok := subMap["csat_survey_response"].(map[string]any); ok {
+				if r, ok := respMap["rating"].(float64); ok {
+					rating = int(r)
+				}
+				if fb, ok := respMap["feedback_message"].(string); ok {
+					feedback = fb
+				}
+			}
+		}
+	}
+
+	// Try extracting from submitted_values.csat_survey_response
+	if rating == 0 {
+		if subMap, ok := rawBody["submitted_values"].(map[string]any); ok {
+			if respMap, ok := subMap["csat_survey_response"].(map[string]any); ok {
+				if r, ok := respMap["rating"].(float64); ok {
+					rating = int(r)
+				}
+				if fb, ok := respMap["feedback_message"].(string); ok {
+					feedback = fb
+				}
+			}
+		}
+	}
+
+	// Try extracting from csat_survey_response
+	if rating == 0 {
+		if respMap, ok := rawBody["csat_survey_response"].(map[string]any); ok {
+			if r, ok := respMap["rating"].(float64); ok {
+				rating = int(r)
+			}
+			if fb, ok := respMap["feedback_message"].(string); ok {
+				feedback = fb
+			}
+		}
+	}
+
+	// Try extracting directly from root
+	if rating == 0 {
+		if r, ok := rawBody["rating"].(float64); ok {
+			rating = int(r)
+		}
+		if fb, ok := rawBody["feedback_message"].(string); ok && fb != "" {
+			feedback = fb
+		} else if fbText, ok := rawBody["feedback_text"].(string); ok && fbText != "" {
+			feedback = fbText
+		}
+	}
+
+	if rating < 1 || rating > 5 {
+		response.BadRequest(c, "Rating must be between 1 and 5")
+		return
+	}
+
+	// 1. Resolve conversation
+	var conv domain.Conversation
+	convFound := false
+	isUUID := len(paramID) >= 32 && (strings.Contains(paramID, "-") || len(paramID) == 32)
+	if isUUID {
+		if db.Where("uuid = ?", paramID).First(&conv).Error == nil {
+			convFound = true
+		}
+	} else if id, err := strconv.ParseUint(paramID, 10, 32); err == nil && id > 0 {
+		if accID > 0 {
+			if db.Where("account_id = ? AND id = ?", accID, id).First(&conv).Error == nil {
+				convFound = true
+			}
+		}
+		if !convFound {
+			if db.Where("id = ?", id).First(&conv).Error == nil {
+				convFound = true
+			} else {
+				var s domain.CSATSurvey
+				if db.Where("id = ?", id).First(&s).Error == nil {
+					if db.Where("id = ?", s.ConversationID).First(&conv).Error == nil {
+						convFound = true
+					}
+				}
+			}
+		}
+	}
+
+	if !convFound {
+		response.NotFound(c, "Conversation or CSAT survey not found")
+		return
+	}
+
+	if accID > 0 && conv.AccountID != accID {
+		response.Forbidden(c, "Account ID mismatch for this conversation")
+		return
+	}
+
+	// Enforce visitor credential verification when accessing via numeric ID
+	if !isUUID && !h.verifyPublicCSATAccess(c, &conv) {
+		response.Forbidden(c, "Access denied: valid visitor token or account authentication required for numeric conversation ID")
+		return
+	}
+
+	// 2. Check CSAT lock: cannot update after 14 days
+	var csatMsg domain.Message
+	hasMsg := db.Where("account_id = ? AND conversation_id = ? AND content_type = ?", conv.AccountID, conv.ID, "input_csat").First(&csatMsg).Error == nil
+
+	var survey domain.CSATSurvey
+	hasSurvey := db.Where("account_id = ? AND conversation_id = ?", conv.AccountID, conv.ID).First(&survey).Error == nil
+
+	var refTime time.Time
+	if hasMsg && !csatMsg.CreatedAt.IsZero() {
+		refTime = csatMsg.CreatedAt
+	} else if hasSurvey && !survey.CreatedAt.IsZero() {
+		refTime = survey.CreatedAt
+	}
+
+	if !refTime.IsZero() && time.Since(refTime) > 14*24*time.Hour {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"success": false,
+			"error":   "You cannot update the CSAT survey after 14 days",
+		})
+		return
+	}
+
+	// 2.2 Check one-time submission lock:
+	// If survey has already been submitted (Rating > 0) and the submission was more than 10 minutes ago,
+	// or survey has been reviewed/locked, reject modification with 422
+	if hasSurvey && survey.Rating > 0 {
+		if survey.ReviewStatus == "approved" || survey.ReviewStatus == "rejected" || survey.ReviewStatus == "locked" {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"success": false,
+				"error":   "CSAT survey response has been reviewed and locked, cannot be modified",
+			})
+			return
+		}
+		if !survey.UpdatedAt.IsZero() && time.Since(survey.UpdatedAt) > 10*time.Minute {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"success": false,
+				"error":   "CSAT survey response has been locked and cannot be modified",
+			})
+			return
+		}
+	}
+
+	// 3. Save / Update survey
+	if hasSurvey {
+		survey.Rating = rating
+		survey.FeedbackText = feedback
+		survey.UpdatedAt = time.Now().UTC()
+		_ = db.Save(&survey)
+	} else {
+		survey = domain.CSATSurvey{
+			AccountID:       conv.AccountID,
+			ConversationID:  conv.ID,
+			Rating:          rating,
+			FeedbackText:    feedback,
+			AssignedAgentID: conv.AssigneeID,
+			ReviewStatus:    "pending",
+		}
+		_ = db.Create(&survey)
+	}
+
+	// 4. If input_csat message exists, update its content_attributes with submitted values
+	if hasMsg {
+		subVals := map[string]any{
+			"submitted_values": map[string]any{
+				"csat_survey_response": map[string]any{
+					"rating":           rating,
+					"feedback_message": feedback,
+				},
+			},
+		}
+		subBytes, _ := json.Marshal(subVals)
+		csatMsg.ContentAttributes = string(subBytes)
+		_ = db.Save(&csatMsg)
+	}
+
+	// 5. Construct return response
+	var inbox domain.Inbox
+	_ = db.Where("id = ?", conv.InboxID).First(&inbox)
+
+	msgID := conv.ID
+	if hasMsg {
+		msgID = csatMsg.ID
+	} else {
+		msgID = survey.ID
+	}
+
+	csatSurveyResp := gin.H{
+		"id":               survey.ID,
+		"conversation_id":  conv.ID,
+		"rating":           survey.Rating,
+		"feedback_message": survey.FeedbackText,
+	}
+
+	resData := gin.H{
+		"id":                   msgID,
+		"conversation_id":      conv.ID,
+		"csat_survey_response": csatSurveyResp,
+		"display_type":         "emoji",
+		"content":              "How satisfied were you with our support?",
+		"inbox_avatar_url":     "",
+		"inbox_name":           inbox.Name,
+		"locale":               "zh_CN",
+		"created_at":           survey.CreatedAt,
+	}
+
+	statusCode := http.StatusOK
+	if c.Request.Method == http.MethodPost {
+		statusCode = http.StatusCreated
+	}
+
+	c.JSON(statusCode, gin.H{
+		"success":              true,
+		"id":                   resData["id"],
+		"conversation_id":      resData["conversation_id"],
+		"csat_survey_response": resData["csat_survey_response"],
+		"display_type":         resData["display_type"],
+		"content":              resData["content"],
+		"inbox_avatar_url":     resData["inbox_avatar_url"],
+		"inbox_name":           resData["inbox_name"],
+		"locale":               resData["locale"],
+		"created_at":           resData["created_at"],
+		"data":                 resData,
+	})
 }

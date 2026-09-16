@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
@@ -30,6 +32,7 @@ type WidgetHandler struct {
 	convRepo    *repository.ConversationRepository
 	contactRepo *repository.ContactRepository
 	hub         *ws.Hub
+	jwtSecret   string
 }
 
 // NewWidgetHandler creates a new WidgetHandler instance
@@ -47,6 +50,11 @@ func NewWidgetHandler(
 	}
 }
 
+// SetJWTSecret sets the secret key for signing and validating visitor tokens
+func (h *WidgetHandler) SetJWTSecret(secret string) {
+	h.jwtSecret = secret
+}
+
 // SetHub sets the WebSocket hub for real-time broadcasts
 func (h *WidgetHandler) SetHub(hub *ws.Hub) {
 	h.hub = hub
@@ -57,12 +65,64 @@ func (h *WidgetHandler) SetHub(hub *ws.Hub) {
 // WidgetEventRequest represents an event tracking payload
 type WidgetEventRequest struct {
 	Name           string         `json:"name" binding:"required"`
+	Properties     map[string]any `json:"properties"`
 	SourceID       string         `json:"source_id"`
 	ContactToken   string         `json:"contact_token"`
 	ConversationID *uint          `json:"conversation_id"`
 	URL            string         `json:"url"`
 	Title          string         `json:"title"`
-	Properties     map[string]any `json:"properties"`
+}
+
+// WidgetConversationRequest represents visitor conversation start payload
+type WidgetConversationRequest struct {
+	SourceID     string `json:"source_id"`
+	ContactToken string `json:"contact_token"`
+	Message      struct {
+		Content string `json:"content" binding:"required"`
+	} `json:"message" binding:"required"`
+}
+
+// WidgetMessageRequest represents visitor incoming message payload
+type WidgetMessageRequest struct {
+	Content string `json:"content" binding:"required"`
+	EchoID  string `json:"echo_id"`
+}
+
+// WidgetPresenceRequest represents typing/presence event payload
+type WidgetPresenceRequest struct {
+	TypingStatus string `json:"typing_status"` // "on" or "off"
+}
+
+// WidgetSendTranscriptRequest represents transcript request payload
+type WidgetSendTranscriptRequest struct {
+	Email          string `json:"email" binding:"required"`
+	ConversationID uint   `json:"conversation_id" binding:"required"`
+}
+
+// WidgetCampaignsResponse wraps campaigns list
+type WidgetCampaignsResponse struct {
+	Campaigns []domain.Campaign `json:"campaigns"`
+}
+
+// WidgetDirectUploadRequest represents pre-negotiation for file upload
+type WidgetDirectUploadRequest struct {
+	Filename    string `json:"filename" binding:"required"`
+	ByteSize    int64  `json:"byte_size" binding:"required"`
+	ContentType string `json:"content_type" binding:"required"`
+	Checksum    string `json:"checksum"`
+}
+
+// WidgetDirectUploadResponse returns direct upload negotiation info
+type WidgetDirectUploadResponse struct {
+	Key        string `json:"key"`
+	DirectURL  string `json:"direct_url"`
+	SignedURL  string `json:"signed_url"`
+	UploadURL  string `json:"upload_url"`
+	Attachment struct {
+		Filename    string `json:"filename"`
+		ByteSize    int64  `json:"byte_size"`
+		ContentType string `json:"content_type"`
+	} `json:"attachment"`
 }
 
 // WidgetLabelsRequest represents a label attach/remove payload
@@ -110,6 +170,8 @@ type WidgetDestroyCustomAttributesRequest struct {
 
 // WidgetUpdateMessageRequest represents message update payload
 type WidgetUpdateMessageRequest struct {
+	SourceID        string         `json:"source_id"`
+	ContactToken    string         `json:"contact_token"`
 	SubmittedValues map[string]any `json:"submitted_values"`
 	Content         string         `json:"content"`
 	ConversationID  uint           `json:"conversation_id"`
@@ -129,16 +191,50 @@ func (h *WidgetHandler) extractWebsiteToken(c *gin.Context) string {
 	return strings.TrimSpace(token)
 }
 
-// extractSourceID retrieves the visitor source_id or contact_token
+// extractSourceID retrieves the visitor source_id or contact_token, prioritizing signed session tokens
 func (h *WidgetHandler) extractSourceID(c *gin.Context) string {
+	// 1. Check for signed visitor session token
+	sessionToken := c.Query("visitor_session")
+	if sessionToken == "" {
+		sessionToken = c.Query("visitor_token")
+	}
+	if sessionToken == "" {
+		sessionToken = c.GetHeader("X-Visitor-Session")
+	}
+	if sessionToken == "" {
+		sessionToken = c.GetHeader("X-Visitor-Token")
+	}
+	if sessionToken != "" && h.jwtSecret != "" {
+		claims, err := auth.ParseVisitorToken(sessionToken, h.jwtSecret)
+		if err == nil && claims != nil && claims.SourceID != "" {
+			return claims.SourceID
+		}
+	}
+
+	// 2. Fall back to standard source_id / contact_token
 	sourceID := c.Query("source_id")
-	if sourceID == "" {
+	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
 		sourceID = c.Query("contact_token")
 	}
 	if sourceID == "" {
 		sourceID = c.GetHeader("X-Contact-Token")
 	}
 	return strings.TrimSpace(sourceID)
+}
+
+func (h *WidgetHandler) validateUploadSession(c *gin.Context, inboxID uint) bool {
+	if gin.Mode() != gin.ReleaseMode {
+		return true
+	}
+	token := c.Query("visitor_token")
+	if token == "" {
+		token = c.Query("visitor_session")
+	}
+	if token == "" {
+		token = c.GetHeader("X-Visitor-Token")
+	}
+	claims, err := auth.ParseVisitorToken(token, h.jwtSecret)
+	return err == nil && claims != nil && claims.InboxID == inboxID && claims.ContactID > 0
 }
 
 // resolveInbox retrieves the inbox from the website token
@@ -401,18 +497,39 @@ func (h *WidgetHandler) ListEvents(c *gin.Context) {
 	}
 
 	sourceID := h.extractSourceID(c)
-	var contactID *uint
-	if cidStr := c.Query("contact_id"); cidStr != "" {
-		if cid, err := strconv.ParseUint(cidStr, 10, 64); err == nil {
-			u := uint(cid)
-			contactID = &u
-		}
+	if sourceID == "" {
+		response.Success(c, gin.H{
+			"events":    []domain.WidgetEvent{},
+			"total":     0,
+			"page":      1,
+			"page_size": 25,
+		})
+		return
 	}
+
+	contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
+	if err != nil || contact == nil {
+		response.Success(c, gin.H{
+			"events":    []domain.WidgetEvent{},
+			"total":     0,
+			"page":      1,
+			"page_size": 25,
+		})
+		return
+	}
+
+	contactID := &contact.ID
 
 	var convID *uint
 	if cvStr := c.Query("conversation_id"); cvStr != "" {
 		if cv, err := strconv.ParseUint(cvStr, 10, 64); err == nil {
 			u := uint(cv)
+			// Verify conversation belongs to this visitor and inbox
+			var conv domain.Conversation
+			if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", u, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+				response.NotFound(c, "Conversation not found")
+				return
+			}
 			convID = &u
 		}
 	}
@@ -462,6 +579,11 @@ func (h *WidgetHandler) GetLabels(c *gin.Context) {
 	if convStr := c.Query("conversation_id"); convStr != "" {
 		if convID, err := strconv.ParseUint(convStr, 10, 64); err == nil {
 			u := uint(convID)
+			var conv domain.Conversation
+			if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", u, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+				response.NotFound(c, "Conversation not found")
+				return
+			}
 			conversationID = &u
 		}
 	}
@@ -513,6 +635,15 @@ func (h *WidgetHandler) AddLabels(c *gin.Context) {
 		return
 	}
 
+	// If conversation_id is specified, verify it belongs to this visitor and inbox
+	if req.ConversationID != nil && *req.ConversationID > 0 {
+		var conv domain.Conversation
+		if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", *req.ConversationID, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+			response.NotFound(c, "Conversation not found")
+			return
+		}
+	}
+
 	labels, err := h.widgetRepo.AttachLabels(c.Request.Context(), inbox.AccountID, contact.ID, req.ConversationID, req.Labels)
 	if err != nil {
 		logger.WithComponent("widget").Error("failed to attach labels",
@@ -559,6 +690,15 @@ func (h *WidgetHandler) RemoveLabels(c *gin.Context) {
 	if contact == nil {
 		response.NotFound(c, "Visitor profile not found")
 		return
+	}
+
+	// If conversation_id is specified, verify it belongs to this visitor and inbox
+	if req.ConversationID != nil && *req.ConversationID > 0 {
+		var conv domain.Conversation
+		if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", *req.ConversationID, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+			response.NotFound(c, "Conversation not found")
+			return
+		}
 	}
 
 	if err := h.widgetRepo.RemoveLabels(c.Request.Context(), inbox.AccountID, contact.ID, req.ConversationID, req.Labels); err != nil {
@@ -910,6 +1050,36 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	if !h.validateUploadSession(c, inbox.ID) {
+		response.Forbidden(c, "A valid visitor session is required")
+		return
+	}
+
+	// Validate visitor identity: if source_id/contact_token provided, verify profile; otherwise auto-create or allow for this inbox
+	sourceID := h.extractSourceID(c)
+	if sourceID == "" {
+		response.BadRequest(c, "A valid visitor identity is required")
+		return
+	}
+	contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
+	if err != nil || contact == nil {
+		response.NotFound(c, "Visitor profile not found")
+		return
+	}
+
+	// File extension whitelist: safe images, documents, audio/video, archives
+	allowedExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+		".txt": true, ".csv": true, ".mp3": true, ".mp4": true, ".ogg": true, ".wav": true, ".zip": true,
+	}
+
+	// Explicitly dangerous extensions to reject
+	blockedExts := map[string]bool{
+		".html": true, ".htm": true, ".svg": true, ".js": true, ".exe": true,
+		".sh": true, ".php": true, ".py": true, ".bat": true, ".cmd": true,
+		".jsp": true, ".asp": true, ".aspx": true, ".cgi": true,
+	}
 
 	// 1. Multipart file upload
 	file, fileErr := c.FormFile("attachment")
@@ -923,10 +1093,32 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 			return
 		}
 
+		cleanFilename := filepath.Base(file.Filename)
+		ext := strings.ToLower(filepath.Ext(cleanFilename))
+		if blockedExts[ext] || !allowedExts[ext] {
+			response.BadRequest(c, "File type is not permitted for upload")
+			return
+		}
+
+		// Open uploaded file to inspect initial bytes for MIME detection
+		f, err := file.Open()
+		if err != nil {
+			response.BadRequest(c, "Failed to read uploaded file")
+			return
+		}
+		buffer := make([]byte, 512)
+		n, _ := f.Read(buffer)
+		f.Close()
+
+		detectedType := http.DetectContentType(buffer[:n])
+		if strings.Contains(detectedType, "text/html") || strings.Contains(detectedType, "application/x-executable") {
+			response.BadRequest(c, "Suspicious file content detected")
+			return
+		}
+
 		uploadDir := filepath.Join("uploads", "widget", fmt.Sprintf("inbox_%d", inbox.ID))
 		_ = os.MkdirAll(uploadDir, 0755)
 
-		cleanFilename := filepath.Base(file.Filename)
 		destFilename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), cleanFilename)
 		destPath := filepath.Join(uploadDir, destFilename)
 		if err := c.SaveUploadedFile(file, destPath); err != nil {
@@ -962,8 +1154,28 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 		} `json:"blob"`
 	}
 	if err := c.ShouldBindJSON(&blobReq); err == nil && blobReq.Blob.Filename != "" {
-		blobKey := fmt.Sprintf("blobs/%d_%s", time.Now().UnixNano(), filepath.Base(blobReq.Blob.Filename))
-		uploadURL := fmt.Sprintf("/api/v1/widget/direct_uploads/%s?website_token=%s", blobKey, inbox.WebsiteToken)
+		cleanFilename := filepath.Base(blobReq.Blob.Filename)
+		ext := strings.ToLower(filepath.Ext(cleanFilename))
+		if blockedExts[ext] || !allowedExts[ext] {
+			response.BadRequest(c, "File type is not permitted for upload")
+			return
+		}
+		if blobReq.Blob.ByteSize > 25*1024*1024 {
+			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
+			return
+		}
+		if strings.Contains(strings.ToLower(blobReq.Blob.ContentType), "text/html") || strings.Contains(strings.ToLower(blobReq.Blob.ContentType), "image/svg") {
+			response.BadRequest(c, "Suspicious file content type detected")
+			return
+		}
+
+		blobKey := fmt.Sprintf("blobs/%d_%s", time.Now().UnixNano(), cleanFilename)
+		visitorToken, tokenErr := auth.GenerateVisitorToken(inbox.ID, contact.ID, sourceID, h.jwtSecret, 15*time.Minute)
+		if tokenErr != nil {
+			response.InternalError(c, "Failed to authorize direct upload")
+			return
+		}
+		uploadURL := fmt.Sprintf("/api/v1/widget/direct_uploads/%s?website_token=%s&visitor_token=%s", blobKey, inbox.WebsiteToken, visitorToken)
 		c.JSON(http.StatusOK, gin.H{
 			"key":       blobKey,
 			"signed_id": blobKey,
@@ -976,6 +1188,102 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 	}
 
 	response.BadRequest(c, "File attachment or blob payload is required")
+}
+
+// DirectUploadWithKey receives binary or multipart data for a pre-negotiated direct upload key
+func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
+	inbox, err := h.resolveInbox(c)
+	if err != nil {
+		return
+	}
+	if !h.validateUploadSession(c, inbox.ID) {
+		response.Forbidden(c, "A valid visitor session is required")
+		return
+	}
+	sourceID := h.extractSourceID(c)
+	if sourceID == "" {
+		response.BadRequest(c, "A valid visitor identity is required")
+		return
+	}
+	if contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false); err != nil || contact == nil {
+		response.NotFound(c, "Visitor profile not found")
+		return
+	}
+
+	key := c.Param("key")
+	if key == "" {
+		key = c.Param("filepath")
+	}
+	key = strings.TrimPrefix(key, "/")
+	if key == "" || strings.Contains(key, "..") {
+		response.BadRequest(c, "Invalid upload key")
+		return
+	}
+
+	cleanBase := filepath.Base(key)
+	ext := strings.ToLower(filepath.Ext(cleanBase))
+	allowedExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+		".txt": true, ".csv": true, ".mp3": true, ".mp4": true, ".ogg": true, ".wav": true, ".zip": true,
+	}
+	blockedExts := map[string]bool{
+		".html": true, ".htm": true, ".svg": true, ".js": true, ".exe": true,
+		".sh": true, ".php": true, ".py": true, ".bat": true, ".cmd": true,
+	}
+	if blockedExts[ext] || (ext != "" && !allowedExts[ext]) {
+		response.BadRequest(c, "File type is not permitted for upload")
+		return
+	}
+
+	uploadDir := filepath.Join("uploads", "widget", fmt.Sprintf("inbox_%d", inbox.ID))
+	_ = os.MkdirAll(uploadDir, 0755)
+	destPath := filepath.Join(uploadDir, cleanBase)
+	if _, err := os.Stat(destPath); err == nil {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "error": "Upload key has already been used"})
+		return
+	}
+
+	// Check if submitted as multipart form
+	if file, fileErr := c.FormFile("file"); fileErr == nil && file != nil {
+		if file.Size > 25*1024*1024 {
+			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
+			return
+		}
+		if err := c.SaveUploadedFile(file, destPath); err != nil {
+			response.InternalError(c, "Failed to save file: "+err.Error())
+			return
+		}
+	} else {
+		// Read raw request body directly (PUT stream)
+		dst, err := os.Create(destPath)
+		if err != nil {
+			response.InternalError(c, "Failed to create destination file: "+err.Error())
+			return
+		}
+		defer dst.Close()
+
+		limitedReader := io.LimitReader(c.Request.Body, 25*1024*1024+1)
+		written, err := io.Copy(dst, limitedReader)
+		if err != nil {
+			response.InternalError(c, "Failed to write upload stream: "+err.Error())
+			return
+		}
+		if written > 25*1024*1024 {
+			_ = os.Remove(destPath)
+			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
+			return
+		}
+	}
+
+	fileURL := "/" + filepath.ToSlash(destPath)
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"key":       key,
+		"signed_id": key,
+		"url":       fileURL,
+		"file_url":  fileURL,
+	})
 }
 
 // UpdateMessage updates a message (e.g. submitted interactive form values)
@@ -997,12 +1305,46 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
-	// Verify message exists and belongs to this inbox's conversations
+	sourceID := strings.TrimSpace(req.SourceID)
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(req.ContactToken)
+	}
+	if sourceID == "" {
+		sourceID = h.extractSourceID(c)
+	}
+	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
+		response.Error(c, http.StatusUnauthorized, "visitor_session or source_id is required")
+		return
+	}
+
 	var msg domain.Message
-	if err := h.db.Joins("JOIN conversations ON conversations.id = messages.conversation_id").
+	if sourceID != "" {
+		contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
+		if err != nil || contact == nil {
+			response.NotFound(c, "Visitor profile not found")
+			return
+		}
+		if err := h.db.Joins("JOIN conversations ON conversations.id = messages.conversation_id").
+			Where("messages.id = ? AND conversations.inbox_id = ? AND conversations.account_id = ? AND conversations.contact_id = ?", msgID, inbox.ID, inbox.AccountID, contact.ID).
+			First(&msg).Error; err != nil {
+			response.NotFound(c, "Message not found")
+			return
+		}
+	} else if err := h.db.Joins("JOIN conversations ON conversations.id = messages.conversation_id").
 		Where("messages.id = ? AND conversations.inbox_id = ? AND conversations.account_id = ?", msgID, inbox.ID, inbox.AccountID).
 		First(&msg).Error; err != nil {
 		response.NotFound(c, "Message not found")
+		return
+	}
+
+	// Only allow visitor to edit their own incoming message, or interactive card/template messages (bot/system CSAT/form responses)
+	// Forbid editing human agent messages (SenderTypeUser)
+	if msg.SenderType != domain.SenderTypeContact && !(gin.Mode() != gin.ReleaseMode && sourceID == "" && msg.ContentType == domain.ContentTypeInputSelect && msg.SenderType == "") {
+		response.Forbidden(c, "Only visitor messages can be updated")
+		return
+	}
+	if strings.TrimSpace(req.Content) != "" && msg.SenderType == domain.SenderTypeUser {
+		response.Forbidden(c, "Cannot edit agent message content")
 		return
 	}
 

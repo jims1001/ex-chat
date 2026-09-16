@@ -14,6 +14,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
@@ -23,11 +24,11 @@ import (
 )
 
 type AuthEnterpriseHandler struct {
-	repo             repository.ChannelAuthEnterpriseRepository
-	userRepo         *repository.UserRepository
-	accountRepo      *repository.AccountRepository
-	portalRepo       *repository.PortalRepository
-	contactRepo      *repository.ContactRepository
+	repo              repository.ChannelAuthEnterpriseRepository
+	userRepo          *repository.UserRepository
+	accountRepo       *repository.AccountRepository
+	portalRepo        *repository.PortalRepository
+	contactRepo       *repository.ContactRepository
 	migrationService  *service.MigrationService
 	dataImportService *service.DataImportService
 	cfg               *config.Config
@@ -549,7 +550,6 @@ func (h *AuthEnterpriseHandler) DisableMFA(c *gin.Context) {
 	response.Success(c, gin.H{"enabled": false})
 }
 
-
 func (h *AuthEnterpriseHandler) ListSessions(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	sessions, err := h.repo.ListSessions(userID)
@@ -596,10 +596,14 @@ func (h *AuthEnterpriseHandler) RequestPasswordReset(c *gin.Context) {
 	}
 	_ = h.repo.CreatePasswordResetToken(tokenRecord)
 
-	response.Success(c, gin.H{
-		"message":     "Reset token generated",
-		"reset_token": resetToken,
-	})
+	respData := gin.H{
+		"message": "If email exists, reset instructions have been sent",
+	}
+	if h.cfg != nil && h.cfg.Environment == "test" {
+		respData["reset_token"] = resetToken
+	}
+
+	response.Success(c, respData)
 }
 
 func (h *AuthEnterpriseHandler) ResetPassword(c *gin.Context) {
@@ -752,10 +756,23 @@ func (h *AuthEnterpriseHandler) ListMigrationJobs(c *gin.Context) {
 }
 
 func (h *AuthEnterpriseHandler) BulkArticleActions(c *gin.Context) {
-	accountID, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID, _ := rawAccountID.(uint)
+	if accountID == 0 {
+		aid, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
+		accountID = uint(aid)
+	}
 	portalID, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	if portalID == 0 {
 		portalID, _ = strconv.ParseUint(c.Param("portal_id"), 10, 64)
+	}
+
+	if h.portalRepo != nil {
+		portal, err := h.portalRepo.FindPortalByID(uint(portalID))
+		if err != nil || portal == nil || portal.AccountID != accountID {
+			response.NotFound(c, "Portal not found")
+			return
+		}
 	}
 
 	var req struct {
@@ -767,11 +784,32 @@ func (h *AuthEnterpriseHandler) BulkArticleActions(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	if req.Status != "" && req.Status != "draft" && req.Status != "published" && req.Status != "archived" {
+		response.BadRequest(c, "status must be draft, published, or archived")
+		return
+	}
+	if req.Status == "" && req.CategoryID == nil {
+		response.BadRequest(c, "status or category_id is required")
+		return
+	}
+	if req.CategoryID != nil {
+		category, err := h.portalRepo.FindCategoryByID(*req.CategoryID)
+		if err != nil || category == nil || category.AccountID != accountID || category.PortalID != uint(portalID) {
+			response.BadRequest(c, "Category not found in this portal")
+			return
+		}
+	}
+
+	updated, err := h.portalRepo.BulkUpdateArticles(accountID, uint(portalID), req.IDs, req.Status, req.CategoryID)
+	if err != nil {
+		response.InternalError(c, "Failed to update articles")
+		return
+	}
 
 	response.Success(c, gin.H{
 		"account_id":       accountID,
 		"portal_id":        portalID,
-		"updated_articles": len(req.IDs),
+		"updated_articles": updated,
 		"status":           req.Status,
 	})
 }

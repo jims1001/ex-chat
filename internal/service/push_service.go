@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -16,28 +18,40 @@ import (
 )
 
 type PushPayload struct {
-	Title        string `json:"title"`
-	Body         string `json:"body"`
-	AccountID    uint   `json:"account_id"`
-	ResourceID   uint   `json:"resource_id"`
-	ResourceType string `json:"resource_type"`
-	DeepLink     string `json:"deep_link"`
+	Title            string `json:"title"`
+	Body             string `json:"body"`
+	AccountID        uint   `json:"account_id"`
+	ResourceID       uint   `json:"resource_id"`
+	ResourceType     string `json:"resource_type"`
+	DeepLink         string `json:"deep_link"`
+	NotificationType string `json:"notification_type,omitempty"`
 }
 
 type PushService struct {
-	db         *gorm.DB
-	deviceRepo *repository.DeviceRepository
-	httpClient *http.Client
+	db               *gorm.DB
+	deviceRepo       *repository.DeviceRepository
+	notificationRepo *repository.NotificationRepository
+	httpClient       *http.Client
+	dedupCache       sync.Map
 }
 
 func NewPushService(db *gorm.DB, deviceRepo *repository.DeviceRepository) *PushService {
+	var notifRepo *repository.NotificationRepository
+	if db != nil {
+		notifRepo = repository.NewNotificationRepository(db)
+	}
 	return &PushService{
-		db:         db,
-		deviceRepo: deviceRepo,
+		db:               db,
+		deviceRepo:       deviceRepo,
+		notificationRepo: notifRepo,
 		httpClient: &http.Client{
 			Timeout: 4 * time.Second,
 		},
 	}
+}
+
+func (s *PushService) SetNotificationRepo(repo *repository.NotificationRepository) {
+	s.notificationRepo = repo
 }
 
 func (s *PushService) SetHTTPClient(client *http.Client) {
@@ -46,8 +60,90 @@ func (s *PushService) SetHTTPClient(client *http.Client) {
 	}
 }
 
+func isTimeInQuietHours(currentTime, start, end string) bool {
+	if start == "" || end == "" {
+		return false
+	}
+	if start == end {
+		return false
+	}
+	if start < end {
+		// e.g. 09:00 to 17:00
+		return currentTime >= start && currentTime < end
+	}
+	// Overnight e.g. 22:00 to 08:00
+	return currentTime >= start || currentTime < end
+}
+
 // Dispatch sends a push notification payload to all active user devices and records delivery audit log
 func (s *PushService) Dispatch(ctx context.Context, userID, accountID uint, payload PushPayload) (int, error) {
+	// 0. Deduplicate rapid repeated dispatches within 5 seconds for same user and payload
+	dedupKey := fmt.Sprintf("%d:%d:%d:%s:%s", accountID, userID, payload.ResourceID, payload.ResourceType, payload.NotificationType)
+	if lastTimeRaw, ok := s.dedupCache.Load(dedupKey); ok {
+		if lastTime, ok := lastTimeRaw.(time.Time); ok && time.Since(lastTime) < 5*time.Second {
+			logger.WithComponent("push").Info("push notification skipped: rapid repeated dispatch deduplicated",
+				"user_id", userID, "account_id", accountID, "dedup_key", dedupKey)
+			return 0, nil
+		}
+	}
+	s.dedupCache.Store(dedupKey, time.Now())
+
+	// 1. Check user notification settings (mute, quiet hours, push flags)
+	if s.notificationRepo != nil {
+		setting, err := s.notificationRepo.GetNotificationSetting(ctx, accountID, userID)
+		if err == nil && setting != nil {
+			// Global mute for this user
+			if setting.Muted {
+				logger.WithComponent("push").Info("push notification skipped: user muted all notifications",
+					"user_id", userID, "account_id", accountID)
+				return 0, nil
+			}
+
+			// Check quiet hours with user timezone resolution
+			if setting.QuietHoursEnabled && setting.QuietHoursStart != "" && setting.QuietHoursEnd != "" {
+				loc := time.UTC
+				if s.db != nil {
+					var u domain.User
+					if s.db.Where("id = ?", userID).First(&u).Error == nil && u.Timezone != "" {
+						if parsedLoc, err := time.LoadLocation(u.Timezone); err == nil {
+							loc = parsedLoc
+						}
+					}
+				}
+				nowTimeStr := time.Now().In(loc).Format("15:04")
+				if isTimeInQuietHours(nowTimeStr, setting.QuietHoursStart, setting.QuietHoursEnd) {
+					logger.WithComponent("push").Info("push notification skipped: quiet hours active",
+						"user_id", userID, "account_id", accountID, "current_time", nowTimeStr, "timezone", loc.String(),
+						"quiet_start", setting.QuietHoursStart, "quiet_end", setting.QuietHoursEnd)
+					return 0, nil
+				}
+			}
+
+			// Check SelectedPushFlags
+			if payload.NotificationType != "" {
+				flagsStr := setting.SelectedPushFlags
+				if strings.TrimSpace(flagsStr) == "" {
+					flagsStr = "[]"
+				}
+				var allowedFlags []string
+				_ = json.Unmarshal([]byte(flagsStr), &allowedFlags)
+
+				allowed := false
+				for _, f := range allowedFlags {
+					if f == payload.NotificationType {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					logger.WithComponent("push").Info("push notification skipped: flag not enabled in selected_push_flags",
+						"user_id", userID, "account_id", accountID, "notification_type", payload.NotificationType)
+					return 0, nil
+				}
+			}
+		}
+	}
+
 	subs, err := s.deviceRepo.ListSubscriptions(ctx, userID, accountID)
 	if err != nil {
 		return 0, err

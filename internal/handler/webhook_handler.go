@@ -10,6 +10,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/security"
 	"github.com/gin-gonic/gin"
 )
 
@@ -55,6 +56,11 @@ func (h *WebhookHandler) Create(c *gin.Context) {
 	var req CreateWebhookRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	if err := security.ValidateSafeURL(req.URL); err != nil {
+		response.BadRequest(c, "Invalid webhook URL: "+err.Error())
 		return
 	}
 
@@ -138,6 +144,10 @@ func (h *WebhookHandler) Update(c *gin.Context) {
 	}
 
 	if req.URL != "" {
+		if err := security.ValidateSafeURL(req.URL); err != nil {
+			response.BadRequest(c, "Invalid webhook URL: "+err.Error())
+			return
+		}
 		webhook.URL = req.URL
 	}
 	if req.Secret != "" {

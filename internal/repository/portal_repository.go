@@ -52,6 +52,18 @@ func (r *PortalRepository) ListCategories(portalID uint) ([]domain.Category, err
 	return list, err
 }
 
+func (r *PortalRepository) FindCategoryBySlug(portalID uint, slug string) (*domain.Category, error) {
+	var c domain.Category
+	err := r.db.Where("portal_id = ? AND slug = ?", portalID, slug).First(&c).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
 // ---------------- Article ----------------
 
 func (r *PortalRepository) CreateArticle(a *domain.Article) error {
@@ -156,3 +168,22 @@ func (r *PortalRepository) DeleteArticle(id uint) error {
 	return r.db.Delete(&domain.Article{}, id).Error
 }
 
+// BulkUpdateArticles applies a scoped update only to articles owned by the
+// requested account and portal. The account predicate prevents IDs supplied by
+// another tenant from being modified accidentally.
+func (r *PortalRepository) BulkUpdateArticles(accountID, portalID uint, ids []uint, status string, categoryID *uint) (int64, error) {
+	updates := map[string]any{}
+	if status != "" {
+		updates["status"] = status
+	}
+	if categoryID != nil {
+		updates["category_id"] = *categoryID
+	}
+	if len(ids) == 0 || len(updates) == 0 {
+		return 0, nil
+	}
+	result := r.db.Model(&domain.Article{}).
+		Where("account_id = ? AND portal_id = ? AND id IN ?", accountID, portalID, ids).
+		Updates(updates)
+	return result.RowsAffected, result.Error
+}

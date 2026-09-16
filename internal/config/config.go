@@ -11,6 +11,8 @@ type Config struct {
 	Environment        string
 	DBDriver           string
 	DBPath             string
+	DBDSN              string
+	RedisURL           string
 	JWTSecret          string
 	JWTExpirationHours int
 	LogLevel           string
@@ -36,6 +38,8 @@ func LoadConfig() *Config {
 	env := getEnv("ENV", "development")
 	dbDriver := getEnv("DB_DRIVER", "sqlite")
 	dbPath := getEnv("DB_PATH", "ex_chat.db")
+	dbDSN := getEnv("DB_DSN", "")
+	redisURL := getEnv("REDIS_URL", "")
 	jwtSecret := getEnv("JWT_SECRET", "ex-chat-production-ready-jwt-secret-key-2026")
 	jwtExpHoursStr := getEnv("JWT_EXPIRATION_HOURS", "72")
 	jwtExpHours, err := strconv.Atoi(jwtExpHoursStr)
@@ -61,6 +65,8 @@ func LoadConfig() *Config {
 		Environment:        env,
 		DBDriver:           dbDriver,
 		DBPath:             dbPath,
+		DBDSN:              dbDSN,
+		RedisURL:           redisURL,
 		JWTSecret:          jwtSecret,
 		JWTExpirationHours: jwtExpHours,
 		LogLevel:           logLevel,

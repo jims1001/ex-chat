@@ -4,13 +4,54 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"mime"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 )
+
+// formatRFC2047IfNeeded encodes a string to RFC 2047 MIME encoded-word syntax if it contains non-ASCII characters
+func formatRFC2047IfNeeded(s string) string {
+	hasNonASCII := false
+	for _, r := range s {
+		if r > unicode.MaxASCII {
+			hasNonASCII = true
+			break
+		}
+	}
+	if !hasNonASCII {
+		return s
+	}
+	return mime.BEncoding.Encode("UTF-8", s)
+}
+
+// formatAddressHeader formats an email address header (From, To) with RFC 2047 display name encoding if needed
+func formatAddressHeader(rawAddr string) string {
+	rawAddr = strings.TrimSpace(rawAddr)
+	if rawAddr == "" {
+		return ""
+	}
+	parsed, err := mail.ParseAddress(rawAddr)
+	if err == nil {
+		if parsed.Name != "" {
+			return fmt.Sprintf("%s <%s>", formatRFC2047IfNeeded(parsed.Name), parsed.Address)
+		}
+		return parsed.Address
+	}
+	// Fallback to simple angle bracket parsing if mail.ParseAddress fails
+	if start := strings.Index(rawAddr, "<"); start > 0 && strings.HasSuffix(rawAddr, ">") {
+		name := strings.TrimSpace(rawAddr[:start])
+		addr := strings.TrimSpace(rawAddr[start+1 : len(rawAddr)-1])
+		return fmt.Sprintf("%s <%s>", formatRFC2047IfNeeded(name), addr)
+	}
+	return rawAddr
+}
+
 
 // SentEmail records captured email payload for inspection
 type SentEmail struct {
@@ -62,9 +103,9 @@ func (s *SMTPEmailSender) Send(ctx context.Context, from, to, subject, htmlBody,
 	}
 
 	headers := []string{
-		fmt.Sprintf("From: %s", from),
-		fmt.Sprintf("To: %s", to),
-		fmt.Sprintf("Subject: %s", subject),
+		fmt.Sprintf("From: %s", formatAddressHeader(from)),
+		fmt.Sprintf("To: %s", formatAddressHeader(to)),
+		fmt.Sprintf("Subject: %s", formatRFC2047IfNeeded(subject)),
 		"MIME-Version: 1.0",
 		fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"", boundary),
 		"",

@@ -1,8 +1,9 @@
 package repository
 
 import (
-	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
@@ -80,13 +81,8 @@ func (r *AccountRepository) HasPermission(accountID, userID uint, permission str
 		return true, nil
 	}
 	if member.CustomRole != nil {
-		var perms []string
-		if err := json.Unmarshal([]byte(member.CustomRole.Permissions), &perms); err == nil {
-			for _, p := range perms {
-				if p == domain.PermissionAdministrator || p == permission {
-					return true, nil
-				}
-			}
+		if domain.CheckPermissionInJSON(member.CustomRole.Permissions, permission) {
+			return true, nil
 		}
 	}
 	return false, nil
@@ -149,7 +145,24 @@ func (r *AccountRepository) GetCustomRole(accountID, id uint) (*domain.CustomRol
 }
 
 func (r *AccountRepository) UpdateCustomRole(role *domain.CustomRole) error {
-	return r.db.Save(role).Error
+	err := r.db.Save(role).Error
+	if err == nil {
+		_ = NewJournalRepository(r.db).RecordChange(r.db, &domain.LocalChangeJournal{
+			AccountID:     role.AccountID,
+			EntityType:    "CustomRole",
+			EntityID:      role.ID,
+			ObjectType:    "CustomRole",
+			ObjectID:      role.ID,
+			Action:        "role_update",
+			ActorType:     "System",
+			ActorID:       0,
+			Reason:        fmt.Sprintf("Updated permissions or details for role %s", role.Name),
+			ChangedFields: role.Permissions,
+			Result:        "applied",
+			OccurredAt:    time.Now().UTC(),
+		})
+	}
+	return err
 }
 
 func (r *AccountRepository) DeleteCustomRole(accountID, id uint) error {

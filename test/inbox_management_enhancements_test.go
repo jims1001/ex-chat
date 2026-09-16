@@ -348,10 +348,38 @@ func TestInboxManagementEnhancements(t *testing.T) {
 	// Test 6: 消息模板同步与列表 (GET/POST /message_templates, /sync_templates)
 	// ==========================================
 	t.Run("MessageTemplates", func(t *testing.T) {
-		// GET templates
+		// 1. Initially unconfigured, sync should return 0 templates (no fake templates!)
 		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/accounts/%d/inboxes/%d/message_templates", accountID, inboxID), nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("get message templates failed: code=%d, body=%s", w.Code, w.Body.String())
+		}
+
+		// 2. Create a message template
+		createTmplBody, _ := json.Marshal(map[string]any{
+			"name":     "greeting_template",
+			"status":   "APPROVED",
+			"category": "UTILITY",
+			"language": "en_US",
+			"components": []map[string]any{
+				{"type": "BODY", "text": "Hello, thank you for contacting support."},
+			},
+		})
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/accounts/%d/inboxes/%d/message_templates", accountID, inboxID), bytes.NewReader(createTmplBody))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create template failed: code=%d, body=%s", w.Code, w.Body.String())
+		}
+
+		// 3. GET templates now returns the created template
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/accounts/%d/inboxes/%d/message_templates", accountID, inboxID), nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("get message templates failed: code=%d, body=%s", w.Code, w.Body.String())
@@ -361,11 +389,11 @@ func TestInboxManagementEnhancements(t *testing.T) {
 			Templates []map[string]any `json:"templates"`
 		}
 		_ = json.Unmarshal(w.Body.Bytes(), &listResp)
-		if len(listResp.Templates) == 0 {
-			t.Fatalf("expected non-empty templates, got 0")
+		if len(listResp.Templates) != 1 {
+			t.Fatalf("expected 1 template, got %d", len(listResp.Templates))
 		}
 
-		// POST sync_templates
+		// 4. POST sync_templates returns existing templates
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/accounts/%d/inboxes/%d/sync_templates", accountID, inboxID), nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w = httptest.NewRecorder()
@@ -378,7 +406,7 @@ func TestInboxManagementEnhancements(t *testing.T) {
 			Templates []map[string]any `json:"templates"`
 		}
 		_ = json.Unmarshal(w.Body.Bytes(), &syncResp)
-		if syncResp.Status != "synced" || len(syncResp.Templates) == 0 {
+		if syncResp.Status != "synced" || len(syncResp.Templates) != 1 {
 			t.Fatalf("unexpected sync response: %+v", syncResp)
 		}
 	})

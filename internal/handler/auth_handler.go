@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
@@ -24,6 +26,7 @@ type AuthHandler struct {
 	userRepo       *repository.UserRepository
 	accountRepo    *repository.AccountRepository
 	enterpriseRepo repository.ChannelAuthEnterpriseRepository
+	emailService   *service.EmailService
 }
 
 func NewAuthHandler(cfg *config.Config, userRepo *repository.UserRepository, accountRepo *repository.AccountRepository) *AuthHandler {
@@ -37,6 +40,11 @@ func NewAuthHandler(cfg *config.Config, userRepo *repository.UserRepository, acc
 func (h *AuthHandler) SetEnterpriseRepo(enterpriseRepo repository.ChannelAuthEnterpriseRepository) {
 	h.enterpriseRepo = enterpriseRepo
 }
+
+func (h *AuthHandler) SetEmailService(emailService *service.EmailService) {
+	h.emailService = emailService
+}
+
 
 type SignUpRequest struct {
 	Name        string `json:"name" binding:"required"`
@@ -95,8 +103,15 @@ func (h *AuthHandler) SignUp(c *gin.Context) {
 		return
 	}
 
+	var confirmationToken string
 	if h.enterpriseRepo != nil {
-		_, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
+		confirmationToken, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
+	}
+
+	if confirmationToken != "" && h.emailService != nil {
+		go func(u domain.User, token string) {
+			_, _ = h.emailService.SendConfirmationEmail(context.Background(), &u, token)
+		}(user, confirmationToken)
 	}
 
 	// Create initial workspace account for new admin
@@ -454,8 +469,15 @@ func (h *AuthHandler) ResendConfirmation(c *gin.Context) {
 		return
 	}
 
+	var confirmationToken string
 	if h.enterpriseRepo != nil {
-		_, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
+		confirmationToken, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
+	}
+
+	if confirmationToken != "" && h.emailService != nil {
+		go func(u domain.User, token string) {
+			_, _ = h.emailService.SendConfirmationEmail(context.Background(), &u, token)
+		}(*user, confirmationToken)
 	}
 
 	response.Success(c, gin.H{"message": "Confirmation instructions sent"})

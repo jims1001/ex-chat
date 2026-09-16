@@ -57,6 +57,11 @@ func NewCSATExtensionRepository(db *gorm.DB) *CSATExtensionRepository {
 	return &CSATExtensionRepository{db: db}
 }
 
+// DB returns the underlying gorm.DB
+func (r *CSATExtensionRepository) DB() *gorm.DB {
+	return r.db
+}
+
 // ListSurveys queries CSAT surveys with filtering and pagination
 func (r *CSATExtensionRepository) ListSurveys(accountID uint, filter CSATFilter) ([]domain.CSATSurvey, int64, error) {
 	var surveys []domain.CSATSurvey

@@ -86,11 +86,11 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 
 	// Add an agent to the inbox
 	agentUser := domain.User{
-		Name:         "Support Agent Sam",
-		DisplayName:  "Sam S.",
-		Email:        "sam@example.com",
-		Role:         domain.RoleAgent,
-		AvatarURL:    "https://avatars.internal/sam.png",
+		Name:        "Support Agent Sam",
+		DisplayName: "Sam S.",
+		Email:       "sam@example.com",
+		Role:        domain.RoleAgent,
+		AvatarURL:   "https://avatars.internal/sam.png",
 	}
 	db.Create(&agentUser)
 	db.Create(&domain.AccountUser{
@@ -297,7 +297,7 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		part.Write([]byte("fake-png-image-content-data"))
 		writer.Close()
 
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s", websiteToken), bodyBuf)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&source_id=customer_user_888", websiteToken), bodyBuf)
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -329,7 +329,7 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 			},
 		}
 		b, _ := json.Marshal(jsonBlobReq)
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s", websiteToken), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&source_id=customer_user_888", websiteToken), bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)

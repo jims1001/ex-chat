@@ -395,9 +395,12 @@ func TestBusinessCapabilitiesEnhancement(t *testing.T) {
 		conv := domain.Conversation{AccountID: accountID, InboxID: inbox.ID, ContactID: contact.ID, Status: domain.ConversationStatusOpen}
 		db.Create(&conv)
 
+		msg := domain.Message{AccountID: accountID, ConversationID: conv.ID, SenderType: domain.SenderTypeUser, SenderID: 1, Content: "receipt"}
+		db.Create(&msg)
+
 		body := &bytes.Buffer{}
 		writer := multipart.NewWriter(body)
-		_ = writer.WriteField("message_id", "409")
+		_ = writer.WriteField("message_id", fmt.Sprintf("%d", msg.ID))
 
 		part, err := writer.CreateFormFile("attachment", "sample_receipt.png")
 		if err != nil {

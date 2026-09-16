@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
@@ -23,6 +24,7 @@ type InboxHandler struct {
 	campaignRepo *repository.CampaignRepository
 	agentBotRepo *repository.AgentBotRepository
 	contactRepo  *repository.ContactRepository
+	jwtSecret    string
 }
 
 func NewInboxHandler(inboxRepo *repository.InboxRepository, userRepo *repository.UserRepository) *InboxHandler {
@@ -30,6 +32,10 @@ func NewInboxHandler(inboxRepo *repository.InboxRepository, userRepo *repository
 		inboxRepo: inboxRepo,
 		userRepo:  userRepo,
 	}
+}
+
+func (h *InboxHandler) SetJWTSecret(secret string) {
+	h.jwtSecret = secret
 }
 
 func (h *InboxHandler) SetCaptainRepo(cr *repository.CaptainRepository) {
@@ -258,6 +264,7 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 	var req struct {
 		AssignmentPolicyID *uint `json:"assignment_policy_id"`
 		PolicyID           *uint `json:"policy_id"`
+		Reassign           *bool `json:"reassign"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
@@ -267,6 +274,29 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 	policyID := req.AssignmentPolicyID
 	if policyID == nil && req.PolicyID != nil {
 		policyID = req.PolicyID
+	}
+
+	if policyID != nil && *policyID > 0 {
+		var count int64
+		if err := h.inboxRepo.DB().Model(&domain.AssignmentPolicy{}).
+			Where("account_id = ? AND id = ?", accountID, *policyID).
+			Count(&count).Error; err != nil || count == 0 {
+			response.NotFound(c, "Assignment policy not found")
+			return
+		}
+
+		allowReassign := (req.Reassign != nil && *req.Reassign) || c.Query("reassign") == "true"
+		if !allowReassign && inbox.AssignmentPolicyID != nil && *inbox.AssignmentPolicyID != 0 && *inbox.AssignmentPolicyID != *policyID {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":   "Inbox already associated with another assignment policy",
+				"message": "同一 Inbox 不能被多个冲突策略重复关联，请先解绑或设置 reassign=true 重新分配",
+				"details": gin.H{
+					"current_policy_id": *inbox.AssignmentPolicyID,
+					"target_policy_id":  *policyID,
+				},
+			})
+			return
+		}
 	}
 
 	if err := h.inboxRepo.BindAssignmentPolicy(accountID, uint(inboxID), policyID); err != nil {
@@ -287,7 +317,106 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 	)
 
 	updated, _ := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	response.Success(c, updated)
+	res := gin.H{
+		"success": true,
+		"data":    updated,
+	}
+	if updated != nil && updated.AssignmentPolicy != nil {
+		res["id"] = updated.AssignmentPolicy.ID
+		res["name"] = updated.AssignmentPolicy.Name
+		res["assignment_policy"] = updated.AssignmentPolicy
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *InboxHandler) GetAssignmentPolicy(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	if err != nil || inbox == nil {
+		response.NotFound(c, "Inbox not found")
+		return
+	}
+
+	if inbox.AssignmentPolicyID == nil || *inbox.AssignmentPolicyID == 0 {
+		response.NotFound(c, "Assignment policy not found")
+		return
+	}
+
+	policy, err := h.inboxRepo.GetAssignmentPolicy(accountID, uint(inboxID))
+	if err != nil || policy == nil {
+		response.NotFound(c, "Assignment policy not found")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":              true,
+		"id":                   policy.ID,
+		"name":                 policy.Name,
+		"description":          policy.Description,
+		"strategy_type":        policy.StrategyType,
+		"enabled":              policy.Enabled,
+		"working_hours_only":   policy.WorkingHoursOnly,
+		"agent_capacity_limit": policy.AgentCapacityLimit,
+		"fallback_assignee_id": policy.FallbackAssigneeID,
+		"fallback_team_id":     policy.FallbackTeamID,
+		"rule_config":          policy.RuleConfig,
+		"data":                 policy,
+	})
+}
+
+func (h *InboxHandler) UnbindAssignmentPolicy(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	if err != nil || inbox == nil {
+		response.NotFound(c, "Inbox not found")
+		return
+	}
+
+	if inbox.AssignmentPolicyID == nil || *inbox.AssignmentPolicyID == 0 {
+		response.NotFound(c, "Assignment policy not found")
+		return
+	}
+
+	if err := h.inboxRepo.UnbindAssignmentPolicy(accountID, uint(inboxID)); err != nil {
+		logger.WithComponent("inbox").Error("failed to unbind assignment policy",
+			"account_id", accountID,
+			"inbox_id", inboxID,
+			"error", err.Error(),
+		)
+		response.InternalError(c, "Failed to unbind assignment policy: "+err.Error())
+		return
+	}
+
+	logger.WithComponent("inbox").Info("assignment policy unbound from inbox",
+		"account_id", accountID,
+		"inbox_id", inboxID,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"deleted":  true,
+		"inbox_id": uint(inboxID),
+		"data": gin.H{
+			"deleted":  true,
+			"inbox_id": uint(inboxID),
+		},
+	})
 }
 
 func (h *InboxHandler) DeleteInbox(c *gin.Context) {
@@ -362,6 +491,7 @@ func (h *InboxHandler) AddInboxMembers(c *gin.Context) {
 
 type WidgetConfigCreateRequest struct {
 	WebsiteToken string                `json:"website_token"`
+	SourceID     string                `json:"source_id"`
 	Contact      *WidgetContactRequest `json:"contact"`
 }
 
@@ -494,6 +624,26 @@ func (h *InboxHandler) WidgetConfigCreate(c *gin.Context) {
 		}
 	}
 
+	var visitorToken string
+	if contactObj != nil && h.jwtSecret != "" {
+		var cID uint
+		if c, ok := contactObj.(*domain.Contact); ok && c != nil {
+			cID = c.ID
+		} else if c, ok := contactObj.(domain.Contact); ok {
+			cID = c.ID
+		}
+		if cID > 0 {
+			src := req.SourceID
+			if src == "" && req.Contact.Identifier != "" {
+				src = req.Contact.Identifier
+			}
+			vt, err := auth.GenerateVisitorToken(inbox.ID, cID, src, h.jwtSecret, 72*time.Hour)
+			if err == nil {
+				visitorToken = vt
+			}
+		}
+	}
+
 	configCreateMap := gin.H{
 		"inbox_id":              inbox.ID,
 		"account_id":            inbox.AccountID,
@@ -506,6 +656,7 @@ func (h *InboxHandler) WidgetConfigCreate(c *gin.Context) {
 		"csat_survey_enabled":   inbox.CSATSurveyEnabled,
 		"contact":               contactObj,
 		"pubsub_token":          pubsubToken,
+		"visitor_token":         visitorToken,
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -522,6 +673,7 @@ func (h *InboxHandler) WidgetConfigCreate(c *gin.Context) {
 		"csat_survey_enabled":   inbox.CSATSurveyEnabled,
 		"contact":               contactObj,
 		"pubsub_token":          pubsubToken,
+		"visitor_token":         visitorToken,
 	})
 }
 
@@ -768,7 +920,33 @@ func (h *InboxHandler) DeleteAvatar(c *gin.Context) {
 	})
 }
 
-// ListMessageTemplates lists WhatsApp/channel templates for an inbox
+func formatMessageTemplates(templates []domain.InboxMessageTemplate) []map[string]any {
+	result := make([]map[string]any, 0, len(templates))
+	for _, t := range templates {
+		var comps any
+		if t.Components != "" {
+			_ = json.Unmarshal([]byte(t.Components), &comps)
+		}
+		if comps == nil {
+			comps = []map[string]any{
+				{"type": "BODY", "text": "Hello, template message."},
+			}
+		}
+		result = append(result, map[string]any{
+			"id":         t.ID,
+			"name":       t.Name,
+			"status":     t.Status,
+			"category":   t.Category,
+			"language":   t.Language,
+			"components": comps,
+			"created_at": t.CreatedAt,
+			"updated_at": t.UpdatedAt,
+		})
+	}
+	return result
+}
+
+// ListMessageTemplates lists WhatsApp/channel templates for an inbox from persistent storage
 func (h *InboxHandler) ListMessageTemplates(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -786,49 +964,28 @@ func (h *InboxHandler) ListMessageTemplates(c *gin.Context) {
 	}
 
 	nameFilter := c.Query("name")
+	statusFilter := c.Query("status")
 
-	templates := []map[string]any{
-		{
-			"name":     "sample_issue_resolution",
-			"status":   "APPROVED",
-			"category": "UTILITY",
-			"language": "en_US",
-			"components": []map[string]any{
-				{"type": "BODY", "text": "Your issue {{1}} has been resolved."},
-			},
-		},
-		{
-			"name":     "customer_satisfaction_survey",
-			"status":   "APPROVED",
-			"category": "MARKETING",
-			"language": "en_US",
-			"components": []map[string]any{
-				{"type": "BODY", "text": "Please rate your experience with us."},
-			},
-		},
+	storedTemplates, err := h.inboxRepo.ListMessageTemplates(accountID, uint(inboxID), nameFilter, statusFilter)
+	if err != nil {
+		response.InternalError(c, "Failed to list message templates: "+err.Error())
+		return
 	}
 
-	if nameFilter != "" {
-		filtered := make([]map[string]any, 0)
-		for _, t := range templates {
-			if t["name"] == nameFilter {
-				filtered = append(filtered, t)
-			}
-		}
-		templates = filtered
-	}
+	templates := formatMessageTemplates(storedTemplates)
 
 	c.JSON(http.StatusOK, gin.H{
 		"payload":   templates,
 		"templates": templates,
 		"data":      templates,
 		"meta": gin.H{
+			"total":                len(templates),
 			"last_sync_attempt_at": time.Now().UTC(),
 		},
 	})
 }
 
-// SyncMessageTemplates initiates message template synchronization with provider
+// SyncMessageTemplates initiates message template synchronization with provider/storage
 func (h *InboxHandler) SyncMessageTemplates(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -845,26 +1002,13 @@ func (h *InboxHandler) SyncMessageTemplates(c *gin.Context) {
 		return
 	}
 
-	templates := []map[string]any{
-		{
-			"name":     "sample_issue_resolution",
-			"status":   "APPROVED",
-			"category": "UTILITY",
-			"language": "en_US",
-			"components": []map[string]any{
-				{"type": "BODY", "text": "Your issue {{1}} has been resolved."},
-			},
-		},
-		{
-			"name":     "customer_satisfaction_survey",
-			"status":   "APPROVED",
-			"category": "MARKETING",
-			"language": "en_US",
-			"components": []map[string]any{
-				{"type": "BODY", "text": "Please rate your experience with us."},
-			},
-		},
+	syncedTemplates, err := h.inboxRepo.SyncMessageTemplates(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to sync message templates: "+err.Error())
+		return
 	}
+
+	templates := formatMessageTemplates(syncedTemplates)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "synced",
@@ -872,7 +1016,86 @@ func (h *InboxHandler) SyncMessageTemplates(c *gin.Context) {
 		"templates": templates,
 		"payload":   templates,
 		"data":      templates,
+		"meta": gin.H{
+			"total":     len(templates),
+			"synced_at": time.Now().UTC(),
+		},
 	})
+}
+
+// CreateMessageTemplate stores a new message template
+func (h *InboxHandler) CreateMessageTemplate(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	var req struct {
+		Name       string          `json:"name" binding:"required"`
+		Status     string          `json:"status"`
+		Category   string          `json:"category"`
+		Language   string          `json:"language"`
+		Components json.RawMessage `json:"components"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request body: "+err.Error())
+		return
+	}
+
+	compStr := string(req.Components)
+	if compStr == "" || compStr == "null" {
+		compStr = `[{"type":"BODY","text":"Hello {{1}}, custom template message."}]`
+	}
+
+	tmpl := domain.InboxMessageTemplate{
+		AccountID:  accountID,
+		InboxID:    uint(inboxID),
+		Name:       req.Name,
+		Status:     req.Status,
+		Category:   req.Category,
+		Language:   req.Language,
+		Components: compStr,
+	}
+
+	if err := h.inboxRepo.CreateMessageTemplate(&tmpl); err != nil {
+		response.InternalError(c, "Failed to create message template: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"data":    tmpl,
+		"payload": tmpl,
+		"message": "Message template created successfully",
+	})
+}
+
+// DeleteMessageTemplate removes a message template
+func (h *InboxHandler) DeleteMessageTemplate(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	templateID, err := strconv.ParseUint(c.Param("template_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid template ID")
+		return
+	}
+
+	if err := h.inboxRepo.DeleteMessageTemplate(accountID, uint(inboxID), uint(templateID)); err != nil {
+		response.InternalError(c, "Failed to delete message template: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Message template deleted successfully"})
 }
 
 // GetChannelHealth reports connectivity, quality ratings, and health indicators
@@ -886,20 +1109,25 @@ func (h *InboxHandler) GetChannelHealth(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	health, err := h.inboxRepo.CheckChannelHealth(accountID, uint(inboxID))
+	if err != nil {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":          "healthy",
-		"channel_type":    inbox.ChannelType,
-		"quality_rating":  "GREEN",
-		"messaging_limit": "TIER_10K",
-		"verified":        true,
+		"status":          health.Status,
+		"channel_type":    health.ChannelType,
+		"quality_rating":  health.QualityRating,
+		"messaging_limit": health.MessagingLimit,
+		"verified":        health.Verified,
+		"checks":          health.Checks,
+		"issues":          health.Issues,
+		"checked_at":      health.CheckedAt,
+		"data":            health,
 	})
 }
+
 
 // RegisterChannelWebhook sets the callback webhook endpoint for the channel
 func (h *InboxHandler) RegisterChannelWebhook(c *gin.Context) {

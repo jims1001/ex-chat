@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -184,30 +183,31 @@ func RequirePermission(accountRepo *repository.AccountRepository, permission str
 			return
 		}
 
-		// 2. Check fallback roles
+		// 2. If user has custom role assigned, strictly enforce custom role permissions
+		hasCustomRole := membership.CustomRole != nil || membership.CustomRoleID != nil || (membership.Role != domain.RoleAdministrator && membership.Role != domain.RoleAgent && membership.Role != "")
+		if hasCustomRole {
+			if accountRepo != nil {
+				hasPerm, err := accountRepo.HasPermission(membership.AccountID, membership.UserID, permission)
+				if err == nil && hasPerm {
+					c.Next()
+					return
+				}
+			} else if membership.CustomRole != nil {
+				if domain.CheckPermissionInJSON(membership.CustomRole.Permissions, permission) {
+					c.Next()
+					return
+				}
+			}
+			response.Forbidden(c, "You do not have permission to perform this action")
+			c.Abort()
+			return
+		}
+
+		// 3. Check fallback roles for standard users without a custom role
 		for _, r := range fallbackRoles {
 			if membership.Role == r {
 				c.Next()
 				return
-			}
-		}
-
-		// 3. Check custom role permissions
-		if accountRepo != nil {
-			hasPerm, err := accountRepo.HasPermission(membership.AccountID, membership.UserID, permission)
-			if err == nil && hasPerm {
-				c.Next()
-				return
-			}
-		} else if membership.CustomRole != nil {
-			var perms []string
-			if err := json.Unmarshal([]byte(membership.CustomRole.Permissions), &perms); err == nil {
-				for _, p := range perms {
-					if p == domain.PermissionAdministrator || p == permission {
-						c.Next()
-						return
-					}
-				}
 			}
 		}
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,11 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
+)
+
+var (
+	ErrAPIKeyMissing       = errors.New("ai provider api key is not configured")
+	ErrModelNotConfigured = errors.New("ai model is not configured")
 )
 
 var globalAIHTTPClient *http.Client
@@ -136,28 +142,12 @@ func (p *OpenAIProvider) GenerateCompletion(ctx context.Context, req AICompletio
 		client = globalAIHTTPClient
 	}
 
-	var userPrompt string
-	for _, m := range req.Messages {
-		if m.Role == "user" {
-			userPrompt = m.Content
-			break
-		}
-	}
-
-	if apiKey == "" && client == nil {
-		reply := fmt.Sprintf("[OpenAI %s] 针对您的问题：“%s”，建议方案如下：请检查用户网络环境与账户状态，并指导其重新尝试。", model, userPrompt)
-		logger.WithComponent("ai_provider").Info("generated fallback openai completion",
+	if apiKey == "" {
+		logger.WithComponent("ai_provider").Warn("openai api key is not configured",
 			"provider", p.Name(),
 			"model", model,
 		)
-		return &AICompletionResponse{
-			Content:      reply,
-			Model:        model,
-			PromptTokens: len(userPrompt) / 4,
-			CompTokens:   len(reply) / 4,
-			TotalTokens:  (len(userPrompt) + len(reply)) / 4,
-			Provider:     p.Name(),
-		}, nil
+		return nil, fmt.Errorf("%w: OpenAI API key is missing (neither request parameter nor OPENAI_API_KEY environment variable configured)", ErrAPIKeyMissing)
 	}
 
 	if client == nil {
@@ -318,28 +308,12 @@ func (p *GeminiProvider) GenerateCompletion(ctx context.Context, req AICompletio
 		client = globalAIHTTPClient
 	}
 
-	var userPrompt string
-	for _, m := range req.Messages {
-		if m.Role == "user" {
-			userPrompt = m.Content
-			break
-		}
-	}
-
-	if apiKey == "" && client == nil {
-		reply := fmt.Sprintf("[Gemini %s] 针对您的问题：“%s”，系统建议如下：请核对客户订单及付款信息。", model, userPrompt)
-		logger.WithComponent("ai_provider").Info("generated fallback gemini completion",
+	if apiKey == "" {
+		logger.WithComponent("ai_provider").Warn("gemini api key is not configured",
 			"provider", p.Name(),
 			"model", model,
 		)
-		return &AICompletionResponse{
-			Content:      reply,
-			Model:        model,
-			PromptTokens: len(userPrompt) / 4,
-			CompTokens:   len(reply) / 4,
-			TotalTokens:  (len(userPrompt) + len(reply)) / 4,
-			Provider:     p.Name(),
-		}, nil
+		return nil, fmt.Errorf("%w: Gemini API key is missing (neither request parameter nor GEMINI_API_KEY environment variable configured)", ErrAPIKeyMissing)
 	}
 
 	if client == nil {
@@ -469,14 +443,53 @@ func (p *GeminiProvider) GenerateCompletion(ctx context.Context, req AICompletio
 	}, nil
 }
 
+// UnconfiguredProvider represents an unconfigured AI model provider that explicitly reports errors
+type UnconfiguredProvider struct {
+	Reason string
+}
+
+func (p *UnconfiguredProvider) Name() string {
+	return "unconfigured"
+}
+
+func (p *UnconfiguredProvider) GenerateCompletion(ctx context.Context, req AICompletionRequest) (*AICompletionResponse, error) {
+	reason := p.Reason
+	if reason == "" {
+		reason = "AI 模型未配置，请配置 OpenAI 或 Google Gemini 的 API 密钥后重试"
+	}
+	logger.WithComponent("ai_provider").Warn("invoked unconfigured ai model provider",
+		"reason", reason,
+		"model", req.Model,
+	)
+	return nil, fmt.Errorf("%w: %s", ErrModelNotConfigured, reason)
+}
+
 // ProviderFactory creates corresponding AIModelProvider
 func GetAIProvider(providerType, apiKey, model string) AIModelProvider {
-	switch strings.ToLower(providerType) {
-	case "openai":
-		return NewOpenAIProvider(apiKey, "", model)
-	case "gemini":
-		return NewGeminiProvider(apiKey, model)
-	default:
+	p := strings.ToLower(strings.TrimSpace(providerType))
+	m := strings.ToLower(strings.TrimSpace(model))
+
+	if p == "local-heuristic" {
 		return NewLocalHeuristicProvider()
+	}
+
+	if p == "openai" || strings.HasPrefix(p, "gpt-") || strings.Contains(p, "openai") ||
+		strings.HasPrefix(m, "gpt-") || strings.Contains(m, "openai") {
+		return NewOpenAIProvider(apiKey, "", model)
+	}
+
+	if p == "gemini" || strings.HasPrefix(p, "gemini-") || strings.Contains(p, "gemini") ||
+		strings.HasPrefix(m, "gemini-") || strings.Contains(m, "gemini") {
+		return NewGeminiProvider(apiKey, model)
+	}
+
+	if p != "" || m != "" {
+		return &UnconfiguredProvider{
+			Reason: fmt.Sprintf("AI 模型未配置或暂不支持: %s (model: %s)", providerType, model),
+		}
+	}
+
+	return &UnconfiguredProvider{
+		Reason: "AI 提供商与模型均未配置，无法执行模型调用",
 	}
 }

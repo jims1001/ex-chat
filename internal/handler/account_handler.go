@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -60,22 +59,7 @@ type UpdateCustomRoleRequest struct {
 }
 
 func formatCustomRolePermissions(val any) string {
-	if val == nil {
-		return "[]"
-	}
-	switch v := val.(type) {
-	case string:
-		if strings.TrimSpace(v) == "" {
-			return "[]"
-		}
-		return v
-	default:
-		bytes, err := json.Marshal(v)
-		if err != nil {
-			return "[]"
-		}
-		return string(bytes)
-	}
+	return domain.FormatPermissionsJSON(val)
 }
 
 func (h *AccountHandler) CreateAccount(c *gin.Context) {
@@ -226,7 +210,7 @@ func (h *AccountHandler) AddAgent(c *gin.Context) {
 	if user == nil {
 		pwd := req.Password
 		if pwd == "" {
-			pwd = "password123"
+			pwd = "Password123!"
 		}
 		hash, err := auth.HashPassword(pwd)
 		if err != nil {
@@ -513,5 +497,3 @@ func (h *AccountHandler) DeleteCustomRole(c *gin.Context) {
 
 	response.Success(c, gin.H{"deleted": true})
 }
-
-

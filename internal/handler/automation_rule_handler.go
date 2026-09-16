@@ -24,6 +24,225 @@ func (h *AdvancedHandler) ListAutomationRules(c *gin.Context) {
 	response.Success(c, rules)
 }
 
+var allowedAutomationEvents = map[string]bool{
+	"conversation_created": true,
+	"conversation_updated": true,
+	"message_created":      true,
+	"conversation_opened":  true,
+}
+
+var allowedAutomationConditionAttributes = map[string]bool{
+	"content":               true,
+	"email":                 true,
+	"country_code":          true,
+	"status":                true,
+	"message_type":          true,
+	"browser_language":      true,
+	"assignee_id":           true,
+	"team_id":               true,
+	"referer":               true,
+	"city":                  true,
+	"company_name":          true,
+	"inbox_id":              true,
+	"mail_subject":          true,
+	"phone_number":          true,
+	"priority":              true,
+	"conversation_language": true,
+	"labels":                true,
+	"private_note":          true,
+	"contact_id":            true,
+}
+
+var allowedAutomationFilterOperators = map[string]bool{
+	"equal_to":         true,
+	"not_equal_to":     true,
+	"contains":         true,
+	"does_not_contain": true,
+	"is_present":       true,
+	"is_not_present":   true,
+	"starts_with":      true,
+	"is_greater_than":  true,
+	"is_less_than":     true,
+	"days_before":      true,
+	"is":               true,
+	"is_not":           true,
+	"includes":         true,
+}
+
+var allowedAutomationActions = map[string]bool{
+	"send_message":          true,
+	"send_reply":            true,
+	"reply":                 true,
+	"add_label":             true,
+	"add_labels":            true,
+	"remove_label":          true,
+	"remove_labels":         true,
+	"send_email_to_team":    true,
+	"assign_team":           true,
+	"assign_agent":          true,
+	"remove_assigned_agent": true,
+	"remove_assigned_team":  true,
+	"send_webhook_event":    true,
+	"mute_conversation":     true,
+	"send_attachment":       true,
+	"change_status":         true,
+	"resolve_conversation":  true,
+	"close_conversation":    true,
+	"close":                 true,
+	"resolve":               true,
+	"open_conversation":     true,
+	"open":                  true,
+	"pending_conversation":  true,
+	"snooze_conversation":   true,
+	"snooze":                true,
+	"change_priority":       true,
+	"send_email_transcript": true,
+	"add_private_note":      true,
+	"private_note":          true,
+}
+
+type singleConditionReq struct {
+	AttributeKey   string `json:"attribute_key"`
+	Key            string `json:"key"`
+	FilterOperator string `json:"filter_operator"`
+	Operator       string `json:"operator"`
+	QueryOperator  string `json:"query_operator"`
+}
+
+type singleActionReq struct {
+	ActionName string `json:"action_name"`
+	Name       string `json:"name"`
+}
+
+func validateAutomationRule(eventName string, conditionsRaw, actionsRaw any) error {
+	if eventName != "" && !allowedAutomationEvents[eventName] {
+		return fmt.Errorf("invalid event_name '%s'", eventName)
+	}
+
+	// Parse and validate conditions
+	if conditionsRaw != nil {
+		var conds []singleConditionReq
+		switch v := conditionsRaw.(type) {
+		case string:
+			str := strings.TrimSpace(v)
+			if str != "" && str != "[]" && str != "{}" {
+				if err := json.Unmarshal([]byte(str), &conds); err != nil {
+					var wrapper struct {
+						Conditions []singleConditionReq `json:"conditions"`
+						Rules      []singleConditionReq `json:"rules"`
+						Values     []singleConditionReq `json:"values"`
+					}
+					if err2 := json.Unmarshal([]byte(str), &wrapper); err2 == nil {
+						if len(wrapper.Conditions) > 0 {
+							conds = wrapper.Conditions
+						} else if len(wrapper.Rules) > 0 {
+							conds = wrapper.Rules
+						} else {
+							conds = wrapper.Values
+						}
+					}
+				}
+			}
+		default:
+			b, _ := json.Marshal(v)
+			var direct []singleConditionReq
+			if err := json.Unmarshal(b, &direct); err == nil {
+				conds = direct
+			} else {
+				var wrapper struct {
+					Conditions []singleConditionReq `json:"conditions"`
+					Rules      []singleConditionReq `json:"rules"`
+					Values     []singleConditionReq `json:"values"`
+				}
+				if err2 := json.Unmarshal(b, &wrapper); err2 == nil {
+					if len(wrapper.Conditions) > 0 {
+						conds = wrapper.Conditions
+					} else if len(wrapper.Rules) > 0 {
+						conds = wrapper.Rules
+					} else {
+						conds = wrapper.Values
+					}
+				}
+			}
+		}
+
+		for _, cond := range conds {
+			attr := cond.AttributeKey
+			if attr == "" {
+				attr = cond.Key
+			}
+			if attr != "" && !allowedAutomationConditionAttributes[attr] && !strings.HasPrefix(attr, "custom_attribute") {
+				return fmt.Errorf("automation condition attribute '%s' is not supported", attr)
+			}
+			op := cond.FilterOperator
+			if op == "" {
+				op = cond.Operator
+			}
+			if op != "" && !allowedAutomationFilterOperators[op] {
+				return fmt.Errorf("automation condition filter_operator '%s' is not supported", op)
+			}
+			qop := strings.ToUpper(strings.TrimSpace(cond.QueryOperator))
+			if qop != "" && qop != "AND" && qop != "OR" {
+				return fmt.Errorf("query_operator must be either 'AND' or 'OR'")
+			}
+		}
+	}
+
+	// Parse and validate actions
+	if actionsRaw != nil {
+		var acts []singleActionReq
+		switch v := actionsRaw.(type) {
+		case string:
+			str := strings.TrimSpace(v)
+			if str != "" && str != "[]" && str != "{}" {
+				if err := json.Unmarshal([]byte(str), &acts); err != nil {
+					var wrapper struct {
+						Actions []singleActionReq `json:"actions"`
+						Values  []singleActionReq `json:"values"`
+					}
+					if err2 := json.Unmarshal([]byte(str), &wrapper); err2 == nil {
+						if len(wrapper.Actions) > 0 {
+							acts = wrapper.Actions
+						} else {
+							acts = wrapper.Values
+						}
+					}
+				}
+			}
+		default:
+			b, _ := json.Marshal(v)
+			var direct []singleActionReq
+			if err := json.Unmarshal(b, &direct); err == nil {
+				acts = direct
+			} else {
+				var wrapper struct {
+					Actions []singleActionReq `json:"actions"`
+					Values  []singleActionReq `json:"values"`
+				}
+				if err2 := json.Unmarshal(b, &wrapper); err2 == nil {
+					if len(wrapper.Actions) > 0 {
+						acts = wrapper.Actions
+					} else {
+						acts = wrapper.Values
+					}
+				}
+			}
+		}
+
+		for _, act := range acts {
+			name := act.ActionName
+			if name == "" {
+				name = act.Name
+			}
+			if name != "" && !allowedAutomationActions[name] {
+				return fmt.Errorf("automation action '%s' is not supported", name)
+			}
+		}
+	}
+
+	return nil
+}
+
 // CreateAutomationRule creates a new automation rule
 func (h *AdvancedHandler) CreateAutomationRule(c *gin.Context) {
 	accID := c.GetUint("account_id")
@@ -36,6 +255,11 @@ func (h *AdvancedHandler) CreateAutomationRule(c *gin.Context) {
 		Active      *bool  `json:"active"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if err := validateAutomationRule(req.EventName, req.Conditions, req.Actions); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
@@ -103,6 +327,16 @@ func (h *AdvancedHandler) UpdateAutomationRule(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+
+	var eventName string
+	if ev, ok := req["event_name"].(string); ok {
+		eventName = ev
+	}
+	if err := validateAutomationRule(eventName, req["conditions"], req["actions"]); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
 	if cond, ok := req["conditions"]; ok && cond != nil {
 		if _, isStr := cond.(string); !isStr {
 			b, _ := json.Marshal(cond)
@@ -115,7 +349,10 @@ func (h *AdvancedHandler) UpdateAutomationRule(c *gin.Context) {
 			req["actions"] = string(b)
 		}
 	}
-	_ = h.db.Model(&existing).Updates(req)
+	if err := h.db.Model(&existing).Updates(req).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 	response.Success(c, existing)
 }
 
@@ -187,4 +424,45 @@ func (h *AdvancedHandler) CloneAutomationRule(c *gin.Context) {
 	)
 
 	response.Created(c, clonedRule)
+}
+
+// ListAutomationRuleExecutions returns execution history for automation rules
+func (h *AdvancedHandler) ListAutomationRuleExecutions(c *gin.Context) {
+	accID := c.GetUint("account_id")
+	ruleIDStr := c.Query("rule_id")
+	convIDStr := c.Query("conversation_id")
+	status := c.Query("status")
+
+	query := h.db.Where("account_id = ?", accID)
+	if ruleIDStr != "" {
+		query = query.Where("rule_id = ?", ruleIDStr)
+	}
+	if convIDStr != "" {
+		query = query.Where("conversation_id = ?", convIDStr)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+
+	var executions []domain.AutomationRuleExecution
+	if err := query.Order("triggered_at DESC").Limit(100).Find(&executions).Error; err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, executions)
+}
+
+// GetAutomationRuleExecution returns a single execution detail
+func (h *AdvancedHandler) GetAutomationRuleExecution(c *gin.Context) {
+	accID := c.GetUint("account_id")
+	execID := c.Param("execution_id")
+
+	var execution domain.AutomationRuleExecution
+	if err := h.db.Where("account_id = ? AND id = ?", accID, execID).First(&execution).Error; err != nil {
+		response.NotFound(c, "Automation rule execution record not found")
+		return
+	}
+
+	response.Success(c, execution)
 }

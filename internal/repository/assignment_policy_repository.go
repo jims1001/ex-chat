@@ -56,6 +56,10 @@ func (r *AssignmentPolicyRepository) Delete(accountID, id uint) error {
 	})
 }
 
+func (r *AssignmentPolicyRepository) DB() *gorm.DB {
+	return r.db
+}
+
 func (r *AssignmentPolicyRepository) GetInboxPolicy(inboxID uint) (*domain.AssignmentPolicy, error) {
 	var inbox domain.Inbox
 	if err := r.db.Select("id, account_id, assignment_policy_id").First(&inbox, inboxID).Error; err != nil {
@@ -65,4 +69,46 @@ func (r *AssignmentPolicyRepository) GetInboxPolicy(inboxID uint) (*domain.Assig
 		return nil, nil
 	}
 	return r.FindByID(inbox.AccountID, *inbox.AssignmentPolicyID)
+}
+
+func (r *AssignmentPolicyRepository) ListInboxes(accountID, policyID uint) ([]domain.Inbox, error) {
+	var inboxes []domain.Inbox
+	err := r.db.Where("account_id = ? AND assignment_policy_id = ?", accountID, policyID).
+		Order("id ASC").Find(&inboxes).Error
+	return inboxes, err
+}
+
+func (r *AssignmentPolicyRepository) AddInboxes(accountID, policyID uint, inboxIDs []uint) ([]domain.Inbox, error) {
+	if len(inboxIDs) == 0 {
+		return []domain.Inbox{}, nil
+	}
+	if err := r.db.Model(&domain.Inbox{}).
+		Where("account_id = ? AND id IN (?)", accountID, inboxIDs).
+		Update("assignment_policy_id", policyID).Error; err != nil {
+		return nil, err
+	}
+	var inboxes []domain.Inbox
+	err := r.db.Where("account_id = ? AND id IN (?)", accountID, inboxIDs).
+		Order("id ASC").Find(&inboxes).Error
+	return inboxes, err
+}
+
+func (r *AssignmentPolicyRepository) RemoveInbox(accountID, policyID, inboxID uint) error {
+	return r.db.Model(&domain.Inbox{}).
+		Where("account_id = ? AND id = ? AND assignment_policy_id = ?", accountID, inboxID, policyID).
+		Update("assignment_policy_id", nil).Error
+}
+
+func (r *AssignmentPolicyRepository) RemoveInboxes(accountID, policyID uint, inboxIDs []uint) error {
+	q := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND assignment_policy_id = ?", accountID, policyID)
+	if len(inboxIDs) > 0 {
+		q = q.Where("id IN (?)", inboxIDs)
+	}
+	return q.Update("assignment_policy_id", nil).Error
+}
+
+func (r *AssignmentPolicyRepository) UnbindInboxPolicy(accountID, inboxID uint) error {
+	return r.db.Model(&domain.Inbox{}).
+		Where("account_id = ? AND id = ?", accountID, inboxID).
+		Update("assignment_policy_id", nil).Error
 }

@@ -97,8 +97,30 @@ func (r *ContactRepository) Update(contact *domain.Contact) error {
 	return r.db.Save(contact).Error
 }
 
+var ErrContactHasActiveConversations = errors.New("cannot delete contact with active conversations")
+
 func (r *ContactRepository) Delete(accountID, id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		// 1. Check if contact has active (open or pending) conversations
+		var activeCount int64
+		if err := tx.Model(&domain.Conversation{}).
+			Where("account_id = ? AND contact_id = ? AND status IN ('open', 'pending')", accountID, id).
+			Count(&activeCount).Error; err != nil {
+			return err
+		}
+		if activeCount > 0 {
+			return ErrContactHasActiveConversations
+		}
+
+		// 2. Disassociate historical resolved/snoozed/bot conversations
+		if err := tx.Model(&domain.Conversation{}).
+			Where("account_id = ? AND contact_id = ?", accountID, id).
+			Update("contact_id", 0).Error; err != nil {
+			return err
+		}
+
+		// 3. Cascade clean relations
+		_ = tx.Where("contact_id = ?", id).Delete(&domain.ContactInbox{}).Error
 		_ = tx.Where("contact_id = ?", id).Delete(&domain.ContactLabel{}).Error
 		_ = tx.Where("account_id = ? AND contact_id = ?", accountID, id).Delete(&domain.ContactNote{}).Error
 		return tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Contact{}).Error
@@ -145,35 +167,124 @@ func (r *ContactRepository) FindContactBySourceID(inboxID uint, sourceID string)
 
 func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		// 1. Update ContactInboxes
-		if err := tx.Model(&domain.ContactInbox{}).
-			Where("contact_id = ?", mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
+		// 0. Fetch base and mergee contacts
+		var baseContact domain.Contact
+		if err := tx.Where("account_id = ? AND id = ?", accountID, baseID).First(&baseContact).Error; err != nil {
 			return err
 		}
 
-		// 2. Update Conversations
+		var mergeeContact domain.Contact
+		if err := tx.Where("account_id = ? AND id = ?", accountID, mergeeID).First(&mergeeContact).Error; err != nil {
+			return err
+		}
+
+		// 1. Merge attributes: give preference to base contact attributes; populate missing fields from mergee
+		updates := make(map[string]any)
+		if baseContact.Name == "" && mergeeContact.Name != "" {
+			updates["name"] = mergeeContact.Name
+		}
+		if baseContact.Email == "" && mergeeContact.Email != "" {
+			updates["email"] = mergeeContact.Email
+		}
+		if baseContact.PhoneNumber == "" && mergeeContact.PhoneNumber != "" {
+			updates["phone_number"] = mergeeContact.PhoneNumber
+		}
+		if baseContact.Identifier == "" && mergeeContact.Identifier != "" {
+			updates["identifier"] = mergeeContact.Identifier
+		}
+		if baseContact.AvatarURL == "" && mergeeContact.AvatarURL != "" {
+			updates["avatar_url"] = mergeeContact.AvatarURL
+		}
+		if baseContact.CompanyID == nil && mergeeContact.CompanyID != nil {
+			updates["company_id"] = mergeeContact.CompanyID
+		}
+		if !baseContact.Blocked && mergeeContact.Blocked {
+			updates["blocked"] = true
+		}
+
+		// Merge CustomAttributes JSON
+		baseCustomAttrs := make(map[string]any)
+		if strings.TrimSpace(baseContact.CustomAttributes) != "" {
+			_ = json.Unmarshal([]byte(baseContact.CustomAttributes), &baseCustomAttrs)
+		}
+		mergeeCustomAttrs := make(map[string]any)
+		if strings.TrimSpace(mergeeContact.CustomAttributes) != "" {
+			_ = json.Unmarshal([]byte(mergeeContact.CustomAttributes), &mergeeCustomAttrs)
+		}
+
+		mergedAttrs := make(map[string]any)
+		for k, v := range mergeeCustomAttrs {
+			mergedAttrs[k] = v
+		}
+		// Base attributes take precedence
+		for k, v := range baseCustomAttrs {
+			mergedAttrs[k] = v
+		}
+		if len(mergedAttrs) > 0 {
+			mergedJSON, err := json.Marshal(mergedAttrs)
+			if err == nil {
+				updates["custom_attributes"] = string(mergedJSON)
+			}
+		}
+
+		if len(updates) > 0 {
+			if err := tx.Model(&domain.Contact{}).
+				Where("account_id = ? AND id = ?", accountID, baseID).
+				Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+
+		// 2. Handle ContactInboxes with duplicate resolution
+		var mergeeInboxes []domain.ContactInbox
+		if err := tx.Where("contact_id = ?", mergeeID).Find(&mergeeInboxes).Error; err != nil {
+			return err
+		}
+
+		for _, mi := range mergeeInboxes {
+			var count int64
+			if err := tx.Model(&domain.ContactInbox{}).
+				Where("contact_id = ? AND inbox_id = ?", baseID, mi.InboxID).
+				Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				// Base contact already has identity in this inbox, remove mergee's duplicate
+				if err := tx.Delete(&domain.ContactInbox{}, mi.ID).Error; err != nil {
+					return err
+				}
+			} else {
+				// Move identity to base contact
+				if err := tx.Model(&domain.ContactInbox{}).
+					Where("id = ?", mi.ID).
+					Update("contact_id", baseID).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		// 3. Update Conversations
 		if err := tx.Model(&domain.Conversation{}).
 			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
 			Update("contact_id", baseID).Error; err != nil {
 			return err
 		}
 
-		// 3. Migrate Contact Notes from mergee to base contact
+		// 4. Migrate Contact Notes from mergee to base contact
 		if err := tx.Model(&domain.ContactNote{}).
 			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
 			Update("contact_id", baseID).Error; err != nil {
 			return err
 		}
 
-		// 4. Migrate Message sender ownership for incoming messages from mergee contact
+		// 5. Migrate Message sender ownership for incoming messages from mergee contact
 		if err := tx.Model(&domain.Message{}).
 			Where("account_id = ? AND LOWER(sender_type) = ? AND sender_id = ?", accountID, "contact", mergeeID).
 			Update("sender_id", baseID).Error; err != nil {
 			return err
 		}
 
-		// 5. Migrate ContactLabels from mergee to base contact
+		// 6. Migrate ContactLabels from mergee to base contact
 		var mergeeLabels []domain.ContactLabel
 		if err := tx.Where("contact_id = ?", mergeeID).Find(&mergeeLabels).Error; err == nil {
 			for _, ml := range mergeeLabels {
@@ -185,7 +296,47 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 			_ = tx.Where("contact_id = ?", mergeeID).Delete(&domain.ContactLabel{}).Error
 		}
 
-		// 6. Delete mergee Contact
+		// 7. Migrate Tickets & TicketComments
+		if err := tx.Model(&domain.Ticket{}).
+			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
+			Update("contact_id", baseID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&domain.TicketComment{}).
+			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
+			Update("contact_id", baseID).Error; err != nil {
+			return err
+		}
+
+		// 8. Migrate Orders
+		if err := tx.Model(&domain.Order{}).
+			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
+			Update("contact_id", baseID).Error; err != nil {
+			return err
+		}
+
+		// 9. Migrate CampaignDeliveries
+		if err := tx.Model(&domain.CampaignDelivery{}).
+			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
+			Update("contact_id", baseID).Error; err != nil {
+			return err
+		}
+
+		// 10. Migrate Calls
+		if err := tx.Model(&domain.Call{}).
+			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
+			Update("contact_id", baseID).Error; err != nil {
+			return err
+		}
+
+		// 11. Migrate WidgetEvents
+		if err := tx.Model(&domain.WidgetEvent{}).
+			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
+			Update("contact_id", baseID).Error; err != nil {
+			return err
+		}
+
+		// 12. Delete mergee Contact
 		if err := tx.Where("account_id = ? AND id = ?", accountID, mergeeID).
 			Delete(&domain.Contact{}).Error; err != nil {
 			return err

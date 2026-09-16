@@ -6,6 +6,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
+	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,7 @@ func ServeWS(
 	userRepo *repository.UserRepository,
 	accountRepo *repository.AccountRepository,
 	inboxRepo *repository.InboxRepository,
+	optionalEnterpriseRepo ...repository.ChannelAuthEnterpriseRepository,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		log := logger.WithComponent("websocket")
@@ -38,6 +40,14 @@ func ServeWS(
 		var conversationID uint
 
 		if token != "" {
+			if len(optionalEnterpriseRepo) > 0 && optionalEnterpriseRepo[0] != nil {
+				if revoked, err := optionalEnterpriseRepo[0].IsTokenRevoked(token); err == nil && revoked {
+					log.Warn("websocket agent auth failed: token revoked", "client_ip", c.ClientIP())
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
+					return
+				}
+			}
+
 			claims, err := auth.ValidateToken(token, cfg.JWTSecret)
 			if err != nil {
 				log.Warn("websocket agent auth failed", "error", err.Error(), "client_ip", c.ClientIP())
@@ -47,16 +57,39 @@ func ServeWS(
 			isAgent = true
 			userID = claims.UserID
 
+			// Fetch accounts this user belongs to for tenant isolation
+			userAccounts, err := accountRepo.ListAccountsForUser(userID)
+			if err != nil || len(userAccounts) == 0 {
+				log.Warn("websocket agent auth failed: user does not belong to any account", "user_id", userID, "client_ip", c.ClientIP())
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "user does not belong to any account"})
+				return
+			}
+
 			if aStr := c.Query("account_id"); aStr != "" {
 				if id, err := strconv.ParseUint(aStr, 10, 64); err == nil {
-					accountID = uint(id)
+					targetAccID := uint(id)
+					var belongs bool
+					for _, a := range userAccounts {
+						if a.ID == targetAccID {
+							belongs = true
+							break
+						}
+					}
+					if !belongs {
+						log.Warn("websocket agent auth failed: user does not belong to requested account",
+							"user_id", userID,
+							"requested_account_id", targetAccID,
+							"client_ip", c.ClientIP(),
+						)
+						c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: user does not belong to account"})
+						return
+					}
+					accountID = targetAccID
+				} else {
+					accountID = userAccounts[0].ID
 				}
 			} else {
-				// Default to first account user belongs to
-				accounts, _ := accountRepo.ListAccountsForUser(userID)
-				if len(accounts) > 0 {
-					accountID = accounts[0].ID
-				}
+				accountID = userAccounts[0].ID
 			}
 		} else if websiteToken != "" {
 			inbox, err := inboxRepo.FindByWebsiteToken(websiteToken)
@@ -70,7 +103,40 @@ func ServeWS(
 
 			if cStr := c.Query("conversation_id"); cStr != "" {
 				if id, err := strconv.ParseUint(cStr, 10, 64); err == nil {
-					conversationID = uint(id)
+					targetConvID := uint(id)
+					// Verify conversation belongs to this inbox and account
+					var conv domain.Conversation
+					if err := inboxRepo.GetDB().Where("id = ? AND inbox_id = ? AND account_id = ?", targetConvID, inbox.ID, inbox.AccountID).First(&conv).Error; err != nil {
+						log.Warn("websocket visitor auth failed: conversation does not belong to inbox",
+							"conversation_id", targetConvID,
+							"inbox_id", inbox.ID,
+							"client_ip", c.ClientIP(),
+						)
+						c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "conversation not found for this inbox"})
+						return
+					}
+
+					// Verify visitor token or contact token ownership if provided
+					visToken := c.Query("visitor_token")
+					if visToken == "" {
+						visToken = c.Query("contact_token")
+					}
+					if visToken != "" {
+						claims, err := auth.ParseVisitorToken(visToken, cfg.JWTSecret)
+						if err == nil && claims != nil {
+							if claims.InboxID != inbox.ID || (claims.ContactID > 0 && claims.ContactID != conv.ContactID) {
+								log.Warn("websocket visitor auth failed: visitor token mismatch",
+									"conv_contact_id", conv.ContactID,
+									"token_contact_id", claims.ContactID,
+									"client_ip", c.ClientIP(),
+								)
+								c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: visitor token mismatch"})
+								return
+							}
+						}
+					}
+
+					conversationID = targetConvID
 				}
 			}
 		} else {

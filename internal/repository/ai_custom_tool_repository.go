@@ -230,8 +230,10 @@ func (r *AICustomToolRepository) ListExecutionLogs(accountID, toolID uint, page,
 	var logs []domain.AIToolExecutionLog
 	var total int64
 
-	q := r.db.Model(&domain.AIToolExecutionLog{}).
-		Where("account_id = ? AND tool_id = ?", accountID, toolID)
+	q := r.db.Model(&domain.AIToolExecutionLog{}).Where("account_id = ?", accountID)
+	if toolID > 0 {
+		q = q.Where("tool_id = ?", toolID)
+	}
 
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err

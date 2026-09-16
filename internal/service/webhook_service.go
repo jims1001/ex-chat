@@ -15,6 +15,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/security"
 	"gorm.io/gorm"
 )
 
@@ -28,9 +29,7 @@ func NewWebhookService(db *gorm.DB, webhookRepo *repository.WebhookRepository) *
 	return &WebhookService{
 		db:          db,
 		webhookRepo: webhookRepo,
-		httpClient: &http.Client{
-			Timeout: 4 * time.Second,
-		},
+		httpClient:  security.NewSafeHTTPClient(4 * time.Second),
 	}
 }
 
@@ -73,6 +72,16 @@ func (s *WebhookService) deliverWithRetry(webhook domain.Webhook, eventName stri
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := security.ValidateSafeURL(webhook.URL); err != nil {
+			s.recordDelivery(webhook.AccountID, webhook.ID, eventName, webhook.URL, string(bodyBytes), 0, err.Error(), attempt, "failed")
+			logger.WithComponent("webhook").Warn("webhook delivery blocked by SSRF protection",
+				"webhook_id", webhook.ID,
+				"url", webhook.URL,
+				"error", err.Error(),
+			)
+			return
+		}
+
 		req, err := http.NewRequest("POST", webhook.URL, bytes.NewBuffer(bodyBytes))
 		if err != nil {
 			lastErr = err

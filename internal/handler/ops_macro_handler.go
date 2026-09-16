@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +30,88 @@ func NewMacroNotificationHandler(m *repository.MacroRepository, n *repository.No
 	}
 }
 
+var macroAllowedActions = map[string]bool{
+	"send_message":          true,
+	"send_reply":            true,
+	"reply":                 true,
+	"add_label":             true,
+	"add_labels":            true,
+	"assign_team":           true,
+	"assign_agent":          true,
+	"mute_conversation":     true,
+	"change_status":         true,
+	"remove_label":          true,
+	"remove_labels":         true,
+	"remove_assigned_agent": true,
+	"remove_assigned_team":  true,
+	"resolve_conversation":  true,
+	"close_conversation":    true,
+	"close":                 true,
+	"resolve":               true,
+	"open_conversation":     true,
+	"open":                  true,
+	"snooze_conversation":   true,
+	"snooze":                true,
+	"change_priority":       true,
+	"send_email_transcript": true,
+	"send_attachment":       true,
+	"add_private_note":      true,
+	"private_note":          true,
+	"send_webhook_event":    true,
+}
+
+func validateMacroActions(rawActions any) error {
+	var acts []struct {
+		ActionName string `json:"action_name"`
+		Name       string `json:"name"`
+	}
+	switch v := rawActions.(type) {
+	case string:
+		str := strings.TrimSpace(v)
+		if str == "" || str == "[]" {
+			return nil
+		}
+		if err := json.Unmarshal([]byte(str), &acts); err != nil {
+			var wrapper struct {
+				Actions []struct {
+					ActionName string `json:"action_name"`
+					Name       string `json:"name"`
+				} `json:"actions"`
+			}
+			if err2 := json.Unmarshal([]byte(str), &wrapper); err2 != nil {
+				return fmt.Errorf("invalid macro actions format")
+			}
+			acts = wrapper.Actions
+		}
+	case []any:
+		b, _ := json.Marshal(v)
+		_ = json.Unmarshal(b, &acts)
+	default:
+		b, _ := json.Marshal(v)
+		_ = json.Unmarshal(b, &acts)
+	}
+
+	for _, act := range acts {
+		name := act.ActionName
+		if name == "" {
+			name = act.Name
+		}
+		if name == "" || !macroAllowedActions[name] {
+			return fmt.Errorf("Macro execution action '%s' is not supported", name)
+		}
+	}
+	return nil
+}
+
+func isUserAdmin(c *gin.Context) bool {
+	if rawMembership, exists := c.Get("account_membership"); exists {
+		if membership, ok := rawMembership.(*domain.AccountUser); ok && membership != nil {
+			return membership.Role == domain.RoleAdministrator
+		}
+	}
+	return false
+}
+
 type CreateMacroRequest struct {
 	Name       string `json:"name" binding:"required"`
 	Visibility string `json:"visibility"`
@@ -38,6 +122,11 @@ func (h *MacroNotificationHandler) CreateMacro(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	var req CreateMacroRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if err := validateMacroActions(req.Actions); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
@@ -58,7 +147,8 @@ func (h *MacroNotificationHandler) CreateMacro(c *gin.Context) {
 		CreatedBy:  userID,
 		Actions:    actionsStr,
 	}
-	if macro.Visibility == "" {
+	isAdmin := isUserAdmin(c)
+	if macro.Visibility == "" || (!isAdmin && macro.Visibility == "global") {
 		macro.Visibility = "personal"
 	}
 
@@ -84,7 +174,10 @@ func (h *MacroNotificationHandler) CreateMacro(c *gin.Context) {
 
 func (h *MacroNotificationHandler) ListMacros(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	macros, err := h.macroRepo.List(c.Request.Context(), uint(accID))
+	userID := c.GetUint("user_id")
+	isAdmin := isUserAdmin(c)
+
+	macros, err := h.macroRepo.ListForUser(c.Request.Context(), uint(accID), userID, isAdmin)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
@@ -99,8 +192,10 @@ func (h *MacroNotificationHandler) ListMacros(c *gin.Context) {
 func (h *MacroNotificationHandler) GetMacro(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	macroID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	userID := c.GetUint("user_id")
+	isAdmin := isUserAdmin(c)
 
-	macro, err := h.macroRepo.GetByID(c.Request.Context(), uint(accID), uint(macroID))
+	macro, err := h.macroRepo.GetByIDForUser(c.Request.Context(), uint(accID), uint(macroID), userID, isAdmin)
 	if err != nil || macro == nil {
 		response.NotFound(c, "macro not found")
 		return
@@ -121,6 +216,8 @@ type ExecuteMacroRequest struct {
 func (h *MacroNotificationHandler) ExecuteMacro(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	macroID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	userID := c.GetUint("user_id")
+	isAdmin := isUserAdmin(c)
 
 	var req ExecuteMacroRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -136,8 +233,12 @@ func (h *MacroNotificationHandler) ExecuteMacro(c *gin.Context) {
 		response.BadRequest(c, "conversation_ids or conversation_id is required")
 		return
 	}
+	if len(convIDs) > 500 {
+		response.BadRequest(c, "Batch macro execution exceeds maximum limit of 500 conversations")
+		return
+	}
 
-	res, err := h.macroRepo.Execute(c.Request.Context(), uint(accID), uint(macroID), convIDs)
+	res, err := h.macroRepo.ExecuteForUser(c.Request.Context(), uint(accID), uint(macroID), userID, isAdmin, convIDs)
 	if err != nil {
 		logger.WithComponent("macro").Error("failed to execute macro",
 			"account_id", accID,
@@ -149,18 +250,63 @@ func (h *MacroNotificationHandler) ExecuteMacro(c *gin.Context) {
 		return
 	}
 
-	logger.WithComponent("macro").Info("macro executed successfully",
+	total := len(convIDs)
+	succeeded := 0
+	failed := 0
+	for _, status := range res {
+		if status == "success" {
+			succeeded++
+		} else {
+			failed++
+		}
+	}
+
+	overallStatus := "success"
+	if failed > 0 && succeeded > 0 {
+		overallStatus = "partial_failed"
+	} else if failed > 0 && succeeded == 0 {
+		overallStatus = "failed"
+	}
+
+	logger.WithComponent("macro").Info("macro executed",
 		"account_id", accID,
 		"macro_id", macroID,
-		"conversation_count", len(convIDs),
+		"total", total,
+		"succeeded", succeeded,
+		"failed", failed,
+		"overall_status", overallStatus,
 	)
 
-	response.Success(c, res)
+	response.Success(c, gin.H{
+		"status":    overallStatus,
+		"total":     total,
+		"succeeded": succeeded,
+		"failed":    failed,
+		"results":   res,
+	})
 }
 
 func (h *MacroNotificationHandler) DeleteMacro(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	macroID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	userID := c.GetUint("user_id")
+	isAdmin := isUserAdmin(c)
+
+	macro, err := h.macroRepo.GetByID(c.Request.Context(), uint(accID), uint(macroID))
+	if err != nil || macro == nil {
+		response.NotFound(c, "macro not found")
+		return
+	}
+
+	// Permission: global macros require admin; personal macros require creator or admin
+	if macro.Visibility == "global" && !isAdmin {
+		response.Forbidden(c, "only administrators can delete global macros")
+		return
+	}
+	if macro.Visibility == "personal" && macro.CreatedBy != userID && !isAdmin {
+		response.Forbidden(c, "you cannot delete another user's personal macro")
+		return
+	}
 
 	if err := h.macroRepo.Delete(c.Request.Context(), uint(accID), uint(macroID)); err != nil {
 		logger.WithComponent("macro").Error("failed to delete macro",
@@ -183,16 +329,28 @@ func (h *MacroNotificationHandler) DeleteMacro(c *gin.Context) {
 type UpdateMacroRequest struct {
 	Name       string `json:"name"`
 	Visibility string `json:"visibility"`
-	Actions    string `json:"actions"`
+	Actions    any    `json:"actions"`
 }
 
 func (h *MacroNotificationHandler) UpdateMacro(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	macroID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	userID := c.GetUint("user_id")
+	isAdmin := isUserAdmin(c)
 
 	macro, err := h.macroRepo.GetByID(c.Request.Context(), uint(accID), uint(macroID))
 	if err != nil || macro == nil {
 		response.NotFound(c, "macro not found")
+		return
+	}
+
+	// Permission: global macros require admin; personal macros require creator or admin
+	if macro.Visibility == "global" && !isAdmin {
+		response.Forbidden(c, "only administrators can edit global macros")
+		return
+	}
+	if macro.Visibility == "personal" && macro.CreatedBy != userID && !isAdmin {
+		response.Forbidden(c, "you cannot edit another user's personal macro")
 		return
 	}
 
@@ -202,14 +360,24 @@ func (h *MacroNotificationHandler) UpdateMacro(c *gin.Context) {
 		return
 	}
 
+	if req.Actions != nil {
+		if err := validateMacroActions(req.Actions); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		if s, ok := req.Actions.(string); ok {
+			macro.Actions = s
+		} else {
+			b, _ := json.Marshal(req.Actions)
+			macro.Actions = string(b)
+		}
+	}
+
 	if req.Name != "" {
 		macro.Name = req.Name
 	}
 	if req.Visibility != "" {
 		macro.Visibility = req.Visibility
-	}
-	if req.Actions != "" {
-		macro.Actions = req.Actions
 	}
 
 	if err := h.macroRepo.Update(c.Request.Context(), macro); err != nil {
@@ -437,20 +605,59 @@ type UpdateNotificationSettingsRequest struct {
 	QuietHoursEnd      *string `json:"quiet_hours_end"`
 }
 
-func formatNotificationFlags(val any) string {
-	if val == nil {
-		return ""
+var (
+	validNotificationFlags = map[string]bool{
+		domain.NotificationTypeConversationAssignment: true,
+		domain.NotificationTypeConversationMention:    true,
+		domain.NotificationTypeConversationCreation:   true,
+		domain.NotificationTypeSLABreach:              true,
+		domain.NotificationTypeSystemAlert:            true,
 	}
+	timeFormatRegex = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+)
+
+func parseAndValidateNotificationFlags(val any) (string, error) {
+	if val == nil {
+		return "", nil
+	}
+
+	var flags []string
 	switch v := val.(type) {
 	case string:
-		return v
+		if strings.TrimSpace(v) == "" {
+			return "[]", nil
+		}
+		if err := json.Unmarshal([]byte(v), &flags); err != nil {
+			return "", fmt.Errorf("invalid json array for flags: %w", err)
+		}
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				flags = append(flags, s)
+			} else {
+				return "", fmt.Errorf("flag must be a string")
+			}
+		}
+	case []string:
+		flags = v
 	default:
 		b, err := json.Marshal(v)
-		if err == nil {
-			return string(b)
+		if err != nil {
+			return "", fmt.Errorf("invalid flags format")
 		}
-		return "[]"
+		if err := json.Unmarshal(b, &flags); err != nil {
+			return "", fmt.Errorf("invalid flags array")
+		}
 	}
+
+	for _, flag := range flags {
+		if !validNotificationFlags[flag] {
+			return "", fmt.Errorf("invalid notification flag: %s", flag)
+		}
+	}
+
+	out, _ := json.Marshal(flags)
+	return string(out), nil
 }
 
 func (h *MacroNotificationHandler) UpdateNotificationSettings(c *gin.Context) {
@@ -470,13 +677,28 @@ func (h *MacroNotificationHandler) UpdateNotificationSettings(c *gin.Context) {
 	}
 
 	if req.SelectedEmailFlags != nil {
-		current.SelectedEmailFlags = formatNotificationFlags(req.SelectedEmailFlags)
+		formatted, err := parseAndValidateNotificationFlags(req.SelectedEmailFlags)
+		if err != nil {
+			response.BadRequest(c, "Invalid selected_email_flags: "+err.Error())
+			return
+		}
+		current.SelectedEmailFlags = formatted
 	}
 	if req.SelectedPushFlags != nil {
-		current.SelectedPushFlags = formatNotificationFlags(req.SelectedPushFlags)
+		formatted, err := parseAndValidateNotificationFlags(req.SelectedPushFlags)
+		if err != nil {
+			response.BadRequest(c, "Invalid selected_push_flags: "+err.Error())
+			return
+		}
+		current.SelectedPushFlags = formatted
 	}
 	if req.SelectedInAppFlags != nil {
-		current.SelectedInAppFlags = formatNotificationFlags(req.SelectedInAppFlags)
+		formatted, err := parseAndValidateNotificationFlags(req.SelectedInAppFlags)
+		if err != nil {
+			response.BadRequest(c, "Invalid selected_in_app_flags: "+err.Error())
+			return
+		}
+		current.SelectedInAppFlags = formatted
 	}
 	if req.Muted != nil {
 		current.Muted = *req.Muted
@@ -485,9 +707,17 @@ func (h *MacroNotificationHandler) UpdateNotificationSettings(c *gin.Context) {
 		current.QuietHoursEnabled = *req.QuietHoursEnabled
 	}
 	if req.QuietHoursStart != nil {
+		if !timeFormatRegex.MatchString(*req.QuietHoursStart) {
+			response.BadRequest(c, "Invalid quiet_hours_start format, must be HH:mm (e.g. 22:00)")
+			return
+		}
 		current.QuietHoursStart = *req.QuietHoursStart
 	}
 	if req.QuietHoursEnd != nil {
+		if !timeFormatRegex.MatchString(*req.QuietHoursEnd) {
+			response.BadRequest(c, "Invalid quiet_hours_end format, must be HH:mm (e.g. 08:00)")
+			return
+		}
 		current.QuietHoursEnd = *req.QuietHoursEnd
 	}
 

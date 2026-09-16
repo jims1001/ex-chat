@@ -575,14 +575,14 @@ func TestAllSystemGapsCovered(t *testing.T) {
 			t.Fatalf("Local heuristic provider failed: %v", err)
 		}
 
-		// Test OpenAI adapter
+		// Test OpenAI adapter without API key must return 422 UnprocessableEntity instead of fake success
 		recComp := authReq(http.MethodPost, "/api/v1/accounts/"+accStr+"/copilot/completions", map[string]string{
 			"provider": "openai",
 			"model":    "gpt-4o",
 			"prompt":   "帮我起草对客户的感谢回复",
 		})
-		if recComp.Code != http.StatusOK {
-			t.Fatalf("AI completion endpoint failed: %d", recComp.Code)
+		if recComp.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 for unconfigured OpenAI completion, got: %d, body: %s", recComp.Code, recComp.Body.String())
 		}
 	})
 
@@ -627,6 +627,19 @@ func TestAllSystemGapsCovered(t *testing.T) {
 		if recSc.Code != http.StatusCreated {
 			t.Fatalf("Create scenario failed: %d", recSc.Code)
 		}
+
+		// Seed order for real order_lookup
+		accUint, _ := strconv.ParseUint(accStr, 10, 32)
+		_ = db.Create(&domain.Order{
+			AccountID:       uint(accUint),
+			OrderID:         "ORD-12345",
+			CustomerName:    "真实测试用户",
+			AmountYuan:      199.00,
+			OrderStatus:     "shipped",
+			ShippingAddress: "深圳市南山区科技园",
+			Carrier:         "顺丰速运",
+			TrackingNumber:  "SF1234567890",
+		})
 
 		// Execute Tool & Quota Check
 		recTool := authReq(http.MethodPost, "/api/v1/accounts/"+accStr+"/captain/tools/execute", map[string]any{

@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,10 +16,25 @@ import (
 	"gorm.io/gorm"
 )
 
+var ErrSMTPNotConfigured = errors.New("smtp service is not configured")
+
 type EmailService struct {
-	db        *gorm.DB
-	sender    EmailSender
-	fromEmail string
+	db         *gorm.DB
+	sender     EmailSender
+	fromEmail  string
+	configured bool
+	allowMock  bool
+}
+
+type InboxSMTPConfig struct {
+	Address  string `json:"smtp_address"`
+	Host     string `json:"address"`
+	Port     string `json:"smtp_port"`
+	PortNum  int    `json:"port"`
+	Username string `json:"smtp_username"`
+	Login    string `json:"smtp_login"`
+	Password string `json:"smtp_password"`
+	Enabled  *bool  `json:"smtp_enabled"`
 }
 
 func NewEmailService(db *gorm.DB) *EmailService {
@@ -29,7 +46,10 @@ func NewEmailService(db *gorm.DB) *EmailService {
 		fromEmail = "support@ex-chat.local"
 	}
 
+	allowMock := os.Getenv("ENV") == "test" || os.Getenv("APP_ENV") == "test" || os.Getenv("ALLOW_MOCK_EMAIL") == "true"
+	configured := false
 	var sender EmailSender
+
 	smtpHost := os.Getenv("SMTP_ADDRESS")
 	if smtpHost != "" {
 		smtpPort := os.Getenv("SMTP_PORT")
@@ -42,20 +62,53 @@ func NewEmailService(db *gorm.DB) *EmailService {
 			os.Getenv("SMTP_USERNAME"),
 			os.Getenv("SMTP_PASSWORD"),
 		)
-	} else {
+		configured = true
+	} else if allowMock {
 		sender = NewMockEmailSender()
 	}
 
 	return &EmailService{
-		db:        db,
-		sender:    sender,
-		fromEmail: fromEmail,
+		db:         db,
+		sender:     sender,
+		fromEmail:  fromEmail,
+		configured: configured,
+		allowMock:  allowMock,
 	}
+}
+
+func (s *EmailService) SetAllowMock(allow bool) {
+	s.allowMock = allow
+	if allow && s.sender == nil {
+		s.sender = NewMockEmailSender()
+	}
+}
+
+func (s *EmailService) IsAllowMock() bool {
+	return s.allowMock
+}
+
+func (s *EmailService) IsConfigured() bool {
+	if s.configured && s.sender != nil {
+		return true
+	}
+	if s.allowMock && s.sender != nil {
+		return true
+	}
+	return false
 }
 
 func (s *EmailService) SetSender(sender EmailSender) {
 	if sender != nil {
 		s.sender = sender
+		if _, isMock := sender.(*MockEmailSender); isMock {
+			s.allowMock = true
+		} else {
+			s.configured = true
+		}
+	} else {
+		s.sender = nil
+		s.configured = false
+		s.allowMock = false
 	}
 }
 
@@ -71,6 +124,42 @@ func (s *EmailService) SetFromEmail(from string) {
 
 func (s *EmailService) GetFromEmail() string {
 	return s.fromEmail
+}
+
+func (s *EmailService) getSenderForConversation(conv *domain.Conversation) (EmailSender, string) {
+	// If inbox has channel-level SMTP configuration in ProviderConfig, prioritize that
+	if conv != nil && conv.Inbox != nil && conv.Inbox.ProviderConfig != "" {
+		var cfg InboxSMTPConfig
+		if err := json.Unmarshal([]byte(conv.Inbox.ProviderConfig), &cfg); err == nil {
+			host := cfg.Address
+			if host == "" {
+				host = cfg.Host
+			}
+			if host != "" && (cfg.Enabled == nil || *cfg.Enabled) {
+				port := cfg.Port
+				if port == "" && cfg.PortNum > 0 {
+					port = strconv.Itoa(cfg.PortNum)
+				}
+				if port == "" {
+					port = "587"
+				}
+				user := cfg.Username
+				if user == "" {
+					user = cfg.Login
+				}
+				from := s.fromEmail
+				if user != "" && strings.Contains(user, "@") {
+					from = user
+				}
+				return NewSMTPEmailSender(host, port, user, cfg.Password), from
+			}
+		}
+	}
+
+	if s.sender != nil {
+		return s.sender, s.fromEmail
+	}
+	return nil, s.fromEmail
 }
 
 // SendTranscript formats and sends conversation transcript email and records EmailLog audit
@@ -94,6 +183,54 @@ func (s *EmailService) SendTranscript(ctx context.Context, accountID uint, conv 
 	htmlContent := s.RenderTranscriptHTML(conv, messages)
 	textContent := s.RenderTranscriptText(conv, messages)
 
+	sender, fromEmail := s.getSenderForConversation(conv)
+	isConfigured := s.IsConfigured() || (sender != nil && sender != s.sender)
+
+	// Persist email audit log helper
+	logEmailAudit := func(status, errMsg string) {
+		convID := conv.ID
+		now := time.Now()
+		deliveryStatus := domain.EmailDeliveryStatusSent
+		var nextRetry *time.Time
+		if status == "failed" {
+			deliveryStatus = domain.EmailDeliveryStatusFailed
+			retryTime := now.Add(5 * time.Minute)
+			nextRetry = &retryTime
+		}
+		emailLog := domain.EmailLog{
+			AccountID:      accountID,
+			ConversationID: &convID,
+			EmailType:      "transcript",
+			ToEmail:        toEmail,
+			FromEmail:      fromEmail,
+			Subject:        subject,
+			ContentHTML:    htmlContent,
+			ContentText:    textContent,
+			Status:         status,
+			DeliveryStatus: deliveryStatus,
+			RetryCount:     0,
+			MaxRetries:     3,
+			NextRetryAt:    nextRetry,
+			LastAttemptAt:  &now,
+			Error:          errMsg,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		if s.db != nil {
+			_ = s.db.Create(&emailLog).Error
+		}
+	}
+
+	if sender == nil || !isConfigured {
+		log.Warn("transcript email rejected: smtp service is not configured",
+			"account_id", accountID,
+			"conversation_id", conv.ID,
+			"to_email", toEmail,
+		)
+		logEmailAudit("failed", "smtp service is not configured")
+		return ErrSMTPNotConfigured
+	}
+
 	log.Info("sending conversation transcript email",
 		"account_id", accountID,
 		"conversation_id", conv.ID,
@@ -101,47 +238,25 @@ func (s *EmailService) SendTranscript(ctx context.Context, accountID uint, conv 
 		"message_count", len(messages),
 	)
 
-	var sendErr error
-	if s.sender != nil {
-		sendErr = s.sender.Send(ctx, s.fromEmail, toEmail, subject, htmlContent, textContent)
-	}
-
-	// Persist email audit log
-	convID := conv.ID
-	emailLog := domain.EmailLog{
-		AccountID:      accountID,
-		ConversationID: &convID,
-		ToEmail:        toEmail,
-		FromEmail:      s.fromEmail,
-		Subject:        subject,
-		ContentHTML:    htmlContent,
-		ContentText:    textContent,
-		Status:         "sent",
-		CreatedAt:      time.Now(),
-	}
-
+	sendErr := sender.Send(ctx, fromEmail, toEmail, subject, htmlContent, textContent)
 	if sendErr != nil {
-		emailLog.Status = "failed"
-		emailLog.Error = sendErr.Error()
 		log.Error("failed to deliver transcript email",
 			"account_id", accountID,
 			"conversation_id", conv.ID,
 			"to_email", toEmail,
 			"error", sendErr.Error(),
 		)
-	} else {
-		log.Info("transcript email delivered successfully",
-			"account_id", accountID,
-			"conversation_id", conv.ID,
-			"to_email", toEmail,
-		)
+		logEmailAudit("failed", sendErr.Error())
+		return sendErr
 	}
 
-	if s.db != nil {
-		_ = s.db.Create(&emailLog).Error
-	}
-
-	return sendErr
+	log.Info("transcript email delivered successfully",
+		"account_id", accountID,
+		"conversation_id", conv.ID,
+		"to_email", toEmail,
+	)
+	logEmailAudit("sent", "")
+	return nil
 }
 
 // RenderTranscriptHTML creates a clean, responsive HTML email representation of conversation
@@ -318,4 +433,233 @@ func getMessageSenderName(msg *domain.Message, defaultContactName string) string
 		return "客服坐席"
 	}
 	return "客服"
+}
+
+// SendConfirmationEmail formats and sends user account confirmation email and tracks audit status
+func (s *EmailService) SendConfirmationEmail(ctx context.Context, user *domain.User, confirmationToken string) (*domain.EmailLog, error) {
+	log := logger.WithComponent("email")
+	if user == nil || user.Email == "" {
+		return nil, errors.New("user and email are required")
+	}
+
+	appURL := os.Getenv("FRONTEND_URL")
+	if appURL == "" {
+		appURL = os.Getenv("APP_URL")
+	}
+	if appURL == "" {
+		appURL = "http://localhost:3000"
+	}
+	confirmLink := fmt.Sprintf("%s/auth/confirmation?confirmation_token=%s", strings.TrimRight(appURL, "/"), confirmationToken)
+
+	subject := "欢迎加入 ExChat - 请验证您的电子邮箱"
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"/></head><body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f7f9fa; padding: 24px; color: #1f2d3d;">
+<div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 32px;">
+<h2 style="margin-top: 0; color: #0f172a;">欢迎加入 ExChat 客服工作台</h2>
+<p style="font-size: 15px; line-height: 1.6; color: #334155;">尊敬的 <strong>%s</strong>：</p>
+<p style="font-size: 15px; line-height: 1.6; color: #334155;">感谢您注册 ExChat。请点击下方按钮完成邮箱验证并激活您的客服管理账户：</p>
+<div style="margin: 28px 0; text-align: center;">
+<a href="%s" style="background-color: #1f93ff; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">立即验证我的邮箱</a>
+</div>
+<p style="font-size: 13px; color: #64748b; line-height: 1.5;">若上方按钮无法点击，请复制以下链接至浏览器地址栏访问：<br/><a href="%s" style="color: #1f93ff; word-break: break-all;">%s</a></p>
+<hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;"/>
+<p style="font-size: 12px; color: #94a3b8; margin-bottom: 0;">此邮件由 ExChat 系统自动发出，如果您未曾注册，请忽略本邮件。</p>
+</div></body></html>`, html.EscapeString(user.Name), confirmLink, confirmLink, confirmLink)
+
+	textBody := fmt.Sprintf("欢迎加入 ExChat！\n\n尊敬的 %s：\n请访问以下链接完成电子邮箱验证以激活账户：\n%s\n\n如果这不是您的操作，请忽略此邮件。", user.Name, confirmLink)
+
+	now := time.Now()
+	emailLog := domain.EmailLog{
+		AccountID:      0, // User signup may not have primary accountID yet
+		UserID:         &user.ID,
+		EmailType:      "confirmation",
+		ToEmail:        user.Email,
+		FromEmail:      s.fromEmail,
+		Subject:        subject,
+		ContentHTML:    htmlBody,
+		ContentText:    textBody,
+		Status:         "pending",
+		DeliveryStatus: domain.EmailDeliveryStatusPending,
+		RetryCount:     0,
+		MaxRetries:     3,
+		LastAttemptAt:  &now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	if s.db != nil {
+		_ = s.db.Create(&emailLog).Error
+	}
+
+	sender := s.sender
+	isConfigured := s.IsConfigured()
+
+	if sender == nil || !isConfigured {
+		errMsg := "smtp service is not configured"
+		log.Warn("confirmation email rejected: smtp not configured", "user_id", user.ID, "email", user.Email)
+		emailLog.Status = "failed"
+		emailLog.DeliveryStatus = domain.EmailDeliveryStatusFailed
+		emailLog.Error = errMsg
+		retryTime := now.Add(5 * time.Minute)
+		emailLog.NextRetryAt = &retryTime
+		if s.db != nil && emailLog.ID > 0 {
+			s.db.Save(&emailLog)
+		}
+		return &emailLog, ErrSMTPNotConfigured
+	}
+
+	sendErr := sender.Send(ctx, s.fromEmail, user.Email, subject, htmlBody, textBody)
+	if sendErr != nil {
+		log.Error("failed to deliver confirmation email", "user_id", user.ID, "email", user.Email, "error", sendErr.Error())
+		emailLog.Status = "failed"
+		emailLog.DeliveryStatus = domain.EmailDeliveryStatusFailed
+		emailLog.Error = sendErr.Error()
+		retryTime := now.Add(5 * time.Minute)
+		emailLog.NextRetryAt = &retryTime
+		if s.db != nil && emailLog.ID > 0 {
+			s.db.Save(&emailLog)
+		}
+		return &emailLog, sendErr
+	}
+
+	emailLog.Status = "sent"
+	emailLog.DeliveryStatus = domain.EmailDeliveryStatusSent
+	emailLog.Error = ""
+	emailLog.NextRetryAt = nil
+	if s.db != nil && emailLog.ID > 0 {
+		s.db.Save(&emailLog)
+	}
+
+	log.Info("confirmation email sent successfully", "user_id", user.ID, "email", user.Email)
+	return &emailLog, nil
+}
+
+// RecordBounce registers an email bounce event (hard/soft bounce, spam complaint) and updates status
+func (s *EmailService) RecordBounce(emailLogID uint, bounceReason string) (*domain.EmailLog, error) {
+	if s.db == nil {
+		return nil, errors.New("database not available")
+	}
+
+	var emailLog domain.EmailLog
+	if err := s.db.First(&emailLog, emailLogID).Error; err != nil {
+		return nil, fmt.Errorf("email log %d not found: %w", emailLogID, err)
+	}
+
+	now := time.Now()
+	emailLog.Status = "bounced"
+	emailLog.DeliveryStatus = domain.EmailDeliveryStatusBounced
+	emailLog.BounceReason = bounceReason
+	emailLog.NextRetryAt = nil // Do not retry bounced emails
+	emailLog.UpdatedAt = now
+
+	if err := s.db.Save(&emailLog).Error; err != nil {
+		return nil, fmt.Errorf("failed to update bounced email log: %w", err)
+	}
+
+	logger.WithComponent("email").Warn("recorded email bounce",
+		"email_log_id", emailLogID,
+		"to_email", emailLog.ToEmail,
+		"bounce_reason", bounceReason,
+	)
+
+	return &emailLog, nil
+}
+
+// RetryFailedEmails finds pending/failed emails eligible for retry and reattempts dispatch
+func (s *EmailService) RetryFailedEmails(ctx context.Context, limit int) (int, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	if !s.IsConfigured() {
+		return 0, ErrSMTPNotConfigured
+	}
+
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	now := time.Now()
+	var pendingLogs []domain.EmailLog
+	err := s.db.Where("status = ? AND retry_count < max_retries AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+		domain.EmailDeliveryStatusFailed, now).
+		Order("id ASC").
+		Limit(limit).
+		Find(&pendingLogs).Error
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch retryable emails: %w", err)
+	}
+
+	if len(pendingLogs) == 0 {
+		return 0, nil
+	}
+
+	retriedCount := 0
+	for _, l := range pendingLogs {
+		logItem := l
+		logItem.RetryCount++
+		logItem.LastAttemptAt = &now
+		logItem.UpdatedAt = now
+
+		sender := s.sender
+		fromEmail := logItem.FromEmail
+		if fromEmail == "" {
+			fromEmail = s.fromEmail
+		}
+
+		sendErr := sender.Send(ctx, fromEmail, logItem.ToEmail, logItem.Subject, logItem.ContentHTML, logItem.ContentText)
+		if sendErr != nil {
+			logItem.Error = sendErr.Error()
+			if logItem.RetryCount >= logItem.MaxRetries {
+				logItem.Status = "failed"
+				logItem.DeliveryStatus = domain.EmailDeliveryStatusFailed
+				logItem.NextRetryAt = nil // Exhausted all retries
+			} else {
+				// Exponential backoff: 5m, 15m, 45m
+				backoffMinutes := 5 * (1 << (logItem.RetryCount - 1))
+				nextTime := now.Add(time.Duration(backoffMinutes) * time.Minute)
+				logItem.NextRetryAt = &nextTime
+			}
+			logger.WithComponent("email").Error("retry failed email delivery failed",
+				"email_log_id", logItem.ID,
+				"retry_count", logItem.RetryCount,
+				"error", sendErr.Error(),
+			)
+		} else {
+			logItem.Status = "sent"
+			logItem.DeliveryStatus = domain.EmailDeliveryStatusSent
+			logItem.Error = ""
+			logItem.NextRetryAt = nil
+			retriedCount++
+			logger.WithComponent("email").Info("retry failed email delivered successfully",
+				"email_log_id", logItem.ID,
+				"retry_count", logItem.RetryCount,
+				"to_email", logItem.ToEmail,
+			)
+		}
+
+		_ = s.db.Save(&logItem).Error
+	}
+
+	return retriedCount, nil
+}
+
+// StartEmailRetryWorker launches an asynchronous background job to periodically retry failed emails
+func (s *EmailService) StartEmailRetryWorker(ctx context.Context, interval time.Duration) {
+	if interval < 10*time.Second {
+		interval = 1 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if s.IsConfigured() {
+					_, _ = s.RetryFailedEmails(ctx, 20)
+				}
+			}
+		}
+	}()
 }

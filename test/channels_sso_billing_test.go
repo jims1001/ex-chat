@@ -399,11 +399,18 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 		t.Fatalf("create migration job failed: code=%d body=%s", w.Code, w.Body.String())
 	}
 
+	// Bulk article actions are scoped to an existing portal. Seed the portal
+	// explicitly so this scenario verifies the action rather than a 404 path.
+	portal := domain.Portal{AccountID: accountID, Name: "Enterprise Help Center", Slug: "enterprise-help"}
+	if err := db.Create(&portal).Error; err != nil {
+		t.Fatalf("create portal fixture failed: %v", err)
+	}
+
 	bulkArticleBody, _ := json.Marshal(map[string]any{
 		"ids":    []uint{1, 2, 3},
 		"status": "published",
 	})
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accStr+"/portals/1/articles/bulk_actions", bytes.NewReader(bulkArticleBody))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accStr+"/portals/"+strconv.FormatUint(uint64(portal.ID), 10)+"/articles/bulk_actions", bytes.NewReader(bulkArticleBody))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()

@@ -173,9 +173,17 @@ func TestAdvancedCapabilities_CRM_OPS_EXT(t *testing.T) {
 	}
 
 	// 6. Test Attachment Upload (CONV / Attachments)
+	conv := domain.Conversation{
+		AccountID: accountID,
+		InboxID:   inbox.ID,
+		Status:    domain.ConversationStatusOpen,
+	}
+	db.Create(&conv)
+	convIDStr := strconv.Itoa(int(conv.ID))
+
 	msg := domain.Message{
 		AccountID:      accountID,
-		ConversationID: 1,
+		ConversationID: conv.ID,
 		SenderType:     domain.SenderTypeUser,
 		SenderID:       1,
 		Content:        "Here is the screenshot",
@@ -189,7 +197,7 @@ func TestAdvancedCapabilities_CRM_OPS_EXT(t *testing.T) {
 		"file_size":  204800,
 	}
 	body, _ = json.Marshal(attPayload)
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/conversations/1/attachments", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/conversations/"+convIDStr+"/attachments", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()
@@ -227,7 +235,7 @@ func TestAdvancedCapabilities_CRM_OPS_EXT(t *testing.T) {
 		"message": "Draft reply to customer...",
 	}
 	body, _ = json.Marshal(draftPayload)
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/conversations/1/draft_messages", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/conversations/"+convIDStr+"/draft_messages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()
@@ -241,7 +249,7 @@ func TestAdvancedCapabilities_CRM_OPS_EXT(t *testing.T) {
 		"user_ids": []uint{authResp.Data.Accounts[0].ID},
 	}
 	body, _ = json.Marshal(partPayload)
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/conversations/1/participants", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/conversations/"+convIDStr+"/participants", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()

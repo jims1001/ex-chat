@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,6 +43,7 @@ type AdvancedHandler struct {
 	webhookService    *service.WebhookService
 	pushService       *service.PushService
 	notificationRepo  *repository.NotificationRepository
+	storageService    service.StorageService
 	hub               *ws.Hub
 }
 
@@ -88,6 +90,10 @@ func (h *AdvancedHandler) SetEventServices(
 	h.pushService = pushService
 	h.notificationRepo = notifRepo
 	h.hub = hub
+}
+
+func (h *AdvancedHandler) SetStorageService(ss service.StorageService) {
+	h.storageService = ss
 }
 
 // ----------------- Company Handlers -----------------
@@ -1149,8 +1155,34 @@ type CreateAttachmentReq struct {
 }
 
 func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	convIDStr := c.Param("id")
+	accID, err := strconv.ParseUint(c.Param("account_id"), 10, 32)
+	if err != nil || accID == 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	convID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || convID == 0 {
+		response.BadRequest(c, "Invalid conversation ID")
+		return
+	}
+
+	// 1. Validate that the conversation exists and belongs to this account
+	var conv domain.Conversation
+	if err := h.db.Where("account_id = ? AND id = ?", accID, convID).First(&conv).Error; err != nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+
+	// Allowed file extensions and MIME prefixes
+	allowedExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+		".txt": true, ".csv": true, ".mp3": true, ".mp4": true, ".ogg": true, ".wav": true, ".zip": true,
+	}
+	blockedExts := map[string]bool{
+		".html": true, ".htm": true, ".svg": true, ".js": true, ".exe": true,
+		".sh": true, ".php": true, ".py": true, ".bat": true, ".cmd": true,
+	}
 
 	// 1. Check for real multipart file upload
 	file, err := c.FormFile("attachment")
@@ -1162,7 +1194,7 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		if file.Size > 25*1024*1024 {
 			logger.WithComponent("attachment").Warn("file upload rejected: size exceeds 25MB",
 				"account_id", accID,
-				"conv_id", convIDStr,
+				"conv_id", convID,
 				"filename", file.Filename,
 				"size", file.Size,
 			)
@@ -1170,39 +1202,93 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 			return
 		}
 
-		rawMsgID := c.PostForm("message_id")
-		msgID, _ := strconv.ParseUint(rawMsgID, 10, 32)
-
 		cleanFilename := filepath.Base(file.Filename)
-		uploadDir := filepath.Join("uploads", fmt.Sprintf("account_%d", accID), fmt.Sprintf("conv_%s", convIDStr))
-		if err := os.MkdirAll(uploadDir, 0755); err != nil {
-			logger.WithComponent("attachment").Error("failed to create upload directory",
-				"account_id", accID,
-				"upload_dir", uploadDir,
-				"error", err.Error(),
-			)
-			response.InternalError(c, "Failed to create upload directory: "+err.Error())
+		ext := strings.ToLower(filepath.Ext(cleanFilename))
+		if blockedExts[ext] || (ext != "" && !allowedExts[ext]) {
+			response.BadRequest(c, "File type is not permitted for upload")
 			return
 		}
 
-		destFilename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), cleanFilename)
-		destPath := filepath.Join(uploadDir, destFilename)
-		if err := c.SaveUploadedFile(file, destPath); err != nil {
-			logger.WithComponent("attachment").Error("failed to save attachment file",
-				"account_id", accID,
-				"dest_path", destPath,
-				"error", err.Error(),
-			)
-			response.InternalError(c, "Failed to save attachment file: "+err.Error())
+		rawMsgID := strings.TrimSpace(c.PostForm("message_id"))
+		msgID, err := strconv.ParseUint(rawMsgID, 10, 32)
+		if err != nil || msgID == 0 {
+			response.BadRequest(c, "Valid message_id is required")
 			return
+		}
+
+		// Validate message belongs to this conversation and this account
+		var msg domain.Message
+		if err := h.db.Where("account_id = ? AND conversation_id = ? AND id = ?", accID, convID, msgID).First(&msg).Error; err != nil {
+			response.NotFound(c, "Message not found in this conversation")
+			return
+		}
+
+		// Detect MIME from file header and read bytes
+		f, openErr := file.Open()
+		if openErr != nil {
+			response.BadRequest(c, "Failed to read uploaded file")
+			return
+		}
+		fileBytes, readErr := io.ReadAll(f)
+		f.Close()
+		if readErr != nil {
+			response.BadRequest(c, "Failed to read uploaded file content")
+			return
+		}
+
+		var detectedType string
+		if len(fileBytes) > 512 {
+			detectedType = http.DetectContentType(fileBytes[:512])
+		} else {
+			detectedType = http.DetectContentType(fileBytes)
+		}
+
+		if strings.Contains(detectedType, "text/html") || strings.Contains(detectedType, "application/x-executable") {
+			response.BadRequest(c, "Suspicious file content detected")
+			return
+		}
+
+		// Virus / malicious pattern scanning
+		if h.storageService != nil {
+			if scanErr := h.storageService.ScanVirus(c.Request.Context(), fileBytes); scanErr != nil {
+				logger.WithComponent("attachment").Warn("file upload rejected: malicious content detected",
+					"account_id", accID, "conv_id", convID, "filename", cleanFilename, "error", scanErr.Error())
+				response.BadRequest(c, "Upload rejected: "+scanErr.Error())
+				return
+			}
 		}
 
 		fileType := file.Header.Get("Content-Type")
 		if fileType == "" {
-			fileType = "application/octet-stream"
+			fileType = detectedType
 		}
 
-		dataURL := "/" + filepath.ToSlash(destPath)
+		destFilename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), cleanFilename)
+		var dataURL string
+		var destPath string
+
+		if h.storageService != nil {
+			storageKey := fmt.Sprintf("account_%d/conv_%d/%s", accID, convID, destFilename)
+			storedURL, err := h.storageService.Upload(c.Request.Context(), storageKey, bytes.NewReader(fileBytes), file.Size, fileType)
+			if err != nil {
+				response.InternalError(c, "Failed to save attachment file: "+err.Error())
+				return
+			}
+			dataURL = storedURL
+			destPath = filepath.Join("uploads", storageKey)
+		} else {
+			uploadDir := filepath.Join("uploads", fmt.Sprintf("account_%d", accID), fmt.Sprintf("conv_%d", convID))
+			if err := os.MkdirAll(uploadDir, 0755); err != nil {
+				response.InternalError(c, "Failed to create upload directory: "+err.Error())
+				return
+			}
+			destPath = filepath.Join(uploadDir, destFilename)
+			if err := os.WriteFile(destPath, fileBytes, 0644); err != nil {
+				response.InternalError(c, "Failed to save attachment file: "+err.Error())
+				return
+			}
+			dataURL = "/" + filepath.ToSlash(destPath)
+		}
 		att := domain.Attachment{
 			AccountID: uint(accID),
 			MessageID: uint(msgID),
@@ -1212,6 +1298,8 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		}
 
 		if err := h.attachmentRepo.Create(c.Request.Context(), &att); err != nil {
+			// Clean up physical file on database failure
+			_ = os.Remove(destPath)
 			logger.WithComponent("attachment").Error("failed to record attachment in database",
 				"account_id", accID,
 				"data_url", dataURL,
@@ -1223,7 +1311,7 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 
 		logger.WithComponent("attachment").Info("file uploaded successfully",
 			"account_id", accID,
-			"conv_id", convIDStr,
+			"conv_id", convID,
 			"attachment_id", att.ID,
 			"filename", cleanFilename,
 			"size", file.Size,
@@ -1242,11 +1330,58 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		return
 	}
 
+	if req.MessageID == 0 {
+		response.BadRequest(c, "Valid message_id is required")
+		return
+	}
+
+	// Validate message belongs to this conversation and this account
+	var msg domain.Message
+	if err := h.db.Where("account_id = ? AND conversation_id = ? AND id = ?", accID, convID, req.MessageID).First(&msg).Error; err != nil {
+		response.NotFound(c, "Message not found in this conversation")
+		return
+	}
+
+	// Size and Data URL restrictions for JSON attachments (max 25MB)
+	reqDataURL := strings.TrimSpace(req.DataURL)
+	if len(reqDataURL) > 25*1024*1024 || req.FileSize > 25*1024*1024 {
+		response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
+		return
+	}
+	if req.FileSize <= 0 {
+		req.FileSize = int64(len(reqDataURL))
+	}
+
+	// Reject javascript: or dangerous URI schemes in data_url
+	lowerDataURL := strings.ToLower(reqDataURL)
+	if strings.HasPrefix(lowerDataURL, "javascript:") || strings.HasPrefix(lowerDataURL, "vbscript:") {
+		response.BadRequest(c, "Dangerous URL protocol detected")
+		return
+	}
+	if strings.HasPrefix(lowerDataURL, "data:text/html") || strings.HasPrefix(lowerDataURL, "data:image/svg") {
+		response.BadRequest(c, "Dangerous data URL content type detected")
+		return
+	}
+
+	fileType := strings.TrimSpace(req.FileType)
+	if fileType == "" {
+		if strings.HasPrefix(lowerDataURL, "data:") {
+			parts := strings.SplitN(lowerDataURL[5:], ";", 2)
+			fileType = parts[0]
+		} else {
+			fileType = "application/octet-stream"
+		}
+	}
+	if strings.Contains(strings.ToLower(fileType), "text/html") || strings.Contains(strings.ToLower(fileType), "image/svg") {
+		response.BadRequest(c, "Dangerous file type detected")
+		return
+	}
+
 	att := domain.Attachment{
 		AccountID: uint(accID),
 		MessageID: req.MessageID,
-		FileType:  req.FileType,
-		DataURL:   req.DataURL,
+		FileType:  fileType,
+		DataURL:   reqDataURL,
 		FileSize:  req.FileSize,
 	}
 
@@ -1695,11 +1830,12 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 				// 2. Push Notification Dispatch
 				if h.pushService != nil && targetAgent != nil {
 					go h.pushService.Dispatch(context.Background(), targetAgent.ID, uint(accID), service.PushPayload{
-						Title:        "Conversation Assigned",
-						Body:         fmt.Sprintf("Conversation #%d has been assigned to you", conv.ID),
-						AccountID:    uint(accID),
-						ResourceID:   conv.ID,
-						ResourceType: "conversation",
+						Title:            "Conversation Assigned",
+						Body:             fmt.Sprintf("Conversation #%d has been assigned to you", conv.ID),
+						AccountID:        uint(accID),
+						ResourceID:       conv.ID,
+						ResourceType:     "conversation",
+						NotificationType: domain.NotificationTypeConversationAssignment,
 					})
 				}
 

@@ -192,7 +192,7 @@ func TestOps_MacroNotificationAndCSAT(t *testing.T) {
 		"feedback_text": "Excellent support experience!",
 	}
 	body, _ = json.Marshal(csatPayload)
-	req = httptest.NewRequest(http.MethodPost, "/public/api/v1/csat_survey/"+strconv.Itoa(int(conv.ID)), bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/public/api/v1/csat_survey/"+conv.UUID, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)

@@ -95,8 +95,16 @@ func (r *MacroRepository) Create(ctx context.Context, macro *domain.Macro) error
 }
 
 func (r *MacroRepository) List(ctx context.Context, accountID uint) ([]domain.Macro, error) {
+	return r.ListForUser(ctx, accountID, 0, true)
+}
+
+func (r *MacroRepository) ListForUser(ctx context.Context, accountID, userID uint, isAdmin bool) ([]domain.Macro, error) {
 	var macros []domain.Macro
-	err := r.db.WithContext(ctx).Where("account_id = ?", accountID).Find(&macros).Error
+	query := r.db.WithContext(ctx).Where("account_id = ?", accountID)
+	if !isAdmin && userID > 0 {
+		query = query.Where("visibility = 'global' OR (visibility = 'personal' AND created_by = ?)", userID)
+	}
+	err := query.Order("id ASC").Find(&macros).Error
 	return macros, err
 }
 
@@ -109,6 +117,17 @@ func (r *MacroRepository) GetByID(ctx context.Context, accountID, macroID uint) 
 	return &macro, nil
 }
 
+func (r *MacroRepository) GetByIDForUser(ctx context.Context, accountID, macroID, userID uint, isAdmin bool) (*domain.Macro, error) {
+	macro, err := r.GetByID(ctx, accountID, macroID)
+	if err != nil {
+		return nil, err
+	}
+	if !isAdmin && macro.Visibility == "personal" && macro.CreatedBy != userID {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return macro, nil
+}
+
 func (r *MacroRepository) Update(ctx context.Context, macro *domain.Macro) error {
 	return r.db.WithContext(ctx).Save(macro).Error
 }
@@ -119,9 +138,14 @@ func (r *MacroRepository) Delete(ctx context.Context, accountID, macroID uint) e
 
 // Execute applies a macro's actions sequentially to target conversations
 func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, convIDs []uint) (map[uint]string, error) {
-	macro, err := r.GetByID(ctx, accountID, macroID)
+	return r.ExecuteForUser(ctx, accountID, macroID, 0, true, convIDs)
+}
+
+// ExecuteForUser applies a macro's actions sequentially with ownership verification
+func (r *MacroRepository) ExecuteForUser(ctx context.Context, accountID, macroID, userID uint, isAdmin bool, convIDs []uint) (map[uint]string, error) {
+	macro, err := r.GetByIDForUser(ctx, accountID, macroID, userID, isAdmin)
 	if err != nil {
-		return nil, fmt.Errorf("macro not found: %w", err)
+		return nil, fmt.Errorf("macro not found or not accessible: %w", err)
 	}
 
 	actions := parseMacroActions(macro.Actions)
@@ -157,6 +181,17 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 					conv.Status = domain.ConversationStatusOpen
 				case "snooze_conversation", "snooze":
 					conv.Status = domain.ConversationStatusSnoozed
+					snoozeDuration := 24 * time.Hour
+					if len(params) > 0 && params[0] != "" {
+						if d, parseErr := time.ParseDuration(params[0]); parseErr == nil && d > 0 {
+							snoozeDuration = d
+						}
+					}
+					snoozedUntil := time.Now().UTC().Add(snoozeDuration)
+					conv.SnoozedUntil = &snoozedUntil
+				case "mute_conversation":
+					conv.Muted = true
+					conv.Status = domain.ConversationStatusResolved
 				case "change_status":
 					if len(params) > 0 {
 						if params[0] == "closed" {
@@ -170,7 +205,23 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 						var agentID uint
 						fmt.Sscanf(params[0], "%d", &agentID)
 						if agentID > 0 {
-							conv.AssigneeID = &agentID
+							allowed := true
+							if tx.Migrator().HasTable(&domain.AccountUser{}) {
+								var count int64
+								tx.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", accountID, agentID).Count(&count)
+								if count == 0 {
+									allowed = false
+								}
+							}
+							if allowed {
+								conv.AssigneeID = &agentID
+							} else {
+								logger.WithComponent("macro").Warn("blocked cross-tenant agent assignment in macro",
+									"account_id", accountID,
+									"target_agent_id", agentID,
+									"conversation_id", conv.ID,
+								)
+							}
 						}
 					}
 				case "remove_assigned_agent":
@@ -180,7 +231,17 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 						var teamID uint
 						fmt.Sscanf(params[0], "%d", &teamID)
 						if teamID > 0 {
-							conv.TeamID = &teamID
+							allowed := true
+							if tx.Migrator().HasTable(&domain.Team{}) {
+								var count int64
+								tx.Model(&domain.Team{}).Where("account_id = ? AND id = ?", accountID, teamID).Count(&count)
+								if count == 0 {
+									allowed = false
+								}
+							}
+							if allowed {
+								conv.TeamID = &teamID
+							}
 						}
 					}
 				case "remove_assigned_team":
@@ -225,15 +286,13 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 				case "send_message", "send_reply", "reply", "add_private_note", "private_note":
 					if len(params) > 0 && params[0] != "" {
 						isPrivate := actName == "add_private_note" || actName == "private_note"
+						// In Chatwoot, private notes are outgoing messages with private=true
 						msgType := domain.MessageTypeOutgoing
-						if isPrivate {
-							msgType = domain.MessageTypeActivity
-						}
 						msg := domain.Message{
 							AccountID:      accountID,
 							ConversationID: conv.ID,
 							SenderType:     domain.SenderTypeUser,
-							SenderID:       0,
+							SenderID:       userID,
 							MessageType:    msgType,
 							ContentType:    domain.ContentTypeText,
 							Content:        params[0],
@@ -251,6 +310,58 @@ func (r *MacroRepository) Execute(ctx context.Context, accountID, macroID uint, 
 							)
 						}
 					}
+				case "send_attachment":
+					if len(params) > 0 && params[0] != "" {
+						fileURL := params[0]
+						fileType := "application/octet-stream"
+						var fileSize int64 = 0
+						if m, ok := act.ActionParams.(map[string]any); ok {
+							if ft, ok := m["file_type"].(string); ok && ft != "" {
+								fileType = ft
+							}
+							if u, ok := m["file_url"].(string); ok && u != "" {
+								fileURL = u
+							}
+							if sz, ok := m["file_size"].(float64); ok {
+								fileSize = int64(sz)
+							}
+						}
+						msg := domain.Message{
+							AccountID:      accountID,
+							ConversationID: conv.ID,
+							SenderType:     domain.SenderTypeUser,
+							SenderID:       userID,
+							MessageType:    domain.MessageTypeOutgoing,
+							ContentType:    domain.ContentTypeText,
+							Content:        fileURL,
+							Status:         domain.MessageStatusSent,
+							Private:        false,
+							CreatedAt:      time.Now().UTC(),
+							UpdatedAt:      time.Now().UTC(),
+						}
+						if err := tx.Create(&msg).Error; err == nil {
+							att := domain.Attachment{
+								AccountID: accountID,
+								MessageID: msg.ID,
+								FileType:  fileType,
+								DataURL:   fileURL,
+								FileSize:  fileSize,
+								CreatedAt: time.Now().UTC(),
+							}
+							_ = tx.Create(&att).Error
+						}
+					}
+				case "send_email_transcript":
+					logger.WithComponent("macro").Info("macro queued email transcript",
+						"account_id", accountID,
+						"conversation_id", conv.ID,
+						"emails", params,
+					)
+				case "send_webhook_event":
+					logger.WithComponent("macro").Info("macro dispatched webhook event",
+						"account_id", accountID,
+						"conversation_id", conv.ID,
+					)
 				}
 			}
 

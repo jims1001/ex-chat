@@ -238,6 +238,18 @@ func TestAICustomToolLifecycle(t *testing.T) {
 	// Scenario 3: Tool Testing & Simulation Engine (Test Tool)
 	// -------------------------------------------------------------
 	t.Run("Scenario3_Tool_Testing_Simulation", func(t *testing.T) {
+		// Seed order record
+		_ = db.Create(&domain.Order{
+			AccountID:       accountID,
+			OrderID:         "ORD-2026-9988",
+			CustomerName:    "真实测试用户",
+			AmountYuan:      299.00,
+			OrderStatus:     "shipped",
+			ShippingAddress: "北京市朝阳区酒仙桥路4号",
+			Carrier:         "顺丰速运",
+			TrackingNumber:  "SF9876543210",
+		})
+
 		// 3A. Test with valid parameter
 		testPayloadValid := map[string]any{
 			"params": map[string]any{

@@ -400,8 +400,10 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 		"echo_id", msg.EchoID,
 	)
 
-	// Re-open conversation if it was resolved
-	if conv.Status == domain.ConversationStatusResolved {
+	isMutedOrBlocked := conv.Muted || contact.Blocked
+
+	// Re-open conversation if it was resolved (only if conversation is not muted and contact is not blocked)
+	if !isMutedOrBlocked && conv.Status == domain.ConversationStatusResolved {
 		_ = h.convRepo.UpdateStatus(conv.AccountID, conv.ID, domain.ConversationStatusOpen, nil)
 		conv.Status = domain.ConversationStatusOpen
 	} else {
@@ -415,13 +417,14 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(conv.AccountID, "message_created", msg)
 	}
-	if h.pushService != nil && conv.AssigneeID != nil {
+	if h.pushService != nil && conv.AssigneeID != nil && !isMutedOrBlocked {
 		go h.pushService.Dispatch(context.Background(), *conv.AssigneeID, conv.AccountID, service.PushPayload{
-			Title:        "New Customer Message",
-			Body:         msg.Content,
-			AccountID:    conv.AccountID,
-			ResourceID:   conv.ID,
-			ResourceType: "conversation",
+			Title:            "New Customer Message",
+			Body:             msg.Content,
+			AccountID:        conv.AccountID,
+			ResourceID:       conv.ID,
+			ResourceType:     "conversation",
+			NotificationType: domain.NotificationTypeConversationCreation,
 		})
 	}
 	if h.hub != nil {

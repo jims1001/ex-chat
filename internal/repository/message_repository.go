@@ -2,6 +2,8 @@ package repository
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -168,8 +170,17 @@ func (r *MessageRepository) DeleteMessage(accountID, conversationID, messageID u
 	if err := r.db.Model(&domain.Message{}).Where("id = ?", msg.ID).Updates(updates).Error; err != nil {
 		return nil, err
 	}
-	// Clean up attachments associated with deleted message (Chatwoot standard)
-	_ = r.db.Where("message_id = ?", msg.ID).Delete(&domain.Attachment{}).Error
+	// Clean up attachments and physical files associated with deleted message (Chatwoot standard)
+	var attachments []domain.Attachment
+	if err := r.db.Where("message_id = ?", msg.ID).Find(&attachments).Error; err == nil {
+		for _, att := range attachments {
+			if strings.HasPrefix(att.DataURL, "/uploads/") || strings.HasPrefix(att.DataURL, "uploads/") {
+				cleanPath := strings.TrimPrefix(att.DataURL, "/")
+				_ = os.Remove(cleanPath)
+			}
+		}
+		_ = r.db.Where("message_id = ?", msg.ID).Delete(&domain.Attachment{}).Error
+	}
 
 	msg.Deleted = true
 	msg.DeletedAt = &now

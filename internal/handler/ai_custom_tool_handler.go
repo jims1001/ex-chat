@@ -15,6 +15,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/security"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -143,6 +144,13 @@ func (h *AICustomToolHandler) CreateTool(c *gin.Context) {
 		}
 	}
 
+	if req.EndpointURL != "" {
+		if err := security.ValidateSafeURL(req.EndpointURL); err != nil {
+			response.BadRequest(c, "Invalid endpoint_url: "+err.Error())
+			return
+		}
+	}
+
 	tool := domain.AICustomTool{
 		AccountID:            accountID,
 		Name:                 req.Name,
@@ -263,6 +271,12 @@ func (h *AICustomToolHandler) UpdateTool(c *gin.Context) {
 		tool.ToolType = *req.ToolType
 	}
 	if req.EndpointURL != nil {
+		if *req.EndpointURL != "" {
+			if err := security.ValidateSafeURL(*req.EndpointURL); err != nil {
+				response.BadRequest(c, "Invalid endpoint_url: "+err.Error())
+				return
+			}
+		}
 		tool.EndpointURL = *req.EndpointURL
 	}
 	if req.HTTPMethod != nil {
@@ -354,19 +368,24 @@ func (h *AICustomToolHandler) GetMetrics(c *gin.Context) {
 	response.Success(c, metrics)
 }
 
-// ListExecutionLogs handles GET /captain/tools/:id/logs
+// ListExecutionLogs handles GET /captain/tools/:id/logs and GET /captain/tools/execution_logs
 func (h *AICustomToolHandler) ListExecutionLogs(c *gin.Context) {
 	accountID := h.getAccountID(c)
-	toolID, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil || toolID == 0 {
-		response.BadRequest(c, "Invalid tool ID")
-		return
+	var toolID uint
+	if paramID := c.Param("id"); paramID != "" && paramID != "execution_logs" {
+		if id, err := strconv.ParseUint(paramID, 10, 32); err == nil {
+			toolID = uint(id)
+		}
+	} else if qToolID := c.Query("tool_id"); qToolID != "" {
+		if id, err := strconv.ParseUint(qToolID, 10, 32); err == nil {
+			toolID = uint(id)
+		}
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
 
-	logs, total, err := h.toolRepo.ListExecutionLogs(accountID, uint(toolID), page, pageSize)
+	logs, total, err := h.toolRepo.ListExecutionLogs(accountID, toolID, page, pageSize)
 	if err != nil {
 		response.InternalError(c, "Failed to list execution logs")
 		return
@@ -507,20 +526,51 @@ func (h *AICustomToolHandler) TestTool(c *gin.Context) {
 		timeout = 10 * time.Second
 	}
 
+	cleanName := strings.TrimSpace(strings.ToLower(tool.Name))
+	isBuiltin := cleanName == "query_order" || cleanName == "order_lookup" ||
+		cleanName == "lookup_logistics" || cleanName == "query_logistics" ||
+		cleanName == "create_ticket" || cleanName == "update_shipping_address" ||
+		cleanName == "kb_search"
+
 	if tool.ToolType == domain.AIToolTypeWebhook || tool.ToolType == domain.AIToolTypeHTTPAPI {
-		if tool.EndpointURL != "" {
+		if strings.TrimSpace(tool.EndpointURL) != "" {
 			outputResult, err = executeHTTPTool(tool, req.Params, timeout)
 			if err != nil {
 				execStatus = domain.AIToolExecutionFailed
 				execError = err.Error()
-				outputResult = gin.H{"error": err.Error()}
+				outputResult = gin.H{"error": err.Error(), "success": false}
 			}
 		} else {
-			outputResult = simulateInternalTool(tool.Name, req.Params)
+			execStatus = domain.AIToolExecutionFailed
+			execError = "Tool endpoint URL is not configured; cannot execute HTTP/Webhook tool without endpoint"
+			outputResult = gin.H{
+				"success": false,
+				"error":   execError,
+				"code":    "endpoint_missing",
+			}
+		}
+	} else if isBuiltin {
+		outputResult, err = h.executeInternalTool(accountID, userID, req.ConversationID, tool.Name, req.Params)
+		if err != nil {
+			execStatus = domain.AIToolExecutionFailed
+			execError = err.Error()
+			outputResult = gin.H{"error": err.Error(), "success": false}
+		}
+	} else if strings.TrimSpace(tool.EndpointURL) != "" {
+		outputResult, err = executeHTTPTool(tool, req.Params, timeout)
+		if err != nil {
+			execStatus = domain.AIToolExecutionFailed
+			execError = err.Error()
+			outputResult = gin.H{"error": err.Error(), "success": false}
 		}
 	} else {
-		// Internal system simulator
-		outputResult = simulateInternalTool(tool.Name, req.Params)
+		execStatus = domain.AIToolExecutionFailed
+		execError = fmt.Sprintf("Tool '%s' has no endpoint URL configured and is not a recognized internal built-in function", tool.Name)
+		outputResult = gin.H{
+			"success": false,
+			"error":   execError,
+			"code":    "endpoint_missing_and_unknown_tool",
+		}
 	}
 
 	latency := time.Since(startTime).Milliseconds()
@@ -608,76 +658,229 @@ func validateInputSchema(schemaJSON string, params map[string]any) error {
 	return nil
 }
 
-// Helper: simulate built-in tools with rich test fixtures
-func simulateInternalTool(name string, params map[string]any) any {
+// Helper: execute built-in tools with real business data persistence
+func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, convID *uint, name string, params map[string]any) (any, error) {
 	cleanName := strings.TrimSpace(strings.ToLower(name))
+	now := time.Now().UTC()
+
 	switch cleanName {
 	case "query_order", "order_lookup":
 		orderID, _ := params["order_id"].(string)
 		if orderID == "" {
-			orderID = "ORD-8823412"
+			if o, ok := params["order_no"].(string); ok && o != "" {
+				orderID = o
+			} else if idStr, ok := params["id"].(string); ok && idStr != "" {
+				orderID = idStr
+			}
 		}
-		return gin.H{
-			"order_id":         orderID,
-			"order_status":     "shipped",
-			"customer_name":    "张三",
-			"amount_yuan":      399.00,
-			"carrier":          "顺丰速运",
-			"tracking_number":  "SF1982736421",
-			"items": []gin.H{
-				{"sku": "SKU-9901", "name": "降噪蓝牙耳机 Pro", "quantity": 1, "price": 399.00},
-			},
-			"created_at": time.Now().AddDate(0, 0, -2).Format("2006-01-02 15:04:05"),
+		if orderID == "" {
+			return nil, fmt.Errorf("order_id parameter is required")
 		}
 
-	case "lookup_logistics", "query_logistics":
-		trackingNo, _ := params["tracking_number"].(string)
-		if trackingNo == "" {
-			trackingNo = "SF1982736421"
+		var order domain.Order
+		err := h.db.Where("account_id = ? AND (order_id = ? OR tracking_number = ?)", accountID, orderID, orderID).First(&order).Error
+		if err != nil {
+			return nil, fmt.Errorf("order '%s' not found in database", orderID)
 		}
+
+		var items []gin.H
+		if order.ItemsJSON != "" {
+			_ = json.Unmarshal([]byte(order.ItemsJSON), &items)
+		}
+		if items == nil {
+			items = []gin.H{}
+		}
+
 		return gin.H{
-			"tracking_number": trackingNo,
-			"carrier":         "顺丰速运",
-			"status":          "in_transit",
-			"estimated_delivery": time.Now().Add(24 * time.Hour).Format("2006-01-02"),
-			"checkpoints": []gin.H{
-				{"time": "08:30", "location": "北京市顺义分拨中心", "description": "快件已到达网点并正在分拣"},
-				{"time": "11:45", "location": "北京市朝阳区营业部", "description": "快递员李师傅正在派件中"},
-			},
+			"order_id":         order.OrderID,
+			"order_status":     order.OrderStatus,
+			"customer_name":    order.CustomerName,
+			"customer_email":   order.CustomerEmail,
+			"customer_phone":   order.CustomerPhone,
+			"amount_yuan":      order.AmountYuan,
+			"carrier":          order.Carrier,
+			"tracking_number":  order.TrackingNumber,
+			"shipping_address": order.ShippingAddress,
+			"warehouse_synced": order.WarehouseSynced,
+			"items":            items,
+			"created_at":       order.CreatedAt.Format("2006-01-02 15:04:05"),
+			"updated_at":       order.UpdatedAt.Format("2006-01-02 15:04:05"),
+		}, nil
+
+	case "update_shipping_address":
+		orderID, _ := params["order_id"].(string)
+		if orderID == "" {
+			if o, ok := params["order_no"].(string); ok && o != "" {
+				orderID = o
+			}
 		}
+		newAddress, _ := params["new_address"].(string)
+		if newAddress == "" {
+			if a, ok := params["address"].(string); ok && a != "" {
+				newAddress = a
+			}
+		}
+
+		if orderID == "" || newAddress == "" {
+			return nil, fmt.Errorf("order_id and new_address parameters are required")
+		}
+
+		var order domain.Order
+		err := h.db.Where("account_id = ? AND order_id = ?", accountID, orderID).First(&order).Error
+		if err != nil {
+			return nil, fmt.Errorf("cannot update address: order '%s' not found in database", orderID)
+		}
+
+		// Update the existing database order
+		order.ShippingAddress = newAddress
+		order.WarehouseSynced = true
+		order.SyncedAt = &now
+		order.UpdatedAt = now
+		if convID != nil && *convID > 0 {
+			order.ConversationID = convID
+		}
+		if saveErr := h.db.Save(&order).Error; saveErr != nil {
+			return nil, fmt.Errorf("failed to update order in database: %w", saveErr)
+		}
+
+		// Also record an activity message on the conversation if conversation_id was provided
+		if convID != nil && *convID > 0 {
+			actMsg := domain.Message{
+				AccountID:      accountID,
+				ConversationID: *convID,
+				MessageType:    domain.MessageTypeActivity,
+				Content:        fmt.Sprintf("【系统变更】订单 %s 收货地址已由 Captain 工具修改为：%s，已同步中台仓库。", orderID, newAddress),
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}
+			_ = h.db.Create(&actMsg)
+		}
+
+		return gin.H{
+			"success":          true,
+			"action":           "update_shipping_address",
+			"order_id":         order.OrderID,
+			"updated_address":  order.ShippingAddress,
+			"sync_status":      "synced_to_warehouse",
+			"warehouse_synced": true,
+			"synced_at":        now.Format("2006-01-02 15:04:05"),
+			"message":          "收货地址修改成功，已实时同步配送网点与物流中台",
+		}, nil
 
 	case "create_ticket":
 		title, _ := params["title"].(string)
 		if title == "" {
 			title = "售后加急工单"
 		}
-		return gin.H{
-			"ticket_id":      fmt.Sprintf("TICK-%d", time.Now().Unix()%100000),
-			"title":          title,
-			"status":         "open",
-			"priority":       "high",
-			"assigned_group": "二线技术支持组",
-			"created_at":     time.Now().Format("2006-01-02 15:04:05"),
+		desc, _ := params["description"].(string)
+		priority, _ := params["priority"].(string)
+		if priority == "" {
+			priority = "high"
+		}
+		assignedGroup, _ := params["assigned_group"].(string)
+		if assignedGroup == "" {
+			assignedGroup = "二线技术支持组"
 		}
 
-	case "update_shipping_address":
-		newAddress, _ := params["new_address"].(string)
-		return gin.H{
-			"success":         true,
-			"action":          "update_shipping_address",
-			"updated_address": newAddress,
-			"sync_status":     "synced_to_warehouse",
-			"message":         "收货地址修改成功，已实时同步配送网点与物流中台",
+		var count int64
+		h.db.Model(&domain.Ticket{}).Where("account_id = ?", accountID).Count(&count)
+		ticketNumber := fmt.Sprintf("TICK-%s-%04d", now.Format("20060102"), count+1)
+
+		dueAt := now.Add(12 * time.Hour)
+		ticket := domain.Ticket{
+			AccountID:      accountID,
+			TicketNumber:   ticketNumber,
+			Title:          title,
+			Description:    desc,
+			Status:         "open",
+			Priority:       priority,
+			AssignedGroup:  assignedGroup,
+			ConversationID: convID,
+			DueAt:          &dueAt,
+			SLAStatus:      "normal",
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
+		if err := h.db.Create(&ticket).Error; err != nil {
+			return nil, fmt.Errorf("failed to create ticket in database: %w", err)
+		}
+		_ = h.db.Create(&domain.TicketActivity{
+			AccountID: ticket.AccountID,
+			TicketID:  ticket.ID,
+			Action:    "created",
+			Details:   fmt.Sprintf(`{"creator":"Captain AI","title":%q}`, ticket.Title),
+			CreatedAt: now,
+		})
+
+		if convID != nil && *convID > 0 {
+			actMsg := domain.Message{
+				AccountID:      accountID,
+				ConversationID: *convID,
+				MessageType:    domain.MessageTypeActivity,
+				Content:        fmt.Sprintf("【工单创建】工单 #%s: %s (优先级: %s, 处理组: %s)", ticket.TicketNumber, ticket.Title, ticket.Priority, ticket.AssignedGroup),
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}
+			_ = h.db.Create(&actMsg)
+		}
+
+		return gin.H{
+			"ticket_id":       ticket.TicketNumber,
+			"id":              ticket.ID,
+			"title":           ticket.Title,
+			"description":     ticket.Description,
+			"status":          ticket.Status,
+			"priority":        ticket.Priority,
+			"assigned_group":  ticket.AssignedGroup,
+			"conversation_id": ticket.ConversationID,
+			"created_at":      ticket.CreatedAt.Format("2006-01-02 15:04:05"),
+		}, nil
+
+	case "lookup_logistics", "query_logistics":
+		trackingNo, _ := params["tracking_number"].(string)
+		orderID, _ := params["order_id"].(string)
+		if trackingNo == "" && orderID == "" {
+			return nil, fmt.Errorf("tracking_number or order_id parameter is required for logistics lookup")
+		}
+
+		var order domain.Order
+		err := h.db.Where("account_id = ? AND (tracking_number = ? OR order_id = ?)", accountID, trackingNo, orderID).First(&order).Error
+		if err != nil {
+			return nil, fmt.Errorf("logistics record not found for tracking_number='%s' or order_id='%s'", trackingNo, orderID)
+		}
+
+		carrier := order.Carrier
+		status := order.OrderStatus
+		dest := order.ShippingAddress
+		if trackingNo == "" {
+			trackingNo = order.TrackingNumber
+		}
+
+		var checkpoints []gin.H
+		if order.CheckpointsJSON != "" {
+			_ = json.Unmarshal([]byte(order.CheckpointsJSON), &checkpoints)
+		}
+		if checkpoints == nil {
+			checkpoints = []gin.H{}
+		}
+
+		return gin.H{
+			"tracking_number":  trackingNo,
+			"carrier":          carrier,
+			"status":           status,
+			"shipping_address": dest,
+			"warehouse_synced": order.WarehouseSynced,
+			"checkpoints":      checkpoints,
+		}, nil
+
+	case "kb_search":
+		kw, _ := params["keyword"].(string)
+		var chunks []domain.CaptainDocChunk
+		_ = h.db.Where("account_id = ? AND LOWER(content) LIKE ?", accountID, "%"+strings.ToLower(kw)+"%").Limit(3).Find(&chunks)
+		return chunks, nil
 
 	default:
-		return gin.H{
-			"success":         true,
-			"tool_name":       name,
-			"output":          "Tool executed successfully in sandbox",
-			"params_received": params,
-			"timestamp":       time.Now().Unix(),
-		}
+		return nil, fmt.Errorf("unrecognized internal built-in function: %s", name)
 	}
 }
 
@@ -707,7 +910,11 @@ func executeHTTPTool(tool *domain.AICustomTool, params map[string]any, timeout t
 		}
 	}
 
-	client := &http.Client{Timeout: timeout}
+	if err := security.ValidateSafeURL(tool.EndpointURL); err != nil {
+		return nil, fmt.Errorf("blocked by SSRF protection: %w", err)
+	}
+
+	client := security.NewSafeHTTPClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

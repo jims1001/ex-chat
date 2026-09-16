@@ -365,6 +365,26 @@ func (h *AuditHandler) GetIntegrityVerification(c *gin.Context) {
 	response.Success(c, v)
 }
 
+// ListIntegrityVerifications GET /api/v1/accounts/:account_id/audit_integrity/verifications
+func (h *AuditHandler) ListIntegrityVerifications(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
+	list, err := h.journalRepo.ListIntegrityVerifications(accountID)
+	if err != nil {
+		response.InternalError(c, "Failed to list integrity verifications")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":    list,
+		"payload": list,
+		"meta": gin.H{
+			"total": len(list),
+		},
+	})
+}
+
 // PlatformListDataChanges GET /platform/api/v1/accounts/:id/data_changes
 func (h *AuditHandler) PlatformListDataChanges(c *gin.Context) {
 	accountIDStr := c.Param("id")

@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -12,17 +14,46 @@ import (
 	"gorm.io/gorm"
 )
 
+type automationContextKey struct{}
+
+const MaxAutomationDepth = 3
+
+// WithAutomationDepth returns a context with incremented automation depth
+func WithAutomationDepth(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	depth := GetAutomationDepth(ctx)
+	return context.WithValue(ctx, automationContextKey{}, depth+1)
+}
+
+// GetAutomationDepth returns current automation recursion depth
+func GetAutomationDepth(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	if v, ok := ctx.Value(automationContextKey{}).(int); ok {
+		return v
+	}
+	return 0
+}
+
 type AutomationService struct {
 	db       *gorm.DB
 	convRepo *repository.ConversationRepository
 	msgRepo  *repository.MessageRepository
+
+	// Idempotency cache to prevent same-second duplicated execution for same conversation+event+rule
+	recentExecMu sync.Mutex
+	recentExec   map[string]time.Time
 }
 
 func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository) *AutomationService {
 	return &AutomationService{
-		db:       db,
-		convRepo: convRepo,
-		msgRepo:  msgRepo,
+		db:         db,
+		convRepo:   convRepo,
+		msgRepo:    msgRepo,
+		recentExec: make(map[string]time.Time),
 	}
 }
 
@@ -43,22 +74,77 @@ type ActionInstruction struct {
 	Params       any    `json:"params"`
 }
 
+// ActionResult records individual action status and error
+type ActionResult struct {
+	ActionName string `json:"action_name"`
+	Status     string `json:"status"` // success, failed
+	Error      string `json:"error,omitempty"`
+}
+
 // HandleConversationCreated triggers automation on conversation creation
 func (s *AutomationService) HandleConversationCreated(conv *domain.Conversation) {
-	s.evaluateAndExecute(conv, nil, "conversation_created")
+	s.HandleConversationCreatedWithContext(context.Background(), conv)
+}
+
+// HandleConversationCreatedWithContext triggers automation on conversation creation with recursion context
+func (s *AutomationService) HandleConversationCreatedWithContext(ctx context.Context, conv *domain.Conversation) {
+	s.evaluateAndExecute(ctx, conv, nil, "conversation_created")
 }
 
 // HandleConversationUpdated triggers automation on status/assignment updates
 func (s *AutomationService) HandleConversationUpdated(conv *domain.Conversation) {
-	s.evaluateAndExecute(conv, nil, "conversation_updated")
+	s.HandleConversationUpdatedWithContext(context.Background(), conv)
+}
+
+// HandleConversationUpdatedWithContext triggers automation on status/assignment updates with recursion context
+func (s *AutomationService) HandleConversationUpdatedWithContext(ctx context.Context, conv *domain.Conversation) {
+	s.evaluateAndExecute(ctx, conv, nil, "conversation_updated")
 }
 
 // HandleMessageCreated triggers automation on new message
 func (s *AutomationService) HandleMessageCreated(conv *domain.Conversation, msg *domain.Message) {
-	s.evaluateAndExecute(conv, msg, "message_created")
+	s.HandleMessageCreatedWithContext(context.Background(), conv, msg)
 }
 
-func (s *AutomationService) evaluateAndExecute(conv *domain.Conversation, msg *domain.Message, eventName string) {
+// HandleMessageCreatedWithContext triggers automation on new message with recursion context
+func (s *AutomationService) HandleMessageCreatedWithContext(ctx context.Context, conv *domain.Conversation, msg *domain.Message) {
+	s.evaluateAndExecute(ctx, conv, msg, "message_created")
+}
+
+func (s *AutomationService) evaluateAndExecute(ctx context.Context, conv *domain.Conversation, msg *domain.Message, eventName string) {
+	if conv == nil {
+		return
+	}
+
+	depth := GetAutomationDepth(ctx)
+	if depth >= MaxAutomationDepth {
+		logger.WithComponent("automation").Warn("recursion loop prevented: automation execution depth exceeded threshold",
+			"depth", depth,
+			"conversation_id", conv.ID,
+			"account_id", conv.AccountID,
+			"event", eventName,
+		)
+		// Record depth exceeded execution in DB
+		exec := domain.AutomationRuleExecution{
+			AccountID:      conv.AccountID,
+			RuleID:         0,
+			ConversationID: conv.ID,
+			EventName:      eventName,
+			Status:         "depth_exceeded",
+			ActionResults:  "[]",
+			DurationMs:     0,
+			TriggeredAt:    time.Now().UTC(),
+			Error:          fmt.Sprintf("recursion depth %d exceeded maximum allowed (%d)", depth, MaxAutomationDepth),
+		}
+		if msg != nil && msg.ID > 0 {
+			exec.MessageID = &msg.ID
+		}
+		_ = s.db.Create(&exec).Error
+		return
+	}
+
+	nextCtx := WithAutomationDepth(ctx)
+
 	var rules []domain.AutomationRule
 	err := s.db.Where("account_id = ? AND event_name = ? AND active = ?", conv.AccountID, eventName, true).
 		Order("id ASC").
@@ -68,6 +154,25 @@ func (s *AutomationService) evaluateAndExecute(conv *domain.Conversation, msg *d
 	}
 
 	for _, rule := range rules {
+		// Idempotency check: prevent same rule triggering on same conversation within 2 seconds
+		idempKey := fmt.Sprintf("%d:%d:%d:%s", conv.AccountID, conv.ID, rule.ID, eventName)
+		s.recentExecMu.Lock()
+		now := time.Now()
+		if lastRun, exists := s.recentExec[idempKey]; exists && now.Sub(lastRun) < 2*time.Second {
+			s.recentExecMu.Unlock()
+			continue
+		}
+		s.recentExec[idempKey] = now
+		// Clean up old entries if map gets large
+		if len(s.recentExec) > 1000 {
+			for k, t := range s.recentExec {
+				if now.Sub(t) > 10*time.Second {
+					delete(s.recentExec, k)
+				}
+			}
+		}
+		s.recentExecMu.Unlock()
+
 		if !s.matchConditions(rule.Conditions, conv, msg) {
 			continue
 		}
@@ -78,6 +183,7 @@ func (s *AutomationService) evaluateAndExecute(conv *domain.Conversation, msg *d
 			"event", eventName,
 			"conversation_id", conv.ID,
 			"account_id", conv.AccountID,
+			"depth", depth,
 		)
 
 		actions := s.parseActions(rule.Actions)
@@ -85,9 +191,62 @@ func (s *AutomationService) evaluateAndExecute(conv *domain.Conversation, msg *d
 			continue
 		}
 
+		startTime := time.Now()
+		var actionResults []ActionResult
+		hasFailure := false
+		hasSuccess := false
+
 		for _, action := range actions {
-			s.executeAction(conv, msg, action)
+			actErr := s.executeAction(nextCtx, conv, msg, action)
+			if actErr != nil {
+				hasFailure = true
+				actionResults = append(actionResults, ActionResult{
+					ActionName: action.ActionName,
+					Status:     "failed",
+					Error:      actErr.Error(),
+				})
+			} else {
+				hasSuccess = true
+				actionResults = append(actionResults, ActionResult{
+					ActionName: action.ActionName,
+					Status:     "success",
+				})
+			}
 		}
+
+		duration := time.Since(startTime).Milliseconds()
+		status := "success"
+		if hasFailure && hasSuccess {
+			status = "partial_failed"
+		} else if hasFailure && !hasSuccess {
+			status = "failed"
+		}
+
+		resBytes, _ := json.Marshal(actionResults)
+		executionRecord := domain.AutomationRuleExecution{
+			AccountID:      conv.AccountID,
+			RuleID:         rule.ID,
+			ConversationID: conv.ID,
+			EventName:      eventName,
+			Status:         status,
+			ActionResults:  string(resBytes),
+			DurationMs:     duration,
+			TriggeredAt:    startTime.UTC(),
+		}
+		if msg != nil && msg.ID > 0 {
+			executionRecord.MessageID = &msg.ID
+		}
+		if hasFailure {
+			var errMsgs []string
+			for _, ar := range actionResults {
+				if ar.Error != "" {
+					errMsgs = append(errMsgs, fmt.Sprintf("%s: %s", ar.ActionName, ar.Error))
+				}
+			}
+			executionRecord.Error = strings.Join(errMsgs, "; ")
+		}
+
+		_ = s.db.Create(&executionRecord).Error
 	}
 }
 
@@ -254,6 +413,58 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 		}
 	case "contact_id":
 		targetVal = int(conv.ContactID)
+	case "email":
+		if conv.Contact != nil && conv.Contact.Email != "" {
+			targetVal = conv.Contact.Email
+		} else if s.db != nil && conv.ContactID > 0 {
+			var contact domain.Contact
+			if err := s.db.Where("id = ?", conv.ContactID).First(&contact).Error; err == nil {
+				conv.Contact = &contact
+				targetVal = contact.Email
+			}
+		}
+	case "phone_number":
+		if conv.Contact != nil && conv.Contact.PhoneNumber != "" {
+			targetVal = conv.Contact.PhoneNumber
+		} else if s.db != nil && conv.ContactID > 0 {
+			var contact domain.Contact
+			if err := s.db.Where("id = ?", conv.ContactID).First(&contact).Error; err == nil {
+				conv.Contact = &contact
+				targetVal = contact.PhoneNumber
+			}
+		}
+	case "country_code", "city", "company_name":
+		if conv.Contact == nil && s.db != nil && conv.ContactID > 0 {
+			var contact domain.Contact
+			if err := s.db.Where("id = ?", conv.ContactID).First(&contact).Error; err == nil {
+				conv.Contact = &contact
+			}
+		}
+		if conv.Contact != nil {
+			if cond.AttributeKey == "company_name" && conv.Contact.CompanyID != nil && s.db != nil {
+				var company domain.Company
+				if err := s.db.Where("id = ?", *conv.Contact.CompanyID).First(&company).Error; err == nil {
+					targetVal = company.Name
+				}
+			}
+			if targetVal == nil && conv.Contact.CustomAttributes != "" {
+				var custMap map[string]any
+				if err := json.Unmarshal([]byte(conv.Contact.CustomAttributes), &custMap); err == nil {
+					if val, ok := custMap[cond.AttributeKey]; ok {
+						targetVal = val
+					}
+				}
+			}
+		}
+	case "browser_language", "conversation_language", "referer", "mail_subject":
+		if conv.CustomAttributes != "" {
+			var custMap map[string]any
+			if err := json.Unmarshal([]byte(conv.CustomAttributes), &custMap); err == nil {
+				if val, ok := custMap[cond.AttributeKey]; ok {
+					targetVal = val
+				}
+			}
+		}
 	case "labels", "label", "tag", "tags", "label_ids", "conversation_labels":
 		var labels []domain.Label
 		if len(conv.Labels) > 0 {
@@ -398,11 +609,12 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 	return false
 }
 
-func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain.Message, action ActionInstruction) {
+func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conversation, msg *domain.Message, action ActionInstruction) error {
 	logger.WithComponent("automation").Info("executing automation action",
 		"action_name", action.ActionName,
 		"conversation_id", conv.ID,
 		"account_id", conv.AccountID,
+		"depth", GetAutomationDepth(ctx),
 	)
 	getParamString := func(key string) string {
 		if m, ok := action.ActionParams.(map[string]any); ok {
@@ -487,11 +699,29 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 	case "assign_agent":
 		uid := getParamUint("user_id", "agent_id")
 		if uid > 0 {
-			_ = s.convRepo.Assign(conv.AccountID, conv.ID, &uid)
-			conv.AssigneeID = &uid
-			var agent domain.User
-			if err := s.db.Where("id = ?", uid).First(&agent).Error; err == nil {
-				conv.Assignee = &agent
+			// Verify agent belongs to this tenant account if account_users table exists
+			hasTable := s.db.Migrator().HasTable(&domain.AccountUser{})
+			allowed := true
+			if hasTable {
+				var count int64
+				_ = s.db.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", conv.AccountID, uid).Count(&count).Error
+				if count == 0 {
+					allowed = false
+				}
+			}
+			if !allowed {
+				logger.WithComponent("automation").Warn("blocked cross-tenant agent assignment in automation rule",
+					"account_id", conv.AccountID,
+					"target_agent_id", uid,
+					"conversation_id", conv.ID,
+				)
+			} else {
+				_ = s.convRepo.Assign(conv.AccountID, conv.ID, &uid)
+				conv.AssigneeID = &uid
+				var agent domain.User
+				if err := s.db.Where("id = ?", uid).First(&agent).Error; err == nil {
+					conv.Assignee = &agent
+				}
 			}
 		}
 	case "remove_assigned_agent":
@@ -501,10 +731,10 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 	case "assign_team":
 		tid := getParamUint("team_id", "team_ids", "id")
 		if tid > 0 {
-			_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, &tid)
-			conv.TeamID = &tid
 			var team domain.Team
 			if err := s.db.Where("account_id = ? AND id = ?", conv.AccountID, tid).First(&team).Error; err == nil {
+				_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, &tid)
+				conv.TeamID = &tid
 				conv.Team = &team
 			}
 		}
@@ -512,6 +742,24 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 		_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, nil)
 		conv.TeamID = nil
 		conv.Team = nil
+	case "mute_conversation":
+		conv.Muted = true
+		newStatus := "resolved"
+		_ = s.convRepo.UpdateStatus(conv.AccountID, conv.ID, newStatus, nil)
+		conv.Status = newStatus
+		_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Update("muted", true).Error
+	case "snooze_conversation", "snooze":
+		newStatus := domain.ConversationStatusSnoozed
+		snoozeDuration := 24 * time.Hour
+		if st := getParamString("duration"); st != "" {
+			if d, parseErr := time.ParseDuration(st); parseErr == nil && d > 0 {
+				snoozeDuration = d
+			}
+		}
+		snoozedUntil := time.Now().UTC().Add(snoozeDuration)
+		conv.SnoozedUntil = &snoozedUntil
+		_ = s.convRepo.UpdateStatus(conv.AccountID, conv.ID, newStatus, &snoozedUntil)
+		conv.Status = newStatus
 	case "change_status", "resolve_conversation", "close_conversation", "close", "resolve", "open_conversation":
 		newStatus := "open"
 		if action.ActionName == "resolve_conversation" || action.ActionName == "close_conversation" || action.ActionName == "close" || action.ActionName == "resolve" {
@@ -537,10 +785,8 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 		}
 		if content != "" {
 			isPrivate := action.ActionName == "add_private_note" || action.ActionName == "private_note"
+			// Chatwoot specification: private note is outgoing message with private=true
 			msgType := domain.MessageTypeOutgoing
-			if isPrivate {
-				msgType = domain.MessageTypeActivity
-			}
 			reply := domain.Message{
 				AccountID:      conv.AccountID,
 				ConversationID: conv.ID,
@@ -700,5 +946,5 @@ func (s *AutomationService) executeAction(conv *domain.Conversation, msg *domain
 	} else if action.ActionName == "remove_assigned_team" {
 		updateFields["team_id"] = nil
 	}
-	_ = s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updateFields).Error
+	return s.db.Model(&domain.Conversation{}).Where("id = ?", conv.ID).Updates(updateFields).Error
 }
