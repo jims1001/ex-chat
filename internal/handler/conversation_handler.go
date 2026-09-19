@@ -38,6 +38,9 @@ type ConversationHandler struct {
 	captainRepo       *repository.CaptainRepository
 	enterpriseRepo    repository.ChannelAuthEnterpriseRepository
 	journalRepo       *repository.JournalRepository
+	accountRepo       *repository.AccountRepository
+	teamRepo          *repository.TeamRepository
+	userRepo          *repository.UserRepository
 	hub               *ws.Hub
 }
 
@@ -94,6 +97,12 @@ func (h *ConversationHandler) SetEnterpriseRepo(er repository.ChannelAuthEnterpr
 
 func (h *ConversationHandler) SetJournalRepo(jr *repository.JournalRepository) {
 	h.journalRepo = jr
+}
+
+func (h *ConversationHandler) SetIdentityRepos(accountRepo *repository.AccountRepository, teamRepo *repository.TeamRepository, userRepo *repository.UserRepository) {
+	h.accountRepo = accountRepo
+	h.teamRepo = teamRepo
+	h.userRepo = userRepo
 }
 
 type CreateConversationRequest struct {
@@ -211,31 +220,19 @@ func (h *ConversationHandler) CreateConversation(c *gin.Context) {
 	}
 
 	if req.AssigneeID != nil {
-		var capPolicy domain.CapacityPolicy
-		db := h.convRepo.GetDB()
-		found := false
-		if err := db.Where("user_id = ?", *req.AssigneeID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-			found = true
-		} else if accountID > 0 {
-			if err := db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-				found = true
-			}
-		}
-		if found && capPolicy.ConversationLimit > 0 {
-			var currentCount int64
-			db.Model(&domain.Conversation{}).
-				Where("assignee_id = ? AND status != ?", *req.AssigneeID, domain.ConversationStatusResolved).
-				Count(&currentCount)
-			if currentCount >= int64(capPolicy.ConversationLimit) {
-				response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
-				return
-			}
+		hasCapacity, _ := h.routingService.CheckAgentCapacity(accountID, req.InboxID, *req.AssigneeID, nil, 0)
+		if !hasCapacity {
+			response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
+			return
 		}
 	}
 
 	if req.TeamID != nil {
-		var team domain.Team
-		if err := h.convRepo.GetDB().Where("account_id = ? AND id = ?", accountID, *req.TeamID).First(&team).Error; err != nil {
+		if h.teamRepo == nil {
+			response.InternalError(c, "Team repository is not configured")
+			return
+		}
+		if team, err := h.teamRepo.FindByID(accountID, *req.TeamID); err != nil || team == nil {
 			response.BadRequest(c, "Invalid team ID")
 			return
 		}
@@ -416,9 +413,12 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 	_, hasTeam := raw["team_id"]
 
 	if hasAssignee && req.AssigneeID != nil && *req.AssigneeID > 0 {
+		if h.accountRepo == nil {
+			response.InternalError(c, "Account repository is not configured")
+			return
+		}
 		// Ensure assignee belongs to this account
-		var accountUser domain.AccountUser
-		if err := h.convRepo.GetDB().Where("account_id = ? AND user_id = ?", accountID, *req.AssigneeID).First(&accountUser).Error; err != nil {
+		if membership, err := h.accountRepo.GetMembership(accountID, *req.AssigneeID); err != nil || membership == nil {
 			response.BadRequest(c, "Assignee does not belong to this account")
 			return
 		}
@@ -434,33 +434,21 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 				response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
 				return
 			}
-		} else {
-			var capPolicy domain.CapacityPolicy
-			db := h.convRepo.GetDB()
-			found := false
-			if accountID > 0 {
-				if err := db.Where("account_id = ? AND user_id = ?", accountID, *req.AssigneeID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-					found = true
-				} else if err := db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-					found = true
-				}
-			}
-			if found && capPolicy.ConversationLimit > 0 {
-				var currentCount int64
-				db.Model(&domain.Conversation{}).
-					Where("account_id = ? AND assignee_id = ? AND status != ? AND id != ?", accountID, *req.AssigneeID, domain.ConversationStatusResolved, id).
-					Count(&currentCount)
-				if currentCount >= int64(capPolicy.ConversationLimit) {
-					response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
-					return
-				}
+		} else if h.routingService != nil {
+			hasCap, _ := h.routingService.CheckAgentCapacity(accountID, 0, *req.AssigneeID, nil, uint(id))
+			if !hasCap {
+				response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
+				return
 			}
 		}
 	}
 
 	if hasTeam && req.TeamID != nil && *req.TeamID > 0 {
-		var team domain.Team
-		if err := h.convRepo.GetDB().Where("account_id = ? AND id = ?", accountID, *req.TeamID).First(&team).Error; err != nil {
+		if h.teamRepo == nil {
+			response.InternalError(c, "Team repository is not configured")
+			return
+		}
+		if team, err := h.teamRepo.FindByID(accountID, *req.TeamID); err != nil || team == nil {
 			response.BadRequest(c, "Invalid team ID")
 			return
 		}
@@ -1179,8 +1167,11 @@ func (h *ConversationHandler) ToggleTypingStatus(c *gin.Context) {
 
 	var userName string
 	if userID > 0 {
-		var user domain.User
-		if err := h.convRepo.GetDB().Where("id = ?", userID).First(&user).Error; err == nil {
+		if h.userRepo == nil {
+			response.InternalError(c, "User repository is not configured")
+			return
+		}
+		if user, err := h.userRepo.FindByID(userID); err == nil {
 			userName = user.Name
 		}
 	}
@@ -1897,9 +1888,12 @@ func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
 		if *req.AssigneeID == 0 {
 			conv.AssigneeID = nil
 		} else {
+			if h.accountRepo == nil {
+				response.InternalError(c, "Account repository is not configured")
+				return
+			}
 			// Verify assignee belongs to this account
-			var accountUser domain.AccountUser
-			if err := h.convRepo.GetDB().Where("account_id = ? AND user_id = ?", accountID, *req.AssigneeID).First(&accountUser).Error; err != nil {
+			if membership, err := h.accountRepo.GetMembership(accountID, *req.AssigneeID); err != nil || membership == nil {
 				response.BadRequest(c, "Assignee does not belong to this account")
 				return
 			}
@@ -1910,9 +1904,12 @@ func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
 		if *req.TeamID == 0 {
 			conv.TeamID = nil
 		} else {
+			if h.teamRepo == nil {
+				response.InternalError(c, "Team repository is not configured")
+				return
+			}
 			// Verify team belongs to this account
-			var team domain.Team
-			if err := h.convRepo.GetDB().Where("account_id = ? AND id = ?", accountID, *req.TeamID).First(&team).Error; err != nil {
+			if team, err := h.teamRepo.FindByID(accountID, *req.TeamID); err != nil || team == nil {
 				response.BadRequest(c, "Invalid team ID")
 				return
 			}

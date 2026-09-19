@@ -103,7 +103,7 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedManifestSHA256 = "3b62633653a389988b4fcea42eda1b2ea13ed7b24e7f3de2518ec887f8c856f9"
+	const approvedManifestSHA256 = "fac8521aeb78557624fa0d06f826035023387b5b598b827e697d4bb32468d7c3"
 	if actual := fmt.Sprintf("%x", sha256.Sum256(raw)); actual != approvedManifestSHA256 {
 		t.Fatalf("dependency manifest changed (%s); reopen ARCH-03 and approve a new fingerprint", actual)
 	}

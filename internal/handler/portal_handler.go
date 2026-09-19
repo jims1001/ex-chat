@@ -74,7 +74,6 @@ type UpdateArticleRequest struct {
 	Status     string `json:"status"`
 }
 
-
 // ----------------- Agent Management -----------------
 
 func (h *PortalHandler) ListPortals(c *gin.Context) {

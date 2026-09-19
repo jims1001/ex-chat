@@ -34,6 +34,15 @@ func (r *ContactRepository) FindByID(accountID, id uint) (*domain.Contact, error
 	return &contact, nil
 }
 
+func (r *ContactRepository) VisitorTokenMatches(accountID, contactID, inboxID uint, token string) bool {
+	contact, err := r.FindByID(accountID, contactID)
+	if err == nil && contact != nil && contact.PubsubToken != "" && token == contact.PubsubToken {
+		return true
+	}
+	var contactInbox domain.ContactInbox
+	return r.db.Where("contact_id = ? AND inbox_id = ? AND source_id = ?", contactID, inboxID, token).First(&contactInbox).Error == nil
+}
+
 func (r *ContactRepository) FindByEmail(accountID uint, email string) (*domain.Contact, error) {
 	var contact domain.Contact
 	err := r.db.Where("account_id = ? AND email = ?", accountID, email).First(&contact).Error
@@ -356,10 +365,6 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 
 		return nil
 	})
-}
-
-func (r *ContactRepository) GetDB() *gorm.DB {
-	return r.db
 }
 
 // ListActive retrieves contacts with ongoing/active (non-resolved) conversations

@@ -21,10 +21,6 @@ func NewConversationRepository(db *gorm.DB) *ConversationRepository {
 	return &ConversationRepository{db: db}
 }
 
-func (r *ConversationRepository) GetDB() *gorm.DB {
-	return r.db
-}
-
 func (r *ConversationRepository) Create(c *domain.Conversation) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var maxDisplayID uint
@@ -80,6 +76,30 @@ func (r *ConversationRepository) FindByID(accountID, id uint) (*domain.Conversat
 		return nil, err
 	}
 	return &conv, nil
+}
+
+func (r *ConversationRepository) FindByUUID(uuid string) (*domain.Conversation, error) {
+	var conversation domain.Conversation
+	if err := r.db.Where("uuid = ?", uuid).First(&conversation).Error; err != nil {
+		return nil, err
+	}
+	return &conversation, nil
+}
+
+func (r *ConversationRepository) FindGlobalByID(id uint) (*domain.Conversation, error) {
+	var conversation domain.Conversation
+	if err := r.db.First(&conversation, id).Error; err != nil {
+		return nil, err
+	}
+	return &conversation, nil
+}
+
+func (r *ConversationRepository) FindForInbox(accountID, inboxID, conversationID uint) (*domain.Conversation, error) {
+	var conversation domain.Conversation
+	if err := r.db.Where("id = ? AND inbox_id = ? AND account_id = ?", conversationID, inboxID, accountID).First(&conversation).Error; err != nil {
+		return nil, err
+	}
+	return &conversation, nil
 }
 
 func (r *ConversationRepository) FindOpenByContactAndInbox(accountID, contactID, inboxID uint) (*domain.Conversation, error) {

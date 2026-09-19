@@ -465,7 +465,7 @@ func (h *CopilotThreadHandler) SendMessage(c *gin.Context) {
 		Content:          req.Content,
 		Citations:        req.Citations,
 		SuggestedActions: req.SuggestedActions,
-		TokenCount:       len(req.Content) / 4 + 5,
+		TokenCount:       len(req.Content)/4 + 5,
 		Feedback:         domain.CopilotFeedbackNone,
 	}
 

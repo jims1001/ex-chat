@@ -56,7 +56,7 @@
 | 下层依赖 API/RTM/ORC | 0 | pass |
 | 直接、间接与事件环 | 0 | pass |
 | 拓扑排序覆盖 | 26/26 | pass |
-| 批准清单 SHA-256 | `3b62633653a389988b4fcea42eda1b2ea13ed7b24e7f3de2518ec887f8c856f9` | pass |
+| 批准清单 SHA-256 | `fac8521aeb78557624fa0d06f826035023387b5b598b827e697d4bb32468d7c3` | pass；ARCH-04 owner 仓储拆分新增 QLT→CHN 已批准同步边，仍满足分层与无环约束 |
 
 提供者优先顺序：
 

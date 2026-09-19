@@ -168,5 +168,3 @@ func (r *AccountRepository) UpdateCustomRole(role *domain.CustomRole) error {
 func (r *AccountRepository) DeleteCustomRole(accountID, id uint) error {
 	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.CustomRole{}).Error
 }
-
-

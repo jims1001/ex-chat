@@ -23,6 +23,7 @@ type InboxHandler struct {
 	captainRepo  *repository.CaptainRepository
 	campaignRepo *repository.CampaignRepository
 	agentBotRepo *repository.AgentBotRepository
+	policyRepo   *repository.AssignmentPolicyRepository
 	contactRepo  *repository.ContactRepository
 	jwtSecret    string
 }
@@ -48,6 +49,10 @@ func (h *InboxHandler) SetCampaignRepo(cr *repository.CampaignRepository) {
 
 func (h *InboxHandler) SetAgentBotRepo(abr *repository.AgentBotRepository) {
 	h.agentBotRepo = abr
+}
+
+func (h *InboxHandler) SetAssignmentPolicyRepo(repo *repository.AssignmentPolicyRepository) {
+	h.policyRepo = repo
 }
 
 func (h *InboxHandler) SetContactRepo(cr *repository.ContactRepository) {
@@ -277,10 +282,12 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 	}
 
 	if policyID != nil && *policyID > 0 {
-		var count int64
-		if err := h.inboxRepo.DB().Model(&domain.AssignmentPolicy{}).
-			Where("account_id = ? AND id = ?", accountID, *policyID).
-			Count(&count).Error; err != nil || count == 0 {
+		if h.policyRepo == nil {
+			response.InternalError(c, "Assignment policy repository is not configured")
+			return
+		}
+		policy, err := h.policyRepo.FindByID(accountID, *policyID)
+		if err != nil || policy == nil {
 			response.NotFound(c, "Assignment policy not found")
 			return
 		}
@@ -350,7 +357,11 @@ func (h *InboxHandler) GetAssignmentPolicy(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.inboxRepo.GetAssignmentPolicy(accountID, uint(inboxID))
+	if h.policyRepo == nil {
+		response.InternalError(c, "Assignment policy repository is not configured")
+		return
+	}
+	policy, err := h.policyRepo.FindByID(accountID, *inbox.AssignmentPolicyID)
 	if err != nil || policy == nil {
 		response.NotFound(c, "Assignment policy not found")
 		return
@@ -848,8 +859,11 @@ func (h *InboxHandler) SetInboxAgentBot(c *gin.Context) {
 	}
 
 	if targetBotID > 0 {
-		var bot domain.AgentBot
-		if err := h.inboxRepo.GetDB().Where("account_id = ? AND id = ?", accountID, targetBotID).First(&bot).Error; err != nil {
+		if h.agentBotRepo == nil {
+			response.InternalError(c, "Agent bot repository is not configured")
+			return
+		}
+		if _, err := h.agentBotRepo.GetByID(c.Request.Context(), accountID, targetBotID); err != nil {
 			response.NotFound(c, "Agent bot not found")
 			return
 		}
@@ -1127,7 +1141,6 @@ func (h *InboxHandler) GetChannelHealth(c *gin.Context) {
 		"data":            health,
 	})
 }
-
 
 // RegisterChannelWebhook sets the callback webhook endpoint for the channel
 func (h *InboxHandler) RegisterChannelWebhook(c *gin.Context) {
@@ -1595,5 +1608,3 @@ func (h *InboxHandler) RemoveMembers(c *gin.Context) {
 
 	response.Success(c, gin.H{"success": true})
 }
-
-

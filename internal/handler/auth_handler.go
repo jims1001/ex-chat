@@ -45,7 +45,6 @@ func (h *AuthHandler) SetEmailService(emailService *service.EmailService) {
 	h.emailService = emailService
 }
 
-
 type SignUpRequest struct {
 	Name        string `json:"name" binding:"required"`
 	Email       string `json:"email" binding:"required,email"`

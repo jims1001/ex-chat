@@ -2,7 +2,6 @@ package repository
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -52,18 +51,29 @@ type CSATExtensionRepository struct {
 	db *gorm.DB
 }
 
-func (r *CSATExtensionRepository) GetDB() *gorm.DB {
-	return r.db
-}
-
 // NewCSATExtensionRepository creates a new repository instance
 func NewCSATExtensionRepository(db *gorm.DB) *CSATExtensionRepository {
 	return &CSATExtensionRepository{db: db}
 }
 
-// DB returns the underlying gorm.DB
-func (r *CSATExtensionRepository) DB() *gorm.DB {
-	return r.db
+func (r *CSATExtensionRepository) SavePublicSurvey(survey *domain.CSATSurvey) error {
+	return r.db.Save(survey).Error
+}
+
+func (r *CSATExtensionRepository) FindGlobalSurvey(id uint) (*domain.CSATSurvey, error) {
+	var survey domain.CSATSurvey
+	if err := r.db.First(&survey, id).Error; err != nil {
+		return nil, err
+	}
+	return &survey, nil
+}
+
+func (r *CSATExtensionRepository) FindSurveyByConversation(accountID, conversationID uint) (*domain.CSATSurvey, error) {
+	var survey domain.CSATSurvey
+	if err := r.db.Where("account_id = ? AND conversation_id = ?", accountID, conversationID).First(&survey).Error; err != nil {
+		return nil, err
+	}
+	return &survey, nil
 }
 
 // ListSurveys queries CSAT surveys with filtering and pagination
@@ -203,12 +213,7 @@ func (r *CSATExtensionRepository) BulkReviewSurveys(accountID, reviewerID uint, 
 }
 
 // TriggerSurveyForConversation initiates or fetches a CSAT survey for a conversation
-func (r *CSATExtensionRepository) TriggerSurveyForConversation(accountID, conversationID uint) (*domain.CSATSurvey, error) {
-	var conv domain.Conversation
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, conversationID).First(&conv).Error; err != nil {
-		return nil, fmt.Errorf("conversation not found: %w", err)
-	}
-
+func (r *CSATExtensionRepository) TriggerSurveyForConversation(accountID, conversationID uint, assignedAgentID *uint) (*domain.CSATSurvey, error) {
 	var existing domain.CSATSurvey
 	err := r.db.Where("account_id = ? AND conversation_id = ?", accountID, conversationID).First(&existing).Error
 	if err == nil {
@@ -220,7 +225,7 @@ func (r *CSATExtensionRepository) TriggerSurveyForConversation(accountID, conver
 		AccountID:       accountID,
 		ConversationID:  conversationID,
 		Rating:          0, // Pending customer submission
-		AssignedAgentID: conv.AssigneeID,
+		AssignedAgentID: assignedAgentID,
 		ReviewStatus:    "pending",
 	}
 
@@ -232,12 +237,7 @@ func (r *CSATExtensionRepository) TriggerSurveyForConversation(accountID, conver
 }
 
 // SubmitOrUpdateSurvey saves a customer response (from public or authenticated endpoints)
-func (r *CSATExtensionRepository) SubmitOrUpdateSurvey(accountID, conversationID uint, rating int, feedback string) (*domain.CSATSurvey, error) {
-	var conv domain.Conversation
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, conversationID).First(&conv).Error; err != nil {
-		return nil, fmt.Errorf("conversation not found: %w", err)
-	}
-
+func (r *CSATExtensionRepository) SubmitOrUpdateSurvey(accountID, conversationID uint, assignedAgentID *uint, rating int, feedback string) (*domain.CSATSurvey, error) {
 	var survey domain.CSATSurvey
 	err := r.db.Where("account_id = ? AND conversation_id = ?", accountID, conversationID).First(&survey).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -250,7 +250,7 @@ func (r *CSATExtensionRepository) SubmitOrUpdateSurvey(accountID, conversationID
 			ConversationID:  conversationID,
 			Rating:          rating,
 			FeedbackText:    feedback,
-			AssignedAgentID: conv.AssigneeID,
+			AssignedAgentID: assignedAgentID,
 			ReviewStatus:    "pending",
 		}
 		if err := r.db.Create(&survey).Error; err != nil {
@@ -260,7 +260,7 @@ func (r *CSATExtensionRepository) SubmitOrUpdateSurvey(accountID, conversationID
 		survey.Rating = rating
 		survey.FeedbackText = feedback
 		if survey.AssignedAgentID == nil {
-			survey.AssignedAgentID = conv.AssigneeID
+			survey.AssignedAgentID = assignedAgentID
 		}
 		survey.UpdatedAt = time.Now().UTC()
 		if err := r.db.Save(&survey).Error; err != nil {

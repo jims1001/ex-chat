@@ -50,6 +50,8 @@ func NewAuthEnterpriseHandler(
 	accountRepo *repository.AccountRepository,
 	portalRepo *repository.PortalRepository,
 	contactRepo *repository.ContactRepository,
+	inboxRepo *repository.InboxRepository,
+	conversationRepo *repository.ConversationRepository,
 	cfg *config.Config,
 ) *AuthEnterpriseHandler {
 	return &AuthEnterpriseHandler{
@@ -58,8 +60,8 @@ func NewAuthEnterpriseHandler(
 		accountRepo:      accountRepo,
 		portalRepo:       portalRepo,
 		contactRepo:      contactRepo,
-		inboxRepo:        repository.NewInboxRepository(repo.GetDB()),
-		conversationRepo: repository.NewConversationRepository(repo.GetDB()),
+		inboxRepo:        inboxRepo,
+		conversationRepo: conversationRepo,
 		cfg:              cfg,
 	}
 }
@@ -690,7 +692,8 @@ func (h *AuthEnterpriseHandler) CreateMigrationJob(c *gin.Context) {
 
 	migService := h.migrationService
 	if migService == nil {
-		migService = service.NewMigrationService(h.repo.GetDB())
+		response.InternalError(c, "Migration service is not configured")
+		return
 	}
 
 	synced := 0
@@ -1217,21 +1220,21 @@ func (h *AuthEnterpriseHandler) CreateOrUpdateSubscription(c *gin.Context) {
 	// Ensure default plans exist
 	_, _ = h.repo.ListSubscriptionPlans()
 
-	db := h.repo.GetDB()
 	var plan domain.SubscriptionPlan
-	var planErr error
+	var planPtr *domain.SubscriptionPlan
 	if req.PlanID > 0 {
-		planErr = db.First(&plan, req.PlanID).Error
+		planPtr, err = h.repo.GetSubscriptionPlan(req.PlanID)
 	} else if req.PlanSlug != "" {
-		planErr = db.Where("slug = ?", req.PlanSlug).First(&plan).Error
+		planPtr, err = h.repo.GetSubscriptionPlanBySlug(req.PlanSlug)
 	} else {
-		planErr = db.Where("slug = ?", "pro").First(&plan).Error
+		planPtr, err = h.repo.GetSubscriptionPlanBySlug("pro")
 	}
 
-	if planErr != nil {
+	if err != nil || planPtr == nil {
 		response.NotFound(c, "Subscription plan not found")
 		return
 	}
+	plan = *planPtr
 
 	now := time.Now().UTC()
 	sub, _ := h.repo.GetAccountSubscription(uint(accountID))
@@ -1331,9 +1334,7 @@ func (h *AuthEnterpriseHandler) SelectBillingCurrency(c *gin.Context) {
 		curr = "usd"
 	}
 
-	db := h.repo.GetDB()
-	var account domain.Account
-	if err := db.First(&account, accountID).Error; err == nil {
+	if account, err := h.accountRepo.FindByID(accountID); err == nil {
 		var customAttrs map[string]any
 		if account.CustomAttributes != "" {
 			_ = json.Unmarshal([]byte(account.CustomAttributes), &customAttrs)
@@ -1344,7 +1345,7 @@ func (h *AuthEnterpriseHandler) SelectBillingCurrency(c *gin.Context) {
 		customAttrs["billing_currency"] = curr
 		b, _ := json.Marshal(customAttrs)
 		account.CustomAttributes = string(b)
-		_ = h.accountRepo.Update(&account)
+		_ = h.accountRepo.Update(account)
 	}
 
 	sub, _ := h.repo.GetAccountSubscription(accountID)
@@ -1386,9 +1387,7 @@ func (h *AuthEnterpriseHandler) ToggleDeletion(c *gin.Context) {
 		return
 	}
 
-	db := h.repo.GetDB()
-	var account domain.Account
-	if err := db.First(&account, accountID).Error; err == nil {
+	if account, err := h.accountRepo.FindByID(accountID); err == nil {
 		var customAttrs map[string]any
 		if account.CustomAttributes != "" {
 			_ = json.Unmarshal([]byte(account.CustomAttributes), &customAttrs)
@@ -1405,7 +1404,7 @@ func (h *AuthEnterpriseHandler) ToggleDeletion(c *gin.Context) {
 		}
 		b, _ := json.Marshal(customAttrs)
 		account.CustomAttributes = string(b)
-		_ = h.accountRepo.Update(&account)
+		_ = h.accountRepo.Update(account)
 	}
 
 	var msg string
@@ -1434,9 +1433,7 @@ func (h *AuthEnterpriseHandler) TopupOptions(c *gin.Context) {
 	}
 
 	curr := "usd"
-	db := h.repo.GetDB()
-	var account domain.Account
-	if err := db.First(&account, accountID).Error; err == nil && account.CustomAttributes != "" {
+	if account, err := h.accountRepo.FindByID(accountID); err == nil && account.CustomAttributes != "" {
 		var customAttrs map[string]any
 		if err := json.Unmarshal([]byte(account.CustomAttributes), &customAttrs); err == nil {
 			if bc, ok := customAttrs["billing_currency"].(string); ok && bc != "" {
@@ -1484,9 +1481,7 @@ func (h *AuthEnterpriseHandler) TopupCheckout(c *gin.Context) {
 	}
 
 	curr := "usd"
-	db := h.repo.GetDB()
-	var account domain.Account
-	if err := db.First(&account, accountID).Error; err == nil && account.CustomAttributes != "" {
+	if account, err := h.accountRepo.FindByID(accountID); err == nil && account.CustomAttributes != "" {
 		var customAttrs map[string]any
 		if err := json.Unmarshal([]byte(account.CustomAttributes), &customAttrs); err == nil {
 			if bc, ok := customAttrs["billing_currency"].(string); ok && bc != "" {

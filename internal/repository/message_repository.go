@@ -152,6 +152,14 @@ func (r *MessageRepository) FindByID(accountID, id uint) (*domain.Message, error
 	return &msg, nil
 }
 
+func (r *MessageRepository) FindCSATMessage(accountID, conversationID uint) (*domain.Message, error) {
+	var message domain.Message
+	if err := r.db.Where("account_id = ? AND conversation_id = ? AND content_type = ?", accountID, conversationID, "input_csat").First(&message).Error; err != nil {
+		return nil, err
+	}
+	return &message, nil
+}
+
 func (r *MessageRepository) UpdateStatus(id uint, status string) error {
 	return r.db.Model(&domain.Message{}).Where("id = ?", id).Update("status", status).Error
 }
@@ -271,10 +279,6 @@ func (r *MessageRepository) RetryMessage(accountID, conversationID, messageID ui
 	msg.Status = domain.MessageStatusSent
 	msg.UpdatedAt = now
 	return msg, nil
-}
-
-func (r *MessageRepository) GetDB() *gorm.DB {
-	return r.db
 }
 
 func (r *MessageRepository) UpdateTranslations(accountID, id uint, translations string) error {

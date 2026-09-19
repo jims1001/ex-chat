@@ -71,45 +71,43 @@ func (r *InboxRepository) ListByAccount(accountID uint) ([]domain.Inbox, error) 
 	return inboxes, err
 }
 
-func (r *InboxRepository) DB() *gorm.DB {
-	return r.db
-}
-
 func (r *InboxRepository) BindAssignmentPolicy(accountID, inboxID uint, policyID *uint) error {
 	return r.db.Model(&domain.Inbox{}).
 		Where("account_id = ? AND id = ?", accountID, inboxID).
 		Update("assignment_policy_id", policyID).Error
 }
 
-func (r *InboxRepository) GetAssignmentPolicy(accountID, inboxID uint) (*domain.AssignmentPolicy, error) {
-	var inbox domain.Inbox
-	if err := r.db.Select("id, account_id, assignment_policy_id").
-		Where("account_id = ? AND id = ?", accountID, inboxID).
-		First(&inbox).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if inbox.AssignmentPolicyID == nil || *inbox.AssignmentPolicyID == 0 {
-		return nil, nil
-	}
-	var policy domain.AssignmentPolicy
-	if err := r.db.Preload("FallbackAssignee").Preload("FallbackTeam").
-		Where("account_id = ? AND id = ?", accountID, *inbox.AssignmentPolicyID).
-		First(&policy).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &policy, nil
-}
-
 func (r *InboxRepository) UnbindAssignmentPolicy(accountID, inboxID uint) error {
 	return r.db.Model(&domain.Inbox{}).
 		Where("account_id = ? AND id = ?", accountID, inboxID).
 		Update("assignment_policy_id", nil).Error
+}
+
+func (r *InboxRepository) FindByIDs(accountID uint, inboxIDs []uint) ([]domain.Inbox, error) {
+	var inboxes []domain.Inbox
+	err := r.db.Where("account_id = ? AND id IN (?)", accountID, inboxIDs).Order("id ASC").Find(&inboxes).Error
+	return inboxes, err
+}
+
+func (r *InboxRepository) ListByAssignmentPolicy(accountID, policyID uint) ([]domain.Inbox, error) {
+	var inboxes []domain.Inbox
+	err := r.db.Where("account_id = ? AND assignment_policy_id = ?", accountID, policyID).Order("id ASC").Find(&inboxes).Error
+	return inboxes, err
+}
+
+func (r *InboxRepository) AssignPolicy(accountID, policyID uint, inboxIDs []uint) ([]domain.Inbox, error) {
+	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id IN (?)", accountID, inboxIDs).Update("assignment_policy_id", policyID).Error; err != nil {
+		return nil, err
+	}
+	return r.FindByIDs(accountID, inboxIDs)
+}
+
+func (r *InboxRepository) RemovePolicy(accountID, policyID uint, inboxIDs []uint) error {
+	q := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND assignment_policy_id = ?", accountID, policyID)
+	if len(inboxIDs) > 0 {
+		q = q.Where("id IN (?)", inboxIDs)
+	}
+	return q.Update("assignment_policy_id", nil).Error
 }
 
 func (r *InboxRepository) Update(inbox *domain.Inbox) error {
@@ -138,10 +136,6 @@ func (r *InboxRepository) ListMembers(inboxID uint) ([]domain.User, error) {
 		Where("inbox_members.inbox_id = ?", inboxID).
 		Find(&users).Error
 	return users, err
-}
-
-func (r *InboxRepository) GetDB() *gorm.DB {
-	return r.db
 }
 
 func (r *InboxRepository) ListAssignableAgents(accountID, inboxID uint) ([]domain.User, error) {

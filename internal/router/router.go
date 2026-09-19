@@ -139,6 +139,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	inboxHandler.SetCaptainRepo(captainRepo)
 	inboxHandler.SetCampaignRepo(campaignRepo)
 	inboxHandler.SetAgentBotRepo(agentBotRepo)
+	inboxHandler.SetAssignmentPolicyRepo(assignmentPolicyRepo)
 	inboxHandler.SetContactRepo(contactRepo)
 	contactHandler := handler.NewContactHandler(contactRepo, inboxRepo)
 	contactHandler.SetExtraRepos(labelRepo, companyRepo, db)
@@ -154,6 +155,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	convHandler.SetCaptainRepo(captainRepo)
 	convHandler.SetEnterpriseRepo(channelEnterpriseRepo)
 	convHandler.SetJournalRepo(journalRepo)
+	convHandler.SetIdentityRepos(accountRepo, teamRepo, userRepo)
 	opsHandler := handler.NewOpsHandler(labelRepo, cannedRepo, convRepo)
 	opsHandler.SetEventServices(automationService, webhookService, hub)
 	macroHandler := handler.NewMacroNotificationHandler(macroRepo, notificationRepo, csatRepo)
@@ -182,7 +184,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)
 	}
 	channelDriverHandler := handler.NewChannelDriverHandler(channelEnterpriseRepo, inboxRepo, contactRepo, convRepo, msgRepo)
-	authEnterpriseHandler := handler.NewAuthEnterpriseHandler(channelEnterpriseRepo, userRepo, accountRepo, portalRepo, contactRepo, cfg)
+	authEnterpriseHandler := handler.NewAuthEnterpriseHandler(channelEnterpriseRepo, userRepo, accountRepo, portalRepo, contactRepo, inboxRepo, convRepo, cfg)
 	migrationService := service.NewMigrationService(db)
 	authEnterpriseHandler.SetMigrationService(migrationService)
 	dataImportService := service.NewDataImportService(db)
@@ -191,9 +193,9 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	authHandler.SetEmailService(emailService)
 	copilotHandler := handler.NewCopilotHandler(db, convRepo, msgRepo, portalRepo, cannedRepo, ticketRepo)
 	searchHandler := handler.NewSearchHandler(db)
-	assignmentPolicyHandler := handler.NewAssignmentPolicyHandler(assignmentPolicyRepo)
+	assignmentPolicyHandler := handler.NewAssignmentPolicyHandler(assignmentPolicyRepo, inboxRepo)
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
-	csatHandler := handler.NewCSATHandler(csatExtensionRepo)
+	csatHandler := handler.NewCSATHandler(csatExtensionRepo, msgRepo, convRepo, inboxRepo, contactRepo, accountRepo)
 	csatHandler.SetJWTSecret(cfg.JWTSecret)
 	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService, convRepo)
 	copilotThreadHandler := handler.NewCopilotThreadHandler(db, copilotThreadRepo, convRepo, msgRepo, captainRepo)
@@ -261,8 +263,8 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	})
 
 	// 2. 实时通信 WebSocket 长连接 (RTM)
-	r.GET("/cable", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, channelEnterpriseRepo))
-	r.GET("/ws", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, channelEnterpriseRepo))
+	r.GET("/cable", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, convRepo, channelEnterpriseRepo))
+	r.GET("/ws", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, convRepo, channelEnterpriseRepo))
 
 	// 3. 访客侧 Public Widget 接口
 	widget := r.Group("/api/v1/widget")

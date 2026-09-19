@@ -49,7 +49,7 @@ func TestWebSocket_AgentBroadcasting(t *testing.T) {
 	go hub.Run()
 
 	r := gin.New()
-	r.GET("/cable", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo))
+	r.GET("/cable", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, repository.NewConversationRepository(db)))
 
 	server := httptest.NewServer(r)
 	defer server.Close()

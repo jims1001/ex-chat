@@ -20,14 +20,71 @@ import (
 
 // CSATHandler manages CSAT survey details, moderation, report generation and lifecycle
 type CSATHandler struct {
-	csatRepo  *repository.CSATExtensionRepository
-	msgRepo   *repository.MessageRepository
-	jwtSecret string
+	csatRepo    *repository.CSATExtensionRepository
+	msgRepo     *repository.MessageRepository
+	convRepo    *repository.ConversationRepository
+	inboxRepo   *repository.InboxRepository
+	contactRepo *repository.ContactRepository
+	accountRepo *repository.AccountRepository
+	jwtSecret   string
 }
 
 // NewCSATHandler creates a new handler instance
-func NewCSATHandler(csatRepo *repository.CSATExtensionRepository) *CSATHandler {
-	return &CSATHandler{csatRepo: csatRepo, msgRepo: repository.NewMessageRepository(csatRepo.GetDB())}
+func NewCSATHandler(csatRepo *repository.CSATExtensionRepository, msgRepo *repository.MessageRepository, convRepo *repository.ConversationRepository, inboxRepo *repository.InboxRepository, contactRepo *repository.ContactRepository, accountRepo *repository.AccountRepository) *CSATHandler {
+	return &CSATHandler{csatRepo: csatRepo, msgRepo: msgRepo, convRepo: convRepo, inboxRepo: inboxRepo, contactRepo: contactRepo, accountRepo: accountRepo}
+}
+
+type publicCSATContext struct {
+	Conversation domain.Conversation
+	Survey       domain.CSATSurvey
+	Message      domain.Message
+	Inbox        domain.Inbox
+	HasSurvey    bool
+	HasMessage   bool
+}
+
+func (h *CSATHandler) resolvePublicContext(identifier string, accountID uint) (*publicCSATContext, error) {
+	ctx := &publicCSATContext{}
+	isUUID := len(identifier) >= 32 && (strings.Contains(identifier, "-") || len(identifier) == 32)
+	var conv *domain.Conversation
+	var err error
+	if isUUID {
+		conv, err = h.convRepo.FindByUUID(identifier)
+	} else {
+		id, parseErr := strconv.ParseUint(identifier, 10, 32)
+		if parseErr != nil || id == 0 {
+			return nil, fmt.Errorf("invalid identifier")
+		}
+		if accountID > 0 {
+			conv, err = h.convRepo.FindByID(accountID, uint(id))
+		} else {
+			conv, err = h.convRepo.FindGlobalByID(uint(id))
+		}
+		if err != nil || conv == nil {
+			survey, surveyErr := h.csatRepo.FindGlobalSurvey(uint(id))
+			if surveyErr != nil {
+				return nil, surveyErr
+			}
+			ctx.Survey, ctx.HasSurvey = *survey, true
+			conv, err = h.convRepo.FindGlobalByID(survey.ConversationID)
+		}
+	}
+	if err != nil || conv == nil {
+		return nil, err
+	}
+	ctx.Conversation = *conv
+	if !ctx.HasSurvey {
+		if survey, findErr := h.csatRepo.FindSurveyByConversation(conv.AccountID, conv.ID); findErr == nil && survey != nil {
+			ctx.Survey, ctx.HasSurvey = *survey, true
+		}
+	}
+	if message, findErr := h.msgRepo.FindCSATMessage(conv.AccountID, conv.ID); findErr == nil && message != nil {
+		ctx.Message, ctx.HasMessage = *message, true
+	}
+	if inbox, findErr := h.inboxRepo.FindByID(conv.AccountID, conv.InboxID); findErr == nil && inbox != nil {
+		ctx.Inbox = *inbox
+	}
+	return ctx, nil
 }
 
 // SetJWTSecret sets the secret key used for signing visitor tokens
@@ -277,7 +334,12 @@ func (h *CSATHandler) TriggerSurvey(c *gin.Context) {
 		return
 	}
 
-	survey, err := h.csatRepo.TriggerSurveyForConversation(accountID, conversationID)
+	conv, err := h.convRepo.FindByID(accountID, conversationID)
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+	survey, err := h.csatRepo.TriggerSurveyForConversation(accountID, conversationID, conv.AssigneeID)
 	if err != nil {
 		logger.WithComponent("csat").Warn("failed to trigger csat survey: conversation not found",
 			"account_id", accountID,
@@ -329,7 +391,12 @@ func (h *CSATHandler) SubmitSurvey(c *gin.Context) {
 		return
 	}
 
-	survey, err := h.csatRepo.SubmitOrUpdateSurvey(accountID, conversationID, req.Rating, strings.TrimSpace(req.FeedbackText))
+	conv, err := h.convRepo.FindByID(accountID, conversationID)
+	if err != nil || conv == nil {
+		response.NotFound(c, "Conversation not found")
+		return
+	}
+	survey, err := h.csatRepo.SubmitOrUpdateSurvey(accountID, conversationID, conv.AssigneeID, req.Rating, strings.TrimSpace(req.FeedbackText))
 	if err != nil {
 		logger.WithComponent("csat").Warn("failed to submit csat survey: conversation not found or access denied",
 			"account_id", accountID,
@@ -565,12 +632,9 @@ func (h *CSATHandler) verifyPublicCSATAccess(c *gin.Context, conv *domain.Conver
 		return false
 	}
 
-	db := h.csatRepo.DB()
-
 	// 1. Check logged-in user in context
 	if uid := h.getUserID(c); uid > 0 {
-		var member domain.AccountUser
-		if db.Where("account_id = ? AND user_id = ?", conv.AccountID, uid).First(&member).Error == nil {
+		if membership, _ := h.accountRepo.GetMembership(conv.AccountID, uid); membership != nil {
 			return true
 		}
 	}
@@ -582,8 +646,7 @@ func (h *CSATHandler) verifyPublicCSATAccess(c *gin.Context, conv *domain.Conver
 		if tokenStr != "" {
 			if claims, err := auth.ValidateToken(tokenStr, h.jwtSecret); err == nil && claims != nil {
 				if claims.UserID > 0 {
-					var member domain.AccountUser
-					if db.Where("account_id = ? AND user_id = ?", conv.AccountID, claims.UserID).First(&member).Error == nil {
+					if membership, _ := h.accountRepo.GetMembership(conv.AccountID, claims.UserID); membership != nil {
 						return true
 					}
 				}
@@ -631,18 +694,8 @@ func (h *CSATHandler) verifyPublicCSATAccess(c *gin.Context, conv *domain.Conver
 		}
 
 		// C. Matches contact pubsub_token or contact_inbox source_id belonging to this specific conversation
-		if conv.ContactID > 0 {
-			var contact domain.Contact
-			if db.Where("id = ? AND account_id = ?", conv.ContactID, conv.AccountID).First(&contact).Error == nil {
-				if contact.PubsubToken != "" && visitorToken == contact.PubsubToken {
-					return true
-				}
-			}
-
-			var contactInbox domain.ContactInbox
-			if db.Where("contact_id = ? AND inbox_id = ? AND source_id = ?", conv.ContactID, conv.InboxID, visitorToken).First(&contactInbox).Error == nil {
-				return true
-			}
+		if conv.ContactID > 0 && h.contactRepo.VisitorTokenMatches(conv.AccountID, conv.ContactID, conv.InboxID, visitorToken) {
+			return true
 		}
 	}
 
@@ -657,41 +710,14 @@ func (h *CSATHandler) GetPublicCSATSurvey(c *gin.Context) {
 		return
 	}
 
-	db := h.csatRepo.DB()
-
-	// 1. Resolve conversation
-	var conv domain.Conversation
-	var survey domain.CSATSurvey
-	var csatMsg domain.Message
-
-	convFound := false
+	// 1. Resolve conversation and its public CSAT projection through the owning repository.
 	isUUID := len(paramID) >= 32 && (strings.Contains(paramID, "-") || len(paramID) == 32)
-	if isUUID {
-		if db.Where("uuid = ?", paramID).First(&conv).Error == nil {
-			convFound = true
-		}
-	} else if id, err := strconv.ParseUint(paramID, 10, 32); err == nil && id > 0 {
-		accID := h.getAccountID(c)
-		if accID > 0 {
-			if db.Where("account_id = ? AND id = ?", accID, id).First(&conv).Error == nil {
-				convFound = true
-			}
-		}
-		if !convFound {
-			if db.Where("id = ?", id).First(&conv).Error == nil {
-				convFound = true
-			} else if db.Where("id = ?", id).First(&survey).Error == nil {
-				if db.Where("id = ?", survey.ConversationID).First(&conv).Error == nil {
-					convFound = true
-				}
-			}
-		}
-	}
-
-	if !convFound {
+	publicCtx, err := h.resolvePublicContext(paramID, h.getAccountID(c))
+	if err != nil {
 		response.NotFound(c, "CSAT survey not found")
 		return
 	}
+	conv, survey, csatMsg := publicCtx.Conversation, publicCtx.Survey, publicCtx.Message
 
 	// Enforce visitor credential verification when accessing via numeric ID
 	if !isUUID && !h.verifyPublicCSATAccess(c, &conv) {
@@ -700,8 +726,7 @@ func (h *CSATHandler) GetPublicCSATSurvey(c *gin.Context) {
 	}
 
 	// 2. Check for CSAT survey and input_csat message
-	hasSurvey := db.Where("account_id = ? AND conversation_id = ?", conv.AccountID, conv.ID).First(&survey).Error == nil
-	hasMsg := db.Where("account_id = ? AND conversation_id = ? AND content_type = ?", conv.AccountID, conv.ID, "input_csat").First(&csatMsg).Error == nil
+	hasSurvey, hasMsg := publicCtx.HasSurvey, publicCtx.HasMessage
 
 	// If neither exists, matching Chatwoot spec: return not found for open conversation without CSAT
 	if !hasSurvey && !hasMsg {
@@ -710,8 +735,7 @@ func (h *CSATHandler) GetPublicCSATSurvey(c *gin.Context) {
 	}
 
 	// 3. Resolve inbox for display attributes
-	var inbox domain.Inbox
-	_ = db.Where("id = ?", conv.InboxID).First(&inbox)
+	inbox := publicCtx.Inbox
 
 	var csatSurveyResp any
 	if hasSurvey && survey.Rating > 0 {
@@ -764,8 +788,6 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 		response.NotFound(c, "CSAT survey not found")
 		return
 	}
-
-	db := h.csatRepo.DB()
 
 	var rawBody map[string]any
 	if err := c.ShouldBindJSON(&rawBody); err != nil {
@@ -838,38 +860,14 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 		return
 	}
 
-	// 1. Resolve conversation
-	var conv domain.Conversation
-	convFound := false
+	// 1. Resolve conversation and its public CSAT projection through the owning repository.
 	isUUID := len(paramID) >= 32 && (strings.Contains(paramID, "-") || len(paramID) == 32)
-	if isUUID {
-		if db.Where("uuid = ?", paramID).First(&conv).Error == nil {
-			convFound = true
-		}
-	} else if id, err := strconv.ParseUint(paramID, 10, 32); err == nil && id > 0 {
-		if accID > 0 {
-			if db.Where("account_id = ? AND id = ?", accID, id).First(&conv).Error == nil {
-				convFound = true
-			}
-		}
-		if !convFound {
-			if db.Where("id = ?", id).First(&conv).Error == nil {
-				convFound = true
-			} else {
-				var s domain.CSATSurvey
-				if db.Where("id = ?", id).First(&s).Error == nil {
-					if db.Where("id = ?", s.ConversationID).First(&conv).Error == nil {
-						convFound = true
-					}
-				}
-			}
-		}
-	}
-
-	if !convFound {
+	publicCtx, err := h.resolvePublicContext(paramID, accID)
+	if err != nil {
 		response.NotFound(c, "Conversation or CSAT survey not found")
 		return
 	}
+	conv := publicCtx.Conversation
 
 	if accID > 0 && conv.AccountID != accID {
 		response.Forbidden(c, "Account ID mismatch for this conversation")
@@ -883,11 +881,8 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 	}
 
 	// 2. Check CSAT lock: cannot update after 14 days
-	var csatMsg domain.Message
-	hasMsg := db.Where("account_id = ? AND conversation_id = ? AND content_type = ?", conv.AccountID, conv.ID, "input_csat").First(&csatMsg).Error == nil
-
-	var survey domain.CSATSurvey
-	hasSurvey := db.Where("account_id = ? AND conversation_id = ?", conv.AccountID, conv.ID).First(&survey).Error == nil
+	csatMsg, survey := publicCtx.Message, publicCtx.Survey
+	hasMsg, hasSurvey := publicCtx.HasMessage, publicCtx.HasSurvey
 
 	var refTime time.Time
 	if hasMsg && !csatMsg.CreatedAt.IsZero() {
@@ -929,7 +924,7 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 		survey.Rating = rating
 		survey.FeedbackText = feedback
 		survey.UpdatedAt = time.Now().UTC()
-		_ = db.Save(&survey)
+		_ = h.csatRepo.SavePublicSurvey(&survey)
 	} else {
 		survey = domain.CSATSurvey{
 			AccountID:       conv.AccountID,
@@ -939,7 +934,7 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 			AssignedAgentID: conv.AssigneeID,
 			ReviewStatus:    "pending",
 		}
-		_ = db.Create(&survey)
+		_ = h.csatRepo.SavePublicSurvey(&survey)
 	}
 
 	// 4. If input_csat message exists, update its content_attributes with submitted values
@@ -958,8 +953,7 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 	}
 
 	// 5. Construct return response
-	var inbox domain.Inbox
-	_ = db.Where("id = ?", conv.InboxID).First(&inbox)
+	inbox := publicCtx.Inbox
 
 	msgID := conv.ID
 	if hasMsg {

@@ -13,11 +13,12 @@ import (
 )
 
 type AssignmentPolicyHandler struct {
-	repo *repository.AssignmentPolicyRepository
+	repo      *repository.AssignmentPolicyRepository
+	inboxRepo *repository.InboxRepository
 }
 
-func NewAssignmentPolicyHandler(repo *repository.AssignmentPolicyRepository) *AssignmentPolicyHandler {
-	return &AssignmentPolicyHandler{repo: repo}
+func NewAssignmentPolicyHandler(repo *repository.AssignmentPolicyRepository, inboxRepo *repository.InboxRepository) *AssignmentPolicyHandler {
+	return &AssignmentPolicyHandler{repo: repo, inboxRepo: inboxRepo}
 }
 
 type CreateAssignmentPolicyRequest struct {
@@ -226,6 +227,10 @@ func (h *AssignmentPolicyHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	if err := h.inboxRepo.RemovePolicy(accountID, uint(id), nil); err != nil {
+		response.InternalError(c, "Failed to unbind assignment policy")
+		return
+	}
 	if err := h.repo.Delete(accountID, uint(id)); err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to delete assignment policy",
 			"account_id", accountID,
@@ -266,7 +271,7 @@ func (h *AssignmentPolicyHandler) ListInboxes(c *gin.Context) {
 		return
 	}
 
-	inboxes, err := h.repo.ListInboxes(accountID, uint(id))
+	inboxes, err := h.inboxRepo.ListByAssignmentPolicy(accountID, uint(id))
 	if err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to list inboxes for policy",
 			"account_id", accountID,
@@ -337,10 +342,8 @@ func (h *AssignmentPolicyHandler) AddInboxes(c *gin.Context) {
 	}
 
 	// Validate inboxes belong to this account
-	var targetInboxes []domain.Inbox
-	if err := h.repo.DB().Model(&domain.Inbox{}).
-		Where("account_id = ? AND id IN (?)", accountID, targetIDs).
-		Find(&targetInboxes).Error; err != nil || len(targetInboxes) == 0 {
+	targetInboxes, err := h.inboxRepo.FindByIDs(accountID, targetIDs)
+	if err != nil || len(targetInboxes) == 0 {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
@@ -365,7 +368,7 @@ func (h *AssignmentPolicyHandler) AddInboxes(c *gin.Context) {
 		}
 	}
 
-	inboxes, err := h.repo.AddInboxes(accountID, uint(id), targetIDs)
+	inboxes, err := h.inboxRepo.AssignPolicy(accountID, uint(id), targetIDs)
 	if err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to add inboxes to policy",
 			"account_id", accountID,
@@ -420,13 +423,12 @@ func (h *AssignmentPolicyHandler) RemoveInbox(c *gin.Context) {
 	}
 
 	// Verify inbox belongs to this account
-	var inbox domain.Inbox
-	if err := h.repo.DB().Where("account_id = ? AND id = ?", accountID, uint(inboxID)).First(&inbox).Error; err != nil {
+	if _, err := h.inboxRepo.FindByID(accountID, uint(inboxID)); err != nil {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
 
-	if err := h.repo.RemoveInbox(accountID, uint(id), uint(inboxID)); err != nil {
+	if err := h.inboxRepo.RemovePolicy(accountID, uint(id), []uint{uint(inboxID)}); err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to remove inbox from policy",
 			"account_id", accountID,
 			"policy_id", id,
@@ -487,7 +489,7 @@ func (h *AssignmentPolicyHandler) RemoveInboxes(c *gin.Context) {
 		}
 	}
 
-	if err := h.repo.RemoveInboxes(accountID, uint(id), targetIDs); err != nil {
+	if err := h.inboxRepo.RemovePolicy(accountID, uint(id), targetIDs); err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to remove inboxes from policy",
 			"account_id", accountID,
 			"policy_id", id,

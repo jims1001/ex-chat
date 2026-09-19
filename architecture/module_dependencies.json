@@ -14,7 +14,7 @@
     {"name":"MSG","layer":3,"order":9,"synchronous":["TEN","CHN","CON","MED"],"events":[],"shared":["CON"],"startup":[]},
     {"name":"RTE","layer":3,"order":10,"synchronous":["TEN","CHN","CON","MSG"],"events":["MSG"],"shared":["CON"],"startup":[]},
     {"name":"TKT","layer":3,"order":11,"synchronous":["TEN","CUS","CON"],"events":["MSG"],"shared":[],"startup":[]},
-    {"name":"QLT","layer":3,"order":12,"synchronous":["TEN","CUS","CON","MSG","RTE"],"events":[],"shared":[],"startup":[]},
+    {"name":"QLT","layer":3,"order":12,"synchronous":["TEN","CHN","CUS","CON","MSG","RTE"],"events":[],"shared":[],"startup":[]},
     {"name":"KB","layer":2,"order":13,"synchronous":["TEN","MED"],"events":[],"shared":[],"startup":[]},
     {"name":"BIL","layer":1,"order":14,"synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":[]},
     {"name":"EXT","layer":4,"order":15,"synchronous":["IAM","TEN","ENT","CHN"],"events":["CON","MSG"],"shared":[],"startup":[]},

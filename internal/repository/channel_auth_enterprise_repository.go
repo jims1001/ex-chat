@@ -86,10 +86,9 @@ type ChannelAuthEnterpriseRepository interface {
 	// SaaS Subscriptions
 	ListSubscriptionPlans() ([]domain.SubscriptionPlan, error)
 	GetSubscriptionPlan(id uint) (*domain.SubscriptionPlan, error)
+	GetSubscriptionPlanBySlug(slug string) (*domain.SubscriptionPlan, error)
 	GetAccountSubscription(accountID uint) (*domain.AccountSubscription, error)
 	SaveAccountSubscription(sub *domain.AccountSubscription) error
-
-	GetDB() *gorm.DB
 }
 
 type channelAuthEnterpriseRepository struct {
@@ -528,10 +527,6 @@ func (r *channelAuthEnterpriseRepository) ListEmailMigrations(accountID uint) ([
 	return migrations, err
 }
 
-func (r *channelAuthEnterpriseRepository) GetDB() *gorm.DB {
-	return r.db
-}
-
 func (r *channelAuthEnterpriseRepository) CreateCallCandidate(cand *domain.CallICECandidate) error {
 	return r.db.Create(cand).Error
 }
@@ -564,6 +559,14 @@ func (r *channelAuthEnterpriseRepository) GetSubscriptionPlan(id uint) (*domain.
 	var plan domain.SubscriptionPlan
 	err := r.db.First(&plan, id).Error
 	return &plan, err
+}
+
+func (r *channelAuthEnterpriseRepository) GetSubscriptionPlanBySlug(slug string) (*domain.SubscriptionPlan, error) {
+	var plan domain.SubscriptionPlan
+	if err := r.db.Where("slug = ?", slug).First(&plan).Error; err != nil {
+		return nil, err
+	}
+	return &plan, nil
 }
 
 func (r *channelAuthEnterpriseRepository) GetAccountSubscription(accountID uint) (*domain.AccountSubscription, error) {

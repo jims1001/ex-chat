@@ -6,7 +6,6 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
-	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/gin-gonic/gin"
@@ -27,6 +26,7 @@ func ServeWS(
 	userRepo *repository.UserRepository,
 	accountRepo *repository.AccountRepository,
 	inboxRepo *repository.InboxRepository,
+	convRepo *repository.ConversationRepository,
 	optionalEnterpriseRepo ...repository.ChannelAuthEnterpriseRepository,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -105,8 +105,8 @@ func ServeWS(
 				if id, err := strconv.ParseUint(cStr, 10, 64); err == nil {
 					targetConvID := uint(id)
 					// Verify conversation belongs to this inbox and account
-					var conv domain.Conversation
-					if err := inboxRepo.GetDB().Where("id = ? AND inbox_id = ? AND account_id = ?", targetConvID, inbox.ID, inbox.AccountID).First(&conv).Error; err != nil {
+					conv, err := convRepo.FindForInbox(inbox.AccountID, inbox.ID, targetConvID)
+					if err != nil || conv == nil {
 						log.Warn("websocket visitor auth failed: conversation does not belong to inbox",
 							"conversation_id", targetConvID,
 							"inbox_id", inbox.ID,

@@ -9,9 +9,9 @@ import (
 
 // Event names following Chatwoot standards
 const (
-	EventMessageCreated      = "message.created"
-	EventMessageUpdated      = "message.updated"
-	EventMessageDeleted      = "message.deleted"
+	EventMessageCreated       = "message.created"
+	EventMessageUpdated       = "message.updated"
+	EventMessageDeleted       = "message.deleted"
 	EventConversationUpdated  = "conversation.updated"
 	EventConversationStatus   = "conversation.status_changed"
 	EventConversationAssigned = "conversation.assigned"

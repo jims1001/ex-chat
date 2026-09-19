@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
-	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
@@ -104,7 +103,8 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 	}
 
 	if h.dataImportService == nil {
-		h.dataImportService = service.NewDataImportService(h.repo.GetDB())
+		response.InternalError(c, "Data import service is not configured")
+		return
 	}
 
 	imp := &domain.DataImport{
@@ -180,7 +180,8 @@ func (h *AuthEnterpriseHandler) PrevalidateDataImport(c *gin.Context) {
 		importType = imp.ImportType
 
 		if h.dataImportService == nil {
-			h.dataImportService = service.NewDataImportService(h.repo.GetDB())
+			response.InternalError(c, "Data import service is not configured")
+			return
 		}
 		valRes, err := h.dataImportService.Prevalidate(uint(accountID), importType, provider, rawData)
 		if err != nil {
@@ -222,7 +223,8 @@ func (h *AuthEnterpriseHandler) PrevalidateDataImport(c *gin.Context) {
 	}
 
 	if h.dataImportService == nil {
-		h.dataImportService = service.NewDataImportService(h.repo.GetDB())
+		response.InternalError(c, "Data import service is not configured")
+		return
 	}
 
 	valRes, err := h.dataImportService.Prevalidate(uint(accountID), importType, provider, rawData)
@@ -264,7 +266,8 @@ func (h *AuthEnterpriseHandler) StartDataImport(c *gin.Context) {
 	}
 
 	if h.dataImportService == nil {
-		h.dataImportService = service.NewDataImportService(h.repo.GetDB())
+		response.InternalError(c, "Data import service is not configured")
+		return
 	}
 
 	if err := h.dataImportService.ExecuteImport(c.Request.Context(), uint(accountID), imp); err != nil {
@@ -387,11 +390,11 @@ func (h *AuthEnterpriseHandler) GetImportErrors(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"import_id":      imp.ID,
-		"failed_count":   imp.FailedRecords,
-		"skipped_count":  imp.SkippedRecords,
-		"errors":         errorsList,
-		"skipped":        skippedList,
+		"import_id":     imp.ID,
+		"failed_count":  imp.FailedRecords,
+		"skipped_count": imp.SkippedRecords,
+		"errors":        errorsList,
+		"skipped":       skippedList,
 	})
 }
 
@@ -416,7 +419,8 @@ func (h *AuthEnterpriseHandler) DownloadImportErrors(c *gin.Context) {
 	}
 
 	if h.dataImportService == nil {
-		h.dataImportService = service.NewDataImportService(h.repo.GetDB())
+		response.InternalError(c, "Data import service is not configured")
+		return
 	}
 
 	csvBytes, err := h.dataImportService.GenerateErrorsCSV(imp)
@@ -484,7 +488,8 @@ func (h *AuthEnterpriseHandler) DownloadSkippedRecords(c *gin.Context) {
 	}
 
 	if h.dataImportService == nil {
-		h.dataImportService = service.NewDataImportService(h.repo.GetDB())
+		response.InternalError(c, "Data import service is not configured")
+		return
 	}
 
 	csvBytes, err := h.dataImportService.GenerateSkippedCSV(imp)

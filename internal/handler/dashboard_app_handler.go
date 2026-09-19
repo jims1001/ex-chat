@@ -49,9 +49,9 @@ func (h *DashboardAppHandler) getUserID(c *gin.Context) *uint {
 
 // DashboardAppReq represents incoming payload for create and update
 type DashboardAppReq struct {
-	Title        string                          `json:"title"`
+	Title        string                           `json:"title"`
 	Content      []domain.DashboardAppContentItem `json:"content"`
-	DashboardApp *DashboardAppReq                `json:"dashboard_app"`
+	DashboardApp *DashboardAppReq                 `json:"dashboard_app"`
 }
 
 func (h *DashboardAppHandler) validateContent(content []domain.DashboardAppContentItem) bool {

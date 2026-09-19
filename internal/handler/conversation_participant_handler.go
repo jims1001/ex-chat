@@ -368,10 +368,10 @@ func (h *AdvancedHandler) UpdateParticipants(c *gin.Context) {
 	)
 
 	response.Success(c, gin.H{
-		"status":        "ok",
-		"added":         toAdd,
-		"removed":       toRemove,
-		"participants":  finalParts,
-		"total_count":   len(finalParts),
+		"status":       "ok",
+		"added":        toAdd,
+		"removed":      toRemove,
+		"participants": finalParts,
+		"total_count":  len(finalParts),
 	})
 }

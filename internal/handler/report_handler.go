@@ -595,5 +595,3 @@ func (h *ReportHandler) GetYearInReview(c *gin.Context) {
 
 	c.JSON(http.StatusOK, review)
 }
-
-

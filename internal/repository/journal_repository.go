@@ -19,10 +19,6 @@ func NewJournalRepository(db *gorm.DB) *JournalRepository {
 	return &JournalRepository{db: db}
 }
 
-func (r *JournalRepository) DB() *gorm.DB {
-	return r.db
-}
-
 type DataChangeFilter struct {
 	ObjectType    string
 	ObjectID      *uint
@@ -259,22 +255,22 @@ func (r *JournalRepository) CreateCorrection(corr *domain.DataChangeCorrection) 
 		}
 		// 追加一条标准的 correct_log LocalChangeJournal 记录
 		journal := &domain.LocalChangeJournal{
-			ChangeID:            corr.CorrectionChangeID,
-			AccountID:           corr.AccountID,
-			SourceModule:        "AUD",
-			ObjectType:          "DataChange",
-			ObjectID:            corr.ID,
-			ObjectDisplayID:     corr.OriginalChangeID,
-			Action:              domain.ActionCorrectLog,
-			Diff:                corr.CorrectedFields,
-			Reason:              corr.Reason,
-			ActorType:           "user",
-			ActorID:             corr.ActorID,
-			CreatedAt:           corr.CreatedAt,
-			OccurredAt:          corr.CreatedAt,
-			Result:              "corrected",
-			DataClassification:  domain.ClassificationInternal,
-			RetentionClass:      domain.RetentionSecurityCritical,
+			ChangeID:           corr.CorrectionChangeID,
+			AccountID:          corr.AccountID,
+			SourceModule:       "AUD",
+			ObjectType:         "DataChange",
+			ObjectID:           corr.ID,
+			ObjectDisplayID:    corr.OriginalChangeID,
+			Action:             domain.ActionCorrectLog,
+			Diff:               corr.CorrectedFields,
+			Reason:             corr.Reason,
+			ActorType:          "user",
+			ActorID:            corr.ActorID,
+			CreatedAt:          corr.CreatedAt,
+			OccurredAt:         corr.CreatedAt,
+			Result:             "corrected",
+			DataClassification: domain.ClassificationInternal,
+			RetentionClass:     domain.RetentionSecurityCritical,
 		}
 		return r.RecordChange(tx, journal)
 	})

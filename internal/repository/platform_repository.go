@@ -367,4 +367,3 @@ func (r *PlatformRepository) DeleteAgentBotAvatar(ctx context.Context, id uint) 
 	}
 	return nil
 }
-
