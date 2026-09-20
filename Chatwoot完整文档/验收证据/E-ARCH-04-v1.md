@@ -38,15 +38,15 @@
 | 检查项 | 实际值 | 结果 |
 |---|---:|---|
 | 模块 | 26/26 | pass |
-| Command | 119 | pass |
-| Query | 87 | pass |
+| Command | 136 | pass |
+| Query | 103 | pass |
 | Event | 98 | pass |
 | Command 多所有者 | 0 | pass |
 | 缺少 Command/Query/Event 的模块 | 0 | pass |
 | 无版本或错误前缀合同 | 0 | pass |
 | 伪装动作请求的 Event | 0 | pass |
 | 标准错误类型/重试策略 | 11/11 | pass |
-| 合同注册表 SHA-256 | `a262a62fddc63fcd137a0f715e730f21da29472211812bd1e1159a8472a5ce51` | pass |
+| 合同注册表 SHA-256 | `d88ee7ca5f806cc19b1018d89bf6d858dcc406f73c0b5b7322d82f1efc728a13` | pass |
 | 协作绑定提供模块 | 26/26 | pass |
 | 已观察源码边缺少合同绑定 | 0 | pass |
 | 对象级组件绑定 | 33/33 个实际跨模块组件 | pass |
@@ -78,6 +78,7 @@
 | 2026-09-19T17:56+04:00 | `go test ./... -count=1` | pass；`test` 15.347s |
 | 2026-09-19T17:56+04:00 | `go vet ./...`、`git diff --check` | pass，无输出 |
 | 2026-09-19T17:57+04:00 | `make test-docker` | pass；PostgreSQL/Redis healthy，`test` 15.254s；容器、网络和数据卷已清理 |
+| 2026-09-20T12:18+04:00 | ARCH-07 Account 删除流程公共合同复验 | pass；新增 17 个语义明确的 Command 和 16 个结果 Query；Command 136、Query 103、Event 98；owner 唯一性与注册表指纹已重新冻结 |
 
 ## 合同闭环
 

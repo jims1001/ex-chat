@@ -1,0 +1,621 @@
+{
+  "version": "orchestration-processes-v1",
+  "foundationVersion": "foundation-v1",
+  "reopenTask": "ARCH-07",
+  "orchestrator": "ORC",
+  "states": [
+    "created",
+    "running",
+    "waiting",
+    "compensating",
+    "completed",
+    "partially_completed",
+    "failed",
+    "cancelled",
+    "manual_action_required"
+  ],
+  "failurePolicies": [
+    "continue",
+    "stop",
+    "compensate",
+    "manual"
+  ],
+  "stepResultStatuses": [
+    "accepted",
+    "completed",
+    "failed",
+    "timed_out",
+    "result_unknown",
+    "compensated",
+    "skipped"
+  ],
+  "terminalStates": [
+    "completed",
+    "partially_completed",
+    "failed",
+    "cancelled"
+  ],
+  "transitions": {
+    "created": [
+      "running",
+      "cancelled"
+    ],
+    "running": [
+      "waiting",
+      "compensating",
+      "completed",
+      "partially_completed",
+      "failed",
+      "cancelled",
+      "manual_action_required"
+    ],
+    "waiting": [
+      "running",
+      "compensating",
+      "failed",
+      "cancelled",
+      "manual_action_required"
+    ],
+    "compensating": [
+      "failed",
+      "partially_completed",
+      "manual_action_required"
+    ],
+    "completed": [],
+    "partially_completed": [],
+    "failed": [],
+    "cancelled": [],
+    "manual_action_required": [
+      "running",
+      "compensating",
+      "failed",
+      "cancelled"
+    ]
+  },
+  "rules": {
+    "singleOrchestrator": true,
+    "publicCommandsOnly": true,
+    "requireIdempotency": true,
+    "queryAfterTimeout": true,
+    "explicitCompensation": true,
+    "persistCheckpoint": true,
+    "optimisticVersion": true,
+    "auditEveryStep": true,
+    "forbidDomainAuthority": true
+  },
+  "processes": [
+    {
+      "id": "inbound_message",
+      "version": "v1",
+      "modules": [
+        "CHN",
+        "CUS",
+        "CON",
+        "MED",
+        "MSG",
+        "RTE"
+      ],
+      "participants": [
+        {
+          "module": "MED",
+          "interaction": "query",
+          "contract": "med.asset.get.v1"
+        }
+      ],
+      "steps": [
+        {
+          "id": "channel",
+          "module": "CHN",
+          "command": "chn.health.update.v1",
+          "resultQuery": "chn.connection.status.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "stop"
+        },
+        {
+          "id": "contact",
+          "module": "CUS",
+          "command": "cus.contact.create.v1",
+          "resultQuery": "cus.contact.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "conversation",
+          "module": "CON",
+          "command": "con.conversation.create.v1",
+          "resultQuery": "con.conversation.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "compensate",
+          "compensation": "con.conversation.update.v1"
+        },
+        {
+          "id": "message",
+          "module": "MSG",
+          "command": "msg.message.create.v1",
+          "resultQuery": "msg.message.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "stop",
+          "irreversible": true,
+          "preconditions": [
+            "callback_receipt_verified",
+            "external_id_deduplicated"
+          ]
+        },
+        {
+          "id": "routing",
+          "module": "RTE",
+          "command": "rte.queue.enter.v1",
+          "resultQuery": "rte.queue.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "continue"
+        }
+      ]
+    },
+    {
+      "id": "outbound_message",
+      "version": "v1",
+      "modules": [
+        "CON",
+        "CHN",
+        "MSG",
+        "MED"
+      ],
+      "participants": [
+        {
+          "module": "CON",
+          "interaction": "query",
+          "contract": "con.conversation.get.v1"
+        },
+        {
+          "module": "MED",
+          "interaction": "query",
+          "contract": "med.asset.get.v1"
+        }
+      ],
+      "steps": [
+        {
+          "id": "message",
+          "module": "MSG",
+          "command": "msg.message.create.v1",
+          "resultQuery": "msg.message.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "compensate",
+          "compensation": "msg.message.update.v1"
+        },
+        {
+          "id": "provider",
+          "module": "CHN",
+          "command": "chn.channel.authorize.v1",
+          "resultQuery": "chn.connection.status.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual",
+          "irreversible": true,
+          "preconditions": [
+            "message_pending",
+            "attachment_authorized"
+          ]
+        },
+        {
+          "id": "status",
+          "module": "MSG",
+          "command": "msg.provider_status.update.v1",
+          "resultQuery": "msg.delivery_status.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "continue"
+        }
+      ]
+    },
+    {
+      "id": "automatic_assignment",
+      "version": "v1",
+      "modules": [
+        "CON",
+        "RTE",
+        "NTF"
+      ],
+      "participants": [
+        {
+          "module": "CON",
+          "interaction": "query",
+          "contract": "con.conversation.get.v1"
+        }
+      ],
+      "steps": [
+        {
+          "id": "candidate",
+          "module": "RTE",
+          "command": "rte.queue.enter.v1",
+          "resultQuery": "rte.candidates.list.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "stop"
+        },
+        {
+          "id": "assignment",
+          "module": "RTE",
+          "command": "rte.assignment.claim.v1",
+          "resultQuery": "rte.assignment.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "compensate",
+          "compensation": "rte.assignment.release.v1"
+        },
+        {
+          "id": "notification",
+          "module": "NTF",
+          "command": "ntf.notification.create.v1",
+          "resultQuery": "ntf.delivery.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "continue"
+        }
+      ]
+    },
+    {
+      "id": "automation_action",
+      "version": "v1",
+      "modules": [
+        "AUT",
+        "ORC"
+      ],
+      "participants": [],
+      "steps": [
+        {
+          "id": "execution",
+          "module": "AUT",
+          "command": "aut.execution.start.v1",
+          "resultQuery": "aut.execution.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "stop"
+        },
+        {
+          "id": "target_action",
+          "module": "ORC",
+          "command": "orc.process.start.v1",
+          "resultQuery": "orc.process.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "compensate",
+          "compensation": "orc.process.cancel.v1"
+        }
+      ]
+    },
+    {
+      "id": "ai_answer",
+      "version": "v1",
+      "modules": [
+        "AIC",
+        "KB",
+        "ENT",
+        "MSG"
+      ],
+      "participants": [
+        {
+          "module": "KB",
+          "interaction": "query",
+          "contract": "kb.content.get.v1"
+        }
+      ],
+      "steps": [
+        {
+          "id": "generation",
+          "module": "AIC",
+          "command": "aic.response.generate.v1",
+          "resultQuery": "aic.usage.get.v1",
+          "timeoutMS": 30000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "reply",
+          "module": "MSG",
+          "command": "msg.message.create.v1",
+          "resultQuery": "msg.message.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "manual",
+          "irreversible": true,
+          "preconditions": [
+            "safety_check_passed",
+            "entitlement_reserved"
+          ]
+        },
+        {
+          "id": "usage",
+          "module": "ENT",
+          "command": "ent.quota.consume.v1",
+          "resultQuery": "ent.quota.get.v1",
+          "timeoutMS": 3000,
+          "failurePolicy": "continue"
+        }
+      ]
+    },
+    {
+      "id": "campaign_delivery",
+      "version": "v1",
+      "modules": [
+        "OPS",
+        "ENT",
+        "CHN",
+        "MSG"
+      ],
+      "participants": [
+        {
+          "module": "ENT",
+          "interaction": "query",
+          "contract": "ent.capability.check.v1"
+        },
+        {
+          "module": "CHN",
+          "interaction": "query",
+          "contract": "chn.connection.status.v1"
+        }
+      ],
+      "steps": [
+        {
+          "id": "campaign",
+          "module": "OPS",
+          "command": "ops.campaign.trigger.v1",
+          "resultQuery": "ops.campaign.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "stop"
+        },
+        {
+          "id": "message",
+          "module": "MSG",
+          "command": "msg.message.create.v1",
+          "resultQuery": "msg.message.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "continue",
+          "irreversible": true,
+          "preconditions": [
+            "recipient_revalidated",
+            "message_id_reserved"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "account_deletion",
+      "version": "v1",
+      "modules": [
+        "TEN",
+        "BIL",
+        "ENT",
+        "IAM",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "TKT",
+        "KB",
+        "EXT",
+        "NTF",
+        "OPS",
+        "AIC",
+        "MIG",
+        "RPT",
+        "SRH",
+        "RTM",
+        "AUD"
+      ],
+      "participants": [
+        {
+          "module": "BIL",
+          "interaction": "query",
+          "contract": "bil.balance.get.v1"
+        },
+        {
+          "module": "ENT",
+          "interaction": "query",
+          "contract": "ent.capability.check.v1"
+        },
+        {
+          "module": "MIG",
+          "interaction": "query",
+          "contract": "mig.job.get.v1"
+        }
+      ],
+      "steps": [
+        {
+          "id": "schedule",
+          "module": "TEN",
+          "command": "ten.account_deletion.schedule.v1",
+          "resultQuery": "ten.account_deletion_status.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "stop"
+        },
+        {
+          "id": "access",
+          "module": "IAM",
+          "command": "iam.account_access.revoke.v1",
+          "resultQuery": "iam.account_deletion_status.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "compensate",
+          "compensation": "iam.user.manage.v1"
+        },
+        {
+          "id": "channels",
+          "module": "CHN",
+          "command": "chn.account_channels.revoke.v1",
+          "resultQuery": "chn.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "contacts",
+          "module": "CUS",
+          "command": "cus.account_contacts.anonymize.v1",
+          "resultQuery": "cus.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "media",
+          "module": "MED",
+          "command": "med.account_assets.purge.v1",
+          "resultQuery": "med.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "conversations",
+          "module": "CON",
+          "command": "con.account_conversations.anonymize.v1",
+          "resultQuery": "con.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "messages",
+          "module": "MSG",
+          "command": "msg.account_messages.anonymize.v1",
+          "resultQuery": "msg.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "tickets",
+          "module": "TKT",
+          "command": "tkt.account_tickets.anonymize.v1",
+          "resultQuery": "tkt.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "knowledge",
+          "module": "KB",
+          "command": "kb.account_content.purge.v1",
+          "resultQuery": "kb.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "plugins",
+          "module": "EXT",
+          "command": "ext.account_authorizations.revoke.v1",
+          "resultQuery": "ext.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "notifications",
+          "module": "NTF",
+          "command": "ntf.account_subscriptions.purge.v1",
+          "resultQuery": "ntf.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "campaigns",
+          "module": "OPS",
+          "command": "ops.account_campaigns.cancel.v1",
+          "resultQuery": "ops.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "ai_index",
+          "module": "AIC",
+          "command": "aic.account_index.purge.v1",
+          "resultQuery": "aic.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "reporting",
+          "module": "RPT",
+          "command": "rpt.account_projection.purge.v1",
+          "resultQuery": "rpt.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "search",
+          "module": "SRH",
+          "command": "srh.account_index.purge.v1",
+          "resultQuery": "srh.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "realtime",
+          "module": "RTM",
+          "command": "rtm.account_subscriptions.close.v1",
+          "resultQuery": "rtm.account_deletion_status.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "audit",
+          "module": "AUD",
+          "command": "aud.retention.set.v1",
+          "resultQuery": "aud.integrity.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        },
+        {
+          "id": "complete",
+          "module": "TEN",
+          "command": "ten.account_deletion.finalize.v1",
+          "resultQuery": "ten.account_deletion_status.get.v1",
+          "timeoutMS": 5000,
+          "failurePolicy": "manual",
+          "irreversible": true,
+          "preconditions": [
+            "legal_hold_checked",
+            "all_owner_steps_reconciled"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "import_migration",
+      "version": "v1",
+      "modules": [
+        "MIG",
+        "CUS",
+        "CON",
+        "MSG"
+      ],
+      "participants": [],
+      "steps": [
+        {
+          "id": "job",
+          "module": "MIG",
+          "command": "mig.job.start.v1",
+          "resultQuery": "mig.progress.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "stop"
+        },
+        {
+          "id": "contacts",
+          "module": "CUS",
+          "command": "cus.contact.create.v1",
+          "resultQuery": "cus.contact.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "continue"
+        },
+        {
+          "id": "conversations",
+          "module": "CON",
+          "command": "con.conversation.create.v1",
+          "resultQuery": "con.conversation.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "continue"
+        },
+        {
+          "id": "messages",
+          "module": "MSG",
+          "command": "msg.message.create.v1",
+          "resultQuery": "msg.message.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "continue"
+        },
+        {
+          "id": "reconcile",
+          "module": "MIG",
+          "command": "mig.job.validate.v1",
+          "resultQuery": "mig.job.get.v1",
+          "timeoutMS": 10000,
+          "failurePolicy": "manual"
+        }
+      ]
+    }
+  ]
+}

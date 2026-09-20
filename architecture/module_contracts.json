@@ -15,31 +15,576 @@
     "requireDataClassification": true
   },
   "modules": [
-    {"name":"IAM","commands":["iam.login.v1","iam.logout.v1","iam.mfa.enable.v1","iam.session.revoke.v1","iam.user.manage.v1","iam.enterprise_record.manage.v1"],"queries":["iam.identity.get.v1","iam.profile.get.v1","iam.sessions.list.v1","iam.enterprise_record.get.v1"],"events":["iam.user.created.v1","iam.session.revoked.v1","iam.identity.changed.v1","iam.enterprise_record.changed.v1"]},
-    {"name":"TEN","commands":["ten.account.create.v1","ten.membership.add.v1","ten.role.change.v1","ten.team.manage.v1"],"queries":["ten.account.get.v1","ten.members.list.v1","ten.permissions.check.v1"],"events":["ten.account.changed.v1","ten.membership.changed.v1","ten.role.changed.v1","ten.team.changed.v1"]},
-    {"name":"ENT","commands":["ent.feature.set.v1","ent.quota.reserve.v1","ent.quota.consume.v1","ent.quota.release.v1"],"queries":["ent.capability.check.v1","ent.quota.get.v1","ent.features.list.v1"],"events":["ent.entitlement.changed.v1","ent.quota.changed.v1","ent.quota.exhausted.v1"]},
-    {"name":"SYS","commands":["sys.installation.update.v1","sys.maintenance.set.v1","sys.banner.manage.v1"],"queries":["sys.configuration.get.v1","sys.instance.status.v1","sys.jobs.observe.v1"],"events":["sys.installation_config.changed.v1","sys.maintenance.changed.v1"]},
-    {"name":"CHN","commands":["chn.inbox.create.v1","chn.inbox.update.v1","chn.member.bind.v1","chn.channel.authorize.v1","chn.health.update.v1"],"queries":["chn.inbox.get.v1","chn.capabilities.get.v1","chn.connection.status.v1"],"events":["chn.inbox.changed.v1","chn.channel_health.changed.v1","chn.template.changed.v1"]},
-    {"name":"CUS","commands":["cus.contact.create.v1","cus.contact.update.v1","cus.contact.merge.v1","cus.contact.delete.v1","cus.company.update.v1","cus.label.manage.v1"],"queries":["cus.contact.get.v1","cus.company.get.v1","cus.label.get.v1","cus.identity.resolve.v1"],"events":["cus.contact.created.v1","cus.contact.changed.v1","cus.contact.merged.v1","cus.contact.deleted.v1","cus.company.changed.v1","cus.label.changed.v1"]},
-    {"name":"MED","commands":["med.upload.create.v1","med.asset.confirm.v1","med.asset.scan.v1","med.asset.delete.v1"],"queries":["med.asset.get.v1","med.access.check.v1","med.security_status.get.v1"],"events":["med.media.ready.v1","med.media.rejected.v1","med.media.deleted.v1"]},
-    {"name":"CON","commands":["con.conversation.create.v1","con.conversation.update.v1","con.assignment.change.v1","con.status.change.v1","con.priority.change.v1","con.participant.manage.v1"],"queries":["con.conversation.get.v1","con.conversations.list.v1","con.status_history.get.v1"],"events":["con.conversation.created.v1","con.conversation.changed.v1","con.conversation_status.changed.v1","con.conversation.deleted.v1"]},
-    {"name":"MSG","commands":["msg.message.create.v1","msg.message.update.v1","msg.provider_status.update.v1","msg.message.retry.v1","msg.read_position.update.v1","msg.email.send.v1"],"queries":["msg.messages.list.v1","msg.message.get.v1","msg.delivery_status.get.v1","msg.email_delivery.get.v1"],"events":["msg.message.created.v1","msg.message.changed.v1","msg.message_status.changed.v1","msg.message.deleted.v1","msg.read_position.changed.v1","msg.email_delivery.changed.v1"]},
-    {"name":"RTE","commands":["rte.queue.enter.v1","rte.assignment.claim.v1","rte.assignment.transfer.v1","rte.assignment.release.v1"],"queries":["rte.queue.get.v1","rte.assignment.get.v1","rte.candidates.list.v1","rte.capacity.get.v1"],"events":["rte.assignment.changed.v1","rte.queue.changed.v1","rte.availability.changed.v1","rte.capacity.changed.v1"]},
-    {"name":"TKT","commands":["tkt.ticket.create.v1","tkt.status.change.v1","tkt.comment.add.v1","tkt.ticket.reopen.v1"],"queries":["tkt.ticket.get.v1","tkt.workflow.get.v1","tkt.history.list.v1"],"events":["tkt.ticket.created.v1","tkt.ticket_status.changed.v1","tkt.ticket.commented.v1"]},
-    {"name":"QLT","commands":["qlt.survey.create.v1","qlt.csat.submit.v1","qlt.review.create.v1","qlt.appeal.review.v1"],"queries":["qlt.csat.get.v1","qlt.review.get.v1","qlt.score.get.v1"],"events":["qlt.csat.received.v1","qlt.quality_review.changed.v1","qlt.appeal.changed.v1"]},
-    {"name":"KB","commands":["kb.article.create.v1","kb.content.publish.v1","kb.content.archive.v1","kb.document.delete.v1","kb.portal.manage.v1"],"queries":["kb.content.get.v1","kb.version.get.v1","kb.public_view.get.v1","kb.portal.get.v1"],"events":["kb.knowledge.published.v1","kb.knowledge.changed.v1","kb.knowledge.archived.v1","kb.knowledge.deleted.v1","kb.portal.changed.v1"]},
-    {"name":"BIL","commands":["bil.checkout.create.v1","bil.order.update.v1","bil.payment.process.v1","bil.refund.create.v1","bil.invoice.issue.v1"],"queries":["bil.order.get.v1","bil.payment.get.v1","bil.balance.get.v1"],"events":["bil.order.changed.v1","bil.payment.completed.v1","bil.payment.failed.v1","bil.payment.refunded.v1","bil.invoice.changed.v1"]},
-    {"name":"EXT","commands":["ext.plugin.install.v1","ext.plugin.disable.v1","ext.bot.manage.v1","ext.webhook.manage.v1","ext.webhook.dispatch.v1","ext.delivery.record.v1"],"queries":["ext.catalog.list.v1","ext.installation.get.v1","ext.bot.get.v1","ext.delivery.get.v1"],"events":["ext.plugin.installed.v1","ext.plugin.disabled.v1","ext.webhook_delivery.changed.v1","ext.bot.failed.v1"]},
-    {"name":"NTF","commands":["ntf.notification.create.v1","ntf.notification.update.v1","ntf.notification.read.v1","ntf.preference.save.v1","ntf.device.register.v1","ntf.delivery.dispatch.v1"],"queries":["ntf.notifications.list.v1","ntf.unread_count.get.v1","ntf.delivery.get.v1"],"events":["ntf.notification.created.v1","ntf.notification.read.v1","ntf.delivery.changed.v1","ntf.subscription.invalidated.v1"]},
-    {"name":"AUT","commands":["aut.rule.create.v1","aut.rule.enable.v1","aut.execution.start.v1","aut.execution.cancel.v1"],"queries":["aut.rule.get.v1","aut.rule_version.get.v1","aut.execution.get.v1"],"events":["aut.automation.executed.v1","aut.action.failed.v1","aut.loop.blocked.v1"]},
-    {"name":"OPS","commands":["ops.macro.create.v1","ops.campaign.create.v1","ops.campaign.trigger.v1","ops.campaign.pause.v1","ops.campaign.cancel.v1","ops.canned_response.manage.v1"],"queries":["ops.macro.get.v1","ops.campaign.get.v1","ops.canned_response.get.v1","ops.recipient_status.get.v1"],"events":["ops.campaign.started.v1","ops.campaign.paused.v1","ops.campaign.completed.v1","ops.recipient.ready.v1","ops.canned_response.changed.v1"]},
-    {"name":"AIC","commands":["aic.model.configure.v1","aic.assistant.manage.v1","aic.index.build.v1","aic.response.generate.v1"],"queries":["aic.model.get.v1","aic.assistant.get.v1","aic.thread.get.v1","aic.usage.get.v1"],"events":["aic.index.changed.v1","aic.response.completed.v1","aic.response.failed.v1","aic.tool.invoked.v1"]},
-    {"name":"MIG","commands":["mig.job.create.v1","mig.job.validate.v1","mig.job.start.v1","mig.job.rollback.v1"],"queries":["mig.job.get.v1","mig.progress.get.v1","mig.errors.list.v1"],"events":["mig.import.progressed.v1","mig.import.completed.v1","mig.import.failed.v1","mig.migration.changed.v1"]},
-    {"name":"RPT","commands":["rpt.sla.manage.v1","rpt.sla.apply.v1","rpt.report.generate.v1","rpt.export.create.v1"],"queries":["rpt.sla.get.v1","rpt.metrics.get.v1","rpt.report.get.v1"],"events":["rpt.sla.applied.v1","rpt.sla.breached.v1","rpt.report.ready.v1","rpt.export.ready.v1"]},
-    {"name":"SRH","commands":["srh.index.rebuild.v1","srh.checkpoint.update.v1","srh.index_item.delete.v1"],"queries":["srh.search.v1","srh.index_status.get.v1","srh.checkpoint.get.v1"],"events":["srh.index.rebuilt.v1","srh.index.failed.v1"]},
-    {"name":"ORC","commands":["orc.process.start.v1","orc.process.cancel.v1","orc.process.resume.v1","orc.manual_step.confirm.v1"],"queries":["orc.process.get.v1","orc.steps.list.v1","orc.compensation.get.v1"],"events":["orc.process.started.v1","orc.process.completed.v1","orc.process.failed.v1","orc.process.compensating.v1"]},
-    {"name":"API","commands":["api.credential.issue.v1","api.credential.revoke.v1","api.idempotency_receipt.record.v1","api.rate_limit.update.v1"],"queries":["api.contract_versions.get.v1","api.credential.get.v1","api.request_status.get.v1"],"events":["api.credential.changed.v1","api.rate_limit.triggered.v1"]},
-    {"name":"RTM","commands":["rtm.connection.open.v1","rtm.subscription.create.v1","rtm.cursor.acknowledge.v1","rtm.connection.close.v1"],"queries":["rtm.connection.get.v1","rtm.subscriptions.list.v1","rtm.cursor.get.v1"],"events":["rtm.realtime.connected.v1","rtm.realtime.disconnected.v1","rtm.delivery.failed.v1"]},
-    {"name":"AUD","commands":["aud.data_change.ingest.v1","aud.retention.set.v1","aud.legal_hold.set.v1","aud.export.create.v1"],"queries":["aud.changes.list.v1","aud.object_timeline.get.v1","aud.process_timeline.get.v1","aud.integrity.get.v1"],"events":["aud.data_change.ingested.v1","aud.integrity.failed.v1","aud.compliance_export.ready.v1","aud.retention.changed.v1"]}
+    {
+      "name": "IAM",
+      "commands": [
+        "iam.login.v1",
+        "iam.logout.v1",
+        "iam.mfa.enable.v1",
+        "iam.session.revoke.v1",
+        "iam.user.manage.v1",
+        "iam.enterprise_record.manage.v1",
+        "iam.account_access.revoke.v1"
+      ],
+      "queries": [
+        "iam.identity.get.v1",
+        "iam.profile.get.v1",
+        "iam.sessions.list.v1",
+        "iam.enterprise_record.get.v1",
+        "iam.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "iam.user.created.v1",
+        "iam.session.revoked.v1",
+        "iam.identity.changed.v1",
+        "iam.enterprise_record.changed.v1"
+      ]
+    },
+    {
+      "name": "TEN",
+      "commands": [
+        "ten.account.create.v1",
+        "ten.membership.add.v1",
+        "ten.role.change.v1",
+        "ten.team.manage.v1",
+        "ten.account_deletion.schedule.v1",
+        "ten.account_deletion.finalize.v1"
+      ],
+      "queries": [
+        "ten.account.get.v1",
+        "ten.members.list.v1",
+        "ten.permissions.check.v1",
+        "ten.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "ten.account.changed.v1",
+        "ten.membership.changed.v1",
+        "ten.role.changed.v1",
+        "ten.team.changed.v1"
+      ]
+    },
+    {
+      "name": "ENT",
+      "commands": [
+        "ent.feature.set.v1",
+        "ent.quota.reserve.v1",
+        "ent.quota.consume.v1",
+        "ent.quota.release.v1"
+      ],
+      "queries": [
+        "ent.capability.check.v1",
+        "ent.quota.get.v1",
+        "ent.features.list.v1"
+      ],
+      "events": [
+        "ent.entitlement.changed.v1",
+        "ent.quota.changed.v1",
+        "ent.quota.exhausted.v1"
+      ]
+    },
+    {
+      "name": "SYS",
+      "commands": [
+        "sys.installation.update.v1",
+        "sys.maintenance.set.v1",
+        "sys.banner.manage.v1"
+      ],
+      "queries": [
+        "sys.configuration.get.v1",
+        "sys.instance.status.v1",
+        "sys.jobs.observe.v1"
+      ],
+      "events": [
+        "sys.installation_config.changed.v1",
+        "sys.maintenance.changed.v1"
+      ]
+    },
+    {
+      "name": "CHN",
+      "commands": [
+        "chn.inbox.create.v1",
+        "chn.inbox.update.v1",
+        "chn.member.bind.v1",
+        "chn.channel.authorize.v1",
+        "chn.health.update.v1",
+        "chn.account_channels.revoke.v1"
+      ],
+      "queries": [
+        "chn.inbox.get.v1",
+        "chn.capabilities.get.v1",
+        "chn.connection.status.v1",
+        "chn.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "chn.inbox.changed.v1",
+        "chn.channel_health.changed.v1",
+        "chn.template.changed.v1"
+      ]
+    },
+    {
+      "name": "CUS",
+      "commands": [
+        "cus.contact.create.v1",
+        "cus.contact.update.v1",
+        "cus.contact.merge.v1",
+        "cus.contact.delete.v1",
+        "cus.company.update.v1",
+        "cus.label.manage.v1",
+        "cus.account_contacts.anonymize.v1"
+      ],
+      "queries": [
+        "cus.contact.get.v1",
+        "cus.company.get.v1",
+        "cus.label.get.v1",
+        "cus.identity.resolve.v1",
+        "cus.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "cus.contact.created.v1",
+        "cus.contact.changed.v1",
+        "cus.contact.merged.v1",
+        "cus.contact.deleted.v1",
+        "cus.company.changed.v1",
+        "cus.label.changed.v1"
+      ]
+    },
+    {
+      "name": "MED",
+      "commands": [
+        "med.upload.create.v1",
+        "med.asset.confirm.v1",
+        "med.asset.scan.v1",
+        "med.asset.delete.v1",
+        "med.account_assets.purge.v1"
+      ],
+      "queries": [
+        "med.asset.get.v1",
+        "med.access.check.v1",
+        "med.security_status.get.v1",
+        "med.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "med.media.ready.v1",
+        "med.media.rejected.v1",
+        "med.media.deleted.v1"
+      ]
+    },
+    {
+      "name": "CON",
+      "commands": [
+        "con.conversation.create.v1",
+        "con.conversation.update.v1",
+        "con.assignment.change.v1",
+        "con.status.change.v1",
+        "con.priority.change.v1",
+        "con.participant.manage.v1",
+        "con.account_conversations.anonymize.v1"
+      ],
+      "queries": [
+        "con.conversation.get.v1",
+        "con.conversations.list.v1",
+        "con.status_history.get.v1",
+        "con.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "con.conversation.created.v1",
+        "con.conversation.changed.v1",
+        "con.conversation_status.changed.v1",
+        "con.conversation.deleted.v1"
+      ]
+    },
+    {
+      "name": "MSG",
+      "commands": [
+        "msg.message.create.v1",
+        "msg.message.update.v1",
+        "msg.provider_status.update.v1",
+        "msg.message.retry.v1",
+        "msg.read_position.update.v1",
+        "msg.email.send.v1",
+        "msg.account_messages.anonymize.v1"
+      ],
+      "queries": [
+        "msg.messages.list.v1",
+        "msg.message.get.v1",
+        "msg.delivery_status.get.v1",
+        "msg.email_delivery.get.v1",
+        "msg.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "msg.message.created.v1",
+        "msg.message.changed.v1",
+        "msg.message_status.changed.v1",
+        "msg.message.deleted.v1",
+        "msg.read_position.changed.v1",
+        "msg.email_delivery.changed.v1"
+      ]
+    },
+    {
+      "name": "RTE",
+      "commands": [
+        "rte.queue.enter.v1",
+        "rte.assignment.claim.v1",
+        "rte.assignment.transfer.v1",
+        "rte.assignment.release.v1"
+      ],
+      "queries": [
+        "rte.queue.get.v1",
+        "rte.assignment.get.v1",
+        "rte.candidates.list.v1",
+        "rte.capacity.get.v1"
+      ],
+      "events": [
+        "rte.assignment.changed.v1",
+        "rte.queue.changed.v1",
+        "rte.availability.changed.v1",
+        "rte.capacity.changed.v1"
+      ]
+    },
+    {
+      "name": "TKT",
+      "commands": [
+        "tkt.ticket.create.v1",
+        "tkt.status.change.v1",
+        "tkt.comment.add.v1",
+        "tkt.ticket.reopen.v1",
+        "tkt.account_tickets.anonymize.v1"
+      ],
+      "queries": [
+        "tkt.ticket.get.v1",
+        "tkt.workflow.get.v1",
+        "tkt.history.list.v1",
+        "tkt.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "tkt.ticket.created.v1",
+        "tkt.ticket_status.changed.v1",
+        "tkt.ticket.commented.v1"
+      ]
+    },
+    {
+      "name": "QLT",
+      "commands": [
+        "qlt.survey.create.v1",
+        "qlt.csat.submit.v1",
+        "qlt.review.create.v1",
+        "qlt.appeal.review.v1"
+      ],
+      "queries": [
+        "qlt.csat.get.v1",
+        "qlt.review.get.v1",
+        "qlt.score.get.v1"
+      ],
+      "events": [
+        "qlt.csat.received.v1",
+        "qlt.quality_review.changed.v1",
+        "qlt.appeal.changed.v1"
+      ]
+    },
+    {
+      "name": "KB",
+      "commands": [
+        "kb.article.create.v1",
+        "kb.content.publish.v1",
+        "kb.content.archive.v1",
+        "kb.document.delete.v1",
+        "kb.portal.manage.v1",
+        "kb.account_content.purge.v1"
+      ],
+      "queries": [
+        "kb.content.get.v1",
+        "kb.version.get.v1",
+        "kb.public_view.get.v1",
+        "kb.portal.get.v1",
+        "kb.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "kb.knowledge.published.v1",
+        "kb.knowledge.changed.v1",
+        "kb.knowledge.archived.v1",
+        "kb.knowledge.deleted.v1",
+        "kb.portal.changed.v1"
+      ]
+    },
+    {
+      "name": "BIL",
+      "commands": [
+        "bil.checkout.create.v1",
+        "bil.order.update.v1",
+        "bil.payment.process.v1",
+        "bil.refund.create.v1",
+        "bil.invoice.issue.v1"
+      ],
+      "queries": [
+        "bil.order.get.v1",
+        "bil.payment.get.v1",
+        "bil.balance.get.v1"
+      ],
+      "events": [
+        "bil.order.changed.v1",
+        "bil.payment.completed.v1",
+        "bil.payment.failed.v1",
+        "bil.payment.refunded.v1",
+        "bil.invoice.changed.v1"
+      ]
+    },
+    {
+      "name": "EXT",
+      "commands": [
+        "ext.plugin.install.v1",
+        "ext.plugin.disable.v1",
+        "ext.bot.manage.v1",
+        "ext.webhook.manage.v1",
+        "ext.webhook.dispatch.v1",
+        "ext.delivery.record.v1",
+        "ext.account_authorizations.revoke.v1"
+      ],
+      "queries": [
+        "ext.catalog.list.v1",
+        "ext.installation.get.v1",
+        "ext.bot.get.v1",
+        "ext.delivery.get.v1",
+        "ext.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "ext.plugin.installed.v1",
+        "ext.plugin.disabled.v1",
+        "ext.webhook_delivery.changed.v1",
+        "ext.bot.failed.v1"
+      ]
+    },
+    {
+      "name": "NTF",
+      "commands": [
+        "ntf.notification.create.v1",
+        "ntf.notification.update.v1",
+        "ntf.notification.read.v1",
+        "ntf.preference.save.v1",
+        "ntf.device.register.v1",
+        "ntf.delivery.dispatch.v1",
+        "ntf.account_subscriptions.purge.v1"
+      ],
+      "queries": [
+        "ntf.notifications.list.v1",
+        "ntf.unread_count.get.v1",
+        "ntf.delivery.get.v1",
+        "ntf.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "ntf.notification.created.v1",
+        "ntf.notification.read.v1",
+        "ntf.delivery.changed.v1",
+        "ntf.subscription.invalidated.v1"
+      ]
+    },
+    {
+      "name": "AUT",
+      "commands": [
+        "aut.rule.create.v1",
+        "aut.rule.enable.v1",
+        "aut.execution.start.v1",
+        "aut.execution.cancel.v1"
+      ],
+      "queries": [
+        "aut.rule.get.v1",
+        "aut.rule_version.get.v1",
+        "aut.execution.get.v1"
+      ],
+      "events": [
+        "aut.automation.executed.v1",
+        "aut.action.failed.v1",
+        "aut.loop.blocked.v1"
+      ]
+    },
+    {
+      "name": "OPS",
+      "commands": [
+        "ops.macro.create.v1",
+        "ops.campaign.create.v1",
+        "ops.campaign.trigger.v1",
+        "ops.campaign.pause.v1",
+        "ops.campaign.cancel.v1",
+        "ops.canned_response.manage.v1",
+        "ops.account_campaigns.cancel.v1"
+      ],
+      "queries": [
+        "ops.macro.get.v1",
+        "ops.campaign.get.v1",
+        "ops.canned_response.get.v1",
+        "ops.recipient_status.get.v1",
+        "ops.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "ops.campaign.started.v1",
+        "ops.campaign.paused.v1",
+        "ops.campaign.completed.v1",
+        "ops.recipient.ready.v1",
+        "ops.canned_response.changed.v1"
+      ]
+    },
+    {
+      "name": "AIC",
+      "commands": [
+        "aic.model.configure.v1",
+        "aic.assistant.manage.v1",
+        "aic.index.build.v1",
+        "aic.response.generate.v1",
+        "aic.account_index.purge.v1"
+      ],
+      "queries": [
+        "aic.model.get.v1",
+        "aic.assistant.get.v1",
+        "aic.thread.get.v1",
+        "aic.usage.get.v1",
+        "aic.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "aic.index.changed.v1",
+        "aic.response.completed.v1",
+        "aic.response.failed.v1",
+        "aic.tool.invoked.v1"
+      ]
+    },
+    {
+      "name": "MIG",
+      "commands": [
+        "mig.job.create.v1",
+        "mig.job.validate.v1",
+        "mig.job.start.v1",
+        "mig.job.rollback.v1"
+      ],
+      "queries": [
+        "mig.job.get.v1",
+        "mig.progress.get.v1",
+        "mig.errors.list.v1"
+      ],
+      "events": [
+        "mig.import.progressed.v1",
+        "mig.import.completed.v1",
+        "mig.import.failed.v1",
+        "mig.migration.changed.v1"
+      ]
+    },
+    {
+      "name": "RPT",
+      "commands": [
+        "rpt.sla.manage.v1",
+        "rpt.sla.apply.v1",
+        "rpt.report.generate.v1",
+        "rpt.export.create.v1",
+        "rpt.account_projection.purge.v1"
+      ],
+      "queries": [
+        "rpt.sla.get.v1",
+        "rpt.metrics.get.v1",
+        "rpt.report.get.v1",
+        "rpt.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "rpt.sla.applied.v1",
+        "rpt.sla.breached.v1",
+        "rpt.report.ready.v1",
+        "rpt.export.ready.v1"
+      ]
+    },
+    {
+      "name": "SRH",
+      "commands": [
+        "srh.index.rebuild.v1",
+        "srh.checkpoint.update.v1",
+        "srh.index_item.delete.v1",
+        "srh.account_index.purge.v1"
+      ],
+      "queries": [
+        "srh.search.v1",
+        "srh.index_status.get.v1",
+        "srh.checkpoint.get.v1",
+        "srh.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "srh.index.rebuilt.v1",
+        "srh.index.failed.v1"
+      ]
+    },
+    {
+      "name": "ORC",
+      "commands": [
+        "orc.process.start.v1",
+        "orc.process.cancel.v1",
+        "orc.process.resume.v1",
+        "orc.manual_step.confirm.v1"
+      ],
+      "queries": [
+        "orc.process.get.v1",
+        "orc.steps.list.v1",
+        "orc.compensation.get.v1"
+      ],
+      "events": [
+        "orc.process.started.v1",
+        "orc.process.completed.v1",
+        "orc.process.failed.v1",
+        "orc.process.compensating.v1"
+      ]
+    },
+    {
+      "name": "API",
+      "commands": [
+        "api.credential.issue.v1",
+        "api.credential.revoke.v1",
+        "api.idempotency_receipt.record.v1",
+        "api.rate_limit.update.v1"
+      ],
+      "queries": [
+        "api.contract_versions.get.v1",
+        "api.credential.get.v1",
+        "api.request_status.get.v1"
+      ],
+      "events": [
+        "api.credential.changed.v1",
+        "api.rate_limit.triggered.v1"
+      ]
+    },
+    {
+      "name": "RTM",
+      "commands": [
+        "rtm.connection.open.v1",
+        "rtm.subscription.create.v1",
+        "rtm.cursor.acknowledge.v1",
+        "rtm.connection.close.v1",
+        "rtm.account_subscriptions.close.v1"
+      ],
+      "queries": [
+        "rtm.connection.get.v1",
+        "rtm.subscriptions.list.v1",
+        "rtm.cursor.get.v1",
+        "rtm.account_deletion_status.get.v1"
+      ],
+      "events": [
+        "rtm.realtime.connected.v1",
+        "rtm.realtime.disconnected.v1",
+        "rtm.delivery.failed.v1"
+      ]
+    },
+    {
+      "name": "AUD",
+      "commands": [
+        "aud.data_change.ingest.v1",
+        "aud.retention.set.v1",
+        "aud.legal_hold.set.v1",
+        "aud.export.create.v1"
+      ],
+      "queries": [
+        "aud.changes.list.v1",
+        "aud.object_timeline.get.v1",
+        "aud.process_timeline.get.v1",
+        "aud.integrity.get.v1"
+      ],
+      "events": [
+        "aud.data_change.ingested.v1",
+        "aud.integrity.failed.v1",
+        "aud.compliance_export.ready.v1",
+        "aud.retention.changed.v1"
+      ]
+    }
   ]
 }
