@@ -1,0 +1,37 @@
+{
+  "version":"plugin-extensions-v1",
+  "foundationVersion":"foundation-v1",
+  "reopenTask":"ARCH-05",
+  "rules":{"denyPrivateEntrypoints":true,"denyCoreStorageAccess":true,"requireAccountIsolation":true,"requireSignedEvents":true,"requireIdempotency":true,"requireTimeout":true,"requireFailureIsolation":true,"requireHighRiskConfirmation":true},
+  "extensionPoints":[
+    {"id":"channel_adapter","owner":"CHN","modules":["CHN","MSG","ORC"],"capabilities":["channel.authorize","message.receive","message.send","channel.health"],"failureMode":"isolate_inbox","highRisk":false},
+    {"id":"ai_provider","owner":"AIC","modules":["AIC"],"capabilities":["model.list","generation.create","embedding.create","content.moderate","usage.record"],"failureMode":"fallback_or_handoff","highRisk":false},
+    {"id":"knowledge_source","owner":"KB","modules":["KB","AIC"],"capabilities":["knowledge.sync","knowledge.version","knowledge.publish"],"failureMode":"retain_last_version","highRisk":false},
+    {"id":"automation_condition","owner":"AUT","modules":["AUT"],"capabilities":["condition.evaluate"],"failureMode":"condition_false_with_reason","highRisk":false},
+    {"id":"automation_action","owner":"AUT","modules":["AUT","ORC"],"capabilities":["action.execute","action.compensate"],"failureMode":"apply_failure_policy","highRisk":true},
+    {"id":"notification_channel","owner":"NTF","modules":["NTF","MSG"],"capabilities":["notification.deliver","delivery.status"],"failureMode":"retain_in_app_notification","highRisk":false},
+    {"id":"integration_connector","owner":"EXT","modules":["EXT","ORC"],"capabilities":["connector.query","connector.command","external_reference.record"],"failureMode":"core_continues","highRisk":true},
+    {"id":"custom_tool","owner":"AIC","modules":["AIC","EXT","ORC"],"capabilities":["tool.invoke","tool.result.query","tool.compensate"],"failureMode":"fail_tool_only","highRisk":true},
+    {"id":"import_source","owner":"MIG","modules":["MIG"],"capabilities":["source.read","record.transform","import.checkpoint"],"failureMode":"pause_import","highRisk":false},
+    {"id":"message_content_handler","owner":"MSG","modules":["MSG","MED","CHN"],"capabilities":["content.validate","content.render","attachment.reference"],"failureMode":"reject_content_only","highRisk":false},
+    {"id":"authentication_provider","owner":"IAM","modules":["IAM"],"capabilities":["identity.assert","identity.challenge"],"failureMode":"deny_external_login","highRisk":true},
+    {"id":"report_exporter","owner":"RPT","modules":["RPT","EXT"],"capabilities":["report.export","export.status"],"failureMode":"retain_queryable_report","highRisk":false}
+  ],
+  "registeredEntrypoints":[
+    {"symbol":"IntegrationRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/integration_repository.go"},
+    {"symbol":"WebhookRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/webhook_repository.go"},
+    {"symbol":"DashboardAppRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/dashboard_app_repository.go"},
+    {"symbol":"AgentBotRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/crm_ops_advanced_repository.go"},
+    {"symbol":"AICustomToolRepository","extensionPoint":"custom_tool","storageOwner":"AIC","source":"internal/repository/ai_custom_tool_repository.go"},
+    {"symbol":"DataImportService","extensionPoint":"import_source","storageOwner":"MIG","source":"internal/service/data_import_service.go"},
+    {"symbol":"MigrationService","extensionPoint":"import_source","storageOwner":"MIG","source":"internal/service/migration_service.go"},
+    {"symbol":"EmailService","extensionPoint":"notification_channel","storageOwner":"MSG","source":"internal/service/email_service.go"},
+    {"symbol":"PushService","extensionPoint":"notification_channel","storageOwner":"NTF","source":"internal/service/push_service.go"},
+    {"symbol":"AutomationService","extensionPoint":"automation_action","storageOwner":"AUT","source":"internal/service/automation_service.go"},
+    {"symbol":"StorageService","extensionPoint":"message_content_handler","storageOwner":"MED","source":"internal/service/storage.go"},
+    {"symbol":"ChannelAuthEnterpriseRepository","extensionPoint":"authentication_provider","storageOwner":"IAM","source":"internal/repository/channel_auth_enterprise_repository.go"}
+  ],
+  "requiredManifestFields":["plugin_id","extension_point","name","publisher","version","contract_version","min_system_version","max_system_version","foundation_version","required_features","required_scopes","optional_scopes","data_classes","object_ranges","provided_capabilities","commands","queries","subscriptions","callbacks","configuration_schema","secret_fields","allowed_domains","protocols","timeout_ms","concurrency","rate_limit_per_minute","payload_size_bytes","quota","lifecycle","private_data_policy","retention_days","export_policy","deletion_policy","data_location","health_url","support_url","signature","high_risk_confirmation","compensation"],
+  "lifecycle":["inactive","active","paused","upgrading","rolling_back","uninstalling","uninstalled"],
+  "invocationResults":["accepted","succeeded","failed_retryable","failed_permanent","timed_out","result_unknown","cancelled"]
+}
