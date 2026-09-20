@@ -373,6 +373,34 @@ func TestEmailSMTPConfigurationAndRejection(t *testing.T) {
 		}
 	})
 
+	t.Run("Email_Retry_And_Bounce_Are_Account_Scoped", func(t *testing.T) {
+		mockSender := service.NewMockEmailSender()
+		emailSvc := service.NewEmailService(db)
+		emailSvc.SetSender(mockSender)
+		now := time.Now()
+		first := domain.EmailLog{AccountID: accountID + 100, EmailType: "transcript", ToEmail: "first@example.com", FromEmail: "support@ex-chat.local", Subject: "first", Status: "failed", DeliveryStatus: domain.EmailDeliveryStatusFailed, MaxRetries: 3, CreatedAt: now, UpdatedAt: now}
+		second := domain.EmailLog{AccountID: accountID + 101, EmailType: "transcript", ToEmail: "second@example.com", FromEmail: "support@ex-chat.local", Subject: "second", Status: "failed", DeliveryStatus: domain.EmailDeliveryStatusFailed, MaxRetries: 3, CreatedAt: now, UpdatedAt: now}
+		if err := db.Create(&first).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&second).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := emailSvc.RetryFailedEmail(context.Background(), first.AccountID, second.ID); err == nil {
+			t.Fatal("cross-account retry passed")
+		}
+		updated, sent, err := emailSvc.RetryFailedEmail(context.Background(), second.AccountID, second.ID)
+		if err != nil || !sent || updated.AccountID != second.AccountID {
+			t.Fatalf("exact retry failed: sent=%v log=%+v err=%v", sent, updated, err)
+		}
+		if emails := mockSender.GetSentEmails(); len(emails) != 1 || emails[0].To != second.ToEmail {
+			t.Fatalf("retry sent wrong account email: %+v", emails)
+		}
+		if _, err := emailSvc.RecordBounceForAccount(second.AccountID, first.ID, "bounce"); err == nil {
+			t.Fatal("cross-account bounce passed")
+		}
+	})
+
 	t.Run("Confirmation_Email_Dispatch", func(t *testing.T) {
 		mockSender := service.NewMockEmailSender()
 		emailSvc := service.NewEmailService(db)

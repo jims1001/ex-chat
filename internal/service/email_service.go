@@ -564,6 +564,67 @@ func (s *EmailService) RecordBounce(emailLogID uint, bounceReason string) (*doma
 	return &emailLog, nil
 }
 
+func (s *EmailService) RecordBounceForAccount(accountID, emailLogID uint, bounceReason string) (*domain.EmailLog, error) {
+	if s.db == nil {
+		return nil, errors.New("database not available")
+	}
+	var emailLog domain.EmailLog
+	if err := s.db.Where("account_id = ? AND id = ?", accountID, emailLogID).First(&emailLog).Error; err != nil {
+		return nil, fmt.Errorf("email log %d not found: %w", emailLogID, err)
+	}
+	now := time.Now()
+	emailLog.Status = "bounced"
+	emailLog.DeliveryStatus = domain.EmailDeliveryStatusBounced
+	emailLog.BounceReason = bounceReason
+	emailLog.NextRetryAt = nil
+	emailLog.UpdatedAt = now
+	if err := s.db.Where("account_id = ? AND id = ?", accountID, emailLogID).Save(&emailLog).Error; err != nil {
+		return nil, fmt.Errorf("failed to update bounced email log: %w", err)
+	}
+	return &emailLog, nil
+}
+
+func (s *EmailService) RetryFailedEmail(ctx context.Context, accountID, emailLogID uint) (*domain.EmailLog, bool, error) {
+	if s.db == nil {
+		return nil, false, errors.New("database not available")
+	}
+	if !s.IsConfigured() {
+		return nil, false, ErrSMTPNotConfigured
+	}
+	var emailLog domain.EmailLog
+	if err := s.db.Where("account_id = ? AND id = ? AND status = ? AND retry_count < max_retries", accountID, emailLogID, domain.EmailDeliveryStatusFailed).First(&emailLog).Error; err != nil {
+		return nil, false, fmt.Errorf("retryable email log %d not found: %w", emailLogID, err)
+	}
+	now := time.Now()
+	emailLog.RetryCount++
+	emailLog.LastAttemptAt = &now
+	emailLog.UpdatedAt = now
+	fromEmail := emailLog.FromEmail
+	if fromEmail == "" {
+		fromEmail = s.fromEmail
+	}
+	err := s.sender.Send(ctx, fromEmail, emailLog.ToEmail, emailLog.Subject, emailLog.ContentHTML, emailLog.ContentText)
+	if err != nil {
+		emailLog.Error = err.Error()
+		emailLog.DeliveryStatus = domain.EmailDeliveryStatusFailed
+		if emailLog.RetryCount >= emailLog.MaxRetries {
+			emailLog.NextRetryAt = nil
+		} else {
+			next := now.Add(time.Duration(5*(1<<(emailLog.RetryCount-1))) * time.Minute)
+			emailLog.NextRetryAt = &next
+		}
+	} else {
+		emailLog.Status = "sent"
+		emailLog.DeliveryStatus = domain.EmailDeliveryStatusSent
+		emailLog.Error = ""
+		emailLog.NextRetryAt = nil
+	}
+	if saveErr := s.db.Save(&emailLog).Error; saveErr != nil {
+		return nil, false, saveErr
+	}
+	return &emailLog, err == nil, err
+}
+
 // RetryFailedEmails finds pending/failed emails eligible for retry and reattempts dispatch
 func (s *EmailService) RetryFailedEmails(ctx context.Context, limit int) (int, error) {
 	if s.db == nil {

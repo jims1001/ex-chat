@@ -20,7 +20,6 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/ratelimit"
-	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -112,6 +111,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	dashboardAppRepo := repository.NewDashboardAppRepository(db)
 	ticketRepo := repository.NewTicketRepository(db)
 	qaRepo := repository.NewQARepository(db)
+	emailLogRepo := repository.NewEmailLogRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -130,6 +130,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	if cfg != nil && cfg.Environment == "test" {
 		emailService.SetAllowMock(true)
 	}
+	emailLogHandler := handler.NewEmailLogHandler(emailLogRepo, emailService)
 
 	// API 处理器 (Handlers)
 	authHandler := handler.NewAuthHandler(cfg, userRepo, accountRepo)
@@ -1183,66 +1184,9 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 			tenant.POST("/branded_email_layout", reqPerm(domain.PermissionSettingsManage), authEnterpriseHandler.SaveBrandedEmailLayout)
 
 			// 邮件投递记录、退信与重试 (Email Logs Lifecycle)
-			tenant.GET("/email_logs", func(c *gin.Context) {
-				accountID, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
-				var logs []domain.EmailLog
-				q := db.Where("account_id = ?", accountID)
-				if status := c.Query("status"); status != "" {
-					q = q.Where("status = ? OR delivery_status = ?", status, status)
-				}
-				if emailType := c.Query("email_type"); emailType != "" {
-					q = q.Where("email_type = ?", emailType)
-				}
-				if err := q.Order("id DESC").Limit(100).Find(&logs).Error; err != nil {
-					response.InternalError(c, err.Error())
-					return
-				}
-				response.Success(c, logs)
-			})
-			tenant.POST("/email_logs/:id/retry", reqPerm(domain.PermissionSettingsManage), func(c *gin.Context) {
-				accountID, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
-				logID, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-				var emailLog domain.EmailLog
-				if err := db.Where("account_id = ? AND id = ?", accountID, logID).First(&emailLog).Error; err != nil {
-					response.NotFound(c, "Email log not found")
-					return
-				}
-				now := time.Now()
-				emailLog.NextRetryAt = &now
-				_ = db.Save(&emailLog)
-				count, err := emailService.RetryFailedEmails(c.Request.Context(), 1)
-				if err != nil {
-					response.InternalError(c, "Failed to retry email: "+err.Error())
-					return
-				}
-				_ = db.First(&emailLog, emailLog.ID)
-				response.Success(c, gin.H{
-					"retried":   count > 0,
-					"email_log": emailLog,
-				})
-			})
-			tenant.POST("/email_logs/:id/bounce", reqPerm(domain.PermissionSettingsManage), func(c *gin.Context) {
-				accountID, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
-				logID, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-				var req struct {
-					Reason string `json:"reason"`
-				}
-				_ = c.ShouldBindJSON(&req)
-				if req.Reason == "" {
-					req.Reason = "Remote mailbox unavailable (bounced)"
-				}
-				var emailLog domain.EmailLog
-				if err := db.Where("account_id = ? AND id = ?", accountID, logID).First(&emailLog).Error; err != nil {
-					response.NotFound(c, "Email log not found")
-					return
-				}
-				updated, err := emailService.RecordBounce(emailLog.ID, req.Reason)
-				if err != nil {
-					response.InternalError(c, err.Error())
-					return
-				}
-				response.Success(c, updated)
-			})
+			tenant.GET("/email_logs", emailLogHandler.List)
+			tenant.POST("/email_logs/:id/retry", reqPerm(domain.PermissionSettingsManage), emailLogHandler.Retry)
+			tenant.POST("/email_logs/:id/bounce", reqPerm(domain.PermissionSettingsManage), emailLogHandler.Bounce)
 
 			// 全局与局部搜索 (Search - Section 15)
 			tenant.GET("/search", searchHandler.GlobalSearch)

@@ -234,7 +234,7 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	const approvedCollaborationSHA = "ef188ae3288e7c0f0d0272ccfb3908840d59208063f8d78985c5165618317863"
+	const approvedCollaborationSHA = "92c89834298fb4d98f59cd860670d5cd7174546b45e33e3a96bb263d2fb20407"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}

@@ -1,0 +1,33 @@
+{
+  "version": "external-interfaces-v1",
+  "foundationVersion": "foundation-v1",
+  "reopenTask": "ARCH-06",
+  "layers": ["E1", "E2", "E3", "E4", "E5", "E6", "E7"],
+  "families": [
+    {"id":"account_api","identity":"account_member","dataScope":"authorized_account_objects","allowedPurpose":"workspace_and_account_operations","forbiddenUse":"installation_management_or_customer_impersonation"},
+    {"id":"widget_api","identity":"widget_session","dataScope":"one_inbox_contact_and_allowed_conversations","allowedPurpose":"website_chat","forbiddenUse":"member_management_or_cross_customer_reads"},
+    {"id":"public_api","identity":"inbox_customer","dataScope":"current_customer_resources_in_one_inbox","allowedPurpose":"custom_customer_interfaces","forbiddenUse":"account_management_or_cross_customer_reads"},
+    {"id":"platform_api","identity":"platform_app","dataScope":"granted_accounts_users_and_relations","allowedPurpose":"multi_tenant_control_plane","forbiddenUse":"message_reads_without_scope"},
+    {"id":"admin_api","identity":"installation_admin","dataScope":"installation_and_global_resources","allowedPurpose":"configuration_version_and_diagnostics","forbiddenUse":"account_audit_bypass"},
+    {"id":"plugin_capability_api","identity":"plugin_installation_and_actor","dataScope":"manifest_scope_and_object_grants","allowedPurpose":"public_capability_invocation","forbiddenUse":"module_storage_access"},
+    {"id":"provider_callback","identity":"verified_provider","dataScope":"bound_connection_and_provider_event","allowedPurpose":"inbound_facts_and_results","forbiddenUse":"arbitrary_business_queries"},
+    {"id":"webhook_delivery","identity":"system_signature","dataScope":"minimal_subscribed_event_view","allowedPurpose":"outbound_fact_delivery","forbiddenUse":"external_commands"},
+    {"id":"realtime","identity":"subscription_identity","dataScope":"visible_customer_or_member_events","allowedPurpose":"live_updates_and_cursor_ack","forbiddenUse":"business_state_writes"}
+  ],
+  "routeClassification": {
+    "realtimePaths": ["/cable", "/ws"],
+    "widgetPrefixes": ["/api/v1/widget"],
+    "publicPrefixes": ["/public/", "/hc/", "/csat_survey/", "/survey/responses/"],
+    "platformPrefixes": ["/platform/api/"],
+    "adminPrefixes": ["/super_admin/", "/api/v1/super_admin/"],
+    "providerMarkers": ["/channels/facebook/webhook", "/subscription/webhook", "/omniauth/google_oauth2/callback", "/omniauth/saml/callback", "/whatsapp/callback", "/twilio/callback", "/callbacks"],
+    "pluginPrefixes": ["/api/v1/plugins/capabilities/"],
+    "defaultFamily": "account_api"
+  },
+  "writeMapping": {"allowedActionTypes":["command","orchestration"],"requireIdempotency":true,"aliasesReuseHandlerAction":true},
+  "aggregateRules": {"requireOwner":true,"requireStableReference":true,"requireProjectionFreshness":true,"forbidAuthorityCopies":true},
+  "callbackRules": {"requireSignature":true,"requireTimeWindow":true,"requireReceiptDeduplication":true,"requireStandardFactConversion":true,"requireCompensation":true,"forbidArbitraryAccountID":true},
+  "versionRules": ["optional_addition_compatible","removal_requires_major","semantic_change_requires_major","unknown_enum_tolerated","permission_change_requires_reauthorization","side_effect_change_requires_major"],
+  "entrypointRule": "transport_to_public_contract_only",
+  "directInternalStorageAccessAllowed": false
+}
