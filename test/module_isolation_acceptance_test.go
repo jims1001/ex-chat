@@ -533,4 +533,48 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("CON created foreign owner tables")
 		}
 	})
+	t.Run("CON_label_and_attachment_ports_use_owner_stores", func(t *testing.T) {
+		conDB, cusDB, msgDB := openStore("CON"), openStore("CUS"), openStore("MSG")
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		label := domain.Label{AccountID: 1, Title: "Account one"}
+		foreignLabel := domain.Label{AccountID: 2, Title: "Account two"}
+		if err := cusDB.Create(&label).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := cusDB.Create(&foreignLabel).Error; err != nil {
+			t.Fatal(err)
+		}
+		msg := domain.Message{AccountID: 1, ConversationID: conversation.ID, Content: "with attachment"}
+		if err := msgDB.Create(&msg).Error; err != nil {
+			t.Fatal(err)
+		}
+		attachment := domain.Attachment{AccountID: 1, MessageID: msg.ID, DataURL: "https://example.test/a"}
+		if err := msgDB.Create(&attachment).Error; err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewConversationRepositoryWithReadPorts(conDB, repository.NewMessageRepositoryWithConversationPort(msgDB, nil), nil, nil, nil, nil, nil, repository.NewLabelRepository(cusDB))
+		if err := owner.AttachLabel(1, conversation.ID, foreignLabel.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("foreign label accepted: %v", err)
+		}
+		if err := owner.AttachLabel(1, conversation.ID, label.ID); err != nil {
+			t.Fatal(err)
+		}
+		attachments, err := owner.ListAttachments(1, conversation.ID)
+		if err != nil || len(attachments) != 1 || attachments[0].ID != attachment.ID {
+			t.Fatalf("owner attachment query: count=%d err=%v", len(attachments), err)
+		}
+		if err := owner.DetachLabel(1, conversation.ID, label.ID); err != nil {
+			t.Fatal(err)
+		}
+		var links int64
+		if err := conDB.Model(&domain.ConversationLabel{}).Count(&links).Error; err != nil || links != 0 {
+			t.Fatalf("label relation remained: count=%d err=%v", links, err)
+		}
+		if conDB.Migrator().HasTable(&domain.Label{}) || conDB.Migrator().HasTable(&domain.Attachment{}) {
+			t.Fatal("CON created foreign owner tables")
+		}
+	})
 }

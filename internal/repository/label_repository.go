@@ -39,6 +39,12 @@ func (r *LabelRepository) FindIDsByTitles(accountID uint, titles []any) ([]uint,
 	return ids, err
 }
 
+func (r *LabelRepository) Exists(accountID, id uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.Label{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
+	return count == 1, err
+}
+
 func (r *LabelRepository) FindByTitle(accountID uint, title string) (*domain.Label, error) {
 	var label domain.Label
 	err := r.db.Where("account_id = ? AND title = ?", accountID, title).First(&label).Error

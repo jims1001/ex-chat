@@ -248,6 +248,15 @@ func (r *MessageRepository) IncomingUnreadWindow(accountID, conversationID uint)
 	return latest.CreatedAt, count, true, err
 }
 
+func (r *MessageRepository) ListConversationAttachments(accountID, conversationID uint) ([]domain.Attachment, error) {
+	var attachments []domain.Attachment
+	err := r.db.Model(&domain.Attachment{}).
+		Joins("JOIN messages ON messages.id = attachments.message_id").
+		Where("messages.account_id = ? AND messages.conversation_id = ? AND attachments.account_id = ?", accountID, conversationID, accountID).
+		Order("attachments.id DESC").Find(&attachments).Error
+	return attachments, err
+}
+
 func (r *MessageRepository) ListByConversation(accountID, conversationID uint, includePrivate bool, page, pageSize int) ([]domain.Message, int64, error) {
 	var messages []domain.Message
 	var total int64

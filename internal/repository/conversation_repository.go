@@ -31,6 +31,7 @@ func NewConversationRepository(db *gorm.DB) *ConversationRepository {
 
 type conversationMessagePort interface {
 	IncomingUnreadWindow(accountID, conversationID uint) (time.Time, int64, bool, error)
+	ListConversationAttachments(accountID, conversationID uint) ([]domain.Attachment, error)
 }
 
 func NewConversationRepositoryWithMessagePort(db *gorm.DB, messages conversationMessagePort) *ConversationRepository {
@@ -66,6 +67,7 @@ type conversationTeamPort interface {
 type conversationLabelPort interface {
 	FindByID(accountID, id uint) (*domain.Label, error)
 	FindIDsByTitles(accountID uint, titles []any) ([]uint, error)
+	Exists(accountID, id uint) (bool, error)
 }
 
 func NewConversationRepositoryWithReferences(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort, inboxes conversationInboxPort, contacts conversationContactPort) *ConversationRepository {
@@ -500,15 +502,22 @@ func (r *ConversationRepository) ToggleMute(accountID, id uint, muted bool) erro
 // AttachLabel records the CON-owned relationship between a conversation and a
 // CUS-owned label. The account guard prevents cross-tenant relation writes.
 func (r *ConversationRepository) AttachLabel(accountID, conversationID, labelID uint) error {
+	if r.labels == nil {
+		return gorm.ErrInvalidData
+	}
+	labelExists, err := r.labels.Exists(accountID, labelID)
+	if err != nil {
+		return err
+	}
+	if !labelExists {
+		return gorm.ErrRecordNotFound
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		var conversationCount, labelCount int64
+		var conversationCount int64
 		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Count(&conversationCount).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&domain.Label{}).Where("account_id = ? AND id = ?", accountID, labelID).Count(&labelCount).Error; err != nil {
-			return err
-		}
-		if conversationCount != 1 || labelCount != 1 {
+		if conversationCount != 1 {
 			return gorm.ErrRecordNotFound
 		}
 		relation := domain.ConversationLabel{ConversationID: conversationID, LabelID: labelID}
@@ -517,12 +526,12 @@ func (r *ConversationRepository) AttachLabel(accountID, conversationID, labelID 
 }
 
 // DetachLabel removes a CON-owned label relationship with tenant guards on
-// both referenced objects.
+// the CON-owned relationship for an account-scoped conversation.
 func (r *ConversationRepository) DetachLabel(accountID, conversationID, labelID uint) error {
 	return r.db.Where(
-		"conversation_id IN (?) AND label_id IN (?)",
+		"conversation_id IN (?) AND label_id = ?",
 		r.db.Model(&domain.Conversation{}).Select("id").Where("account_id = ? AND id = ?", accountID, conversationID),
-		r.db.Model(&domain.Label{}).Select("id").Where("account_id = ? AND id = ?", accountID, labelID),
+		labelID,
 	).Delete(&domain.ConversationLabel{}).Error
 }
 
@@ -828,11 +837,8 @@ func (r *ConversationRepository) UpdateCustomAttributes(accountID, id uint, attr
 
 // ListAttachments returns all attachments belonging to messages in the conversation
 func (r *ConversationRepository) ListAttachments(accountID, conversationID uint) ([]domain.Attachment, error) {
-	var attachments []domain.Attachment
-	err := r.db.Table("attachments").
-		Joins("INNER JOIN messages ON attachments.message_id = messages.id").
-		Where("messages.account_id = ? AND messages.conversation_id = ?", accountID, conversationID).
-		Order("attachments.id DESC").
-		Find(&attachments).Error
-	return attachments, err
+	if r.messages == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	return r.messages.ListConversationAttachments(accountID, conversationID)
 }
