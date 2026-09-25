@@ -21,11 +21,6 @@ type SetFeatureRequest struct {
 	Enabled     bool   `json:"enabled"`
 }
 
-type SetConfigRequest struct {
-	ConfigKey string `json:"config_key" binding:"required"`
-	Value     string `json:"value"`
-}
-
 func (h *EnterpriseHandler) GetAccountFeatures(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -71,37 +66,4 @@ func (h *EnterpriseHandler) SetAccountFeature(c *gin.Context) {
 
 	features, _ := h.repo.GetAccountFeatures(accountID)
 	response.Success(c, features)
-}
-
-func (h *EnterpriseHandler) ListSystemConfigs(c *gin.Context) {
-	configs, err := h.repo.ListSystemConfigs()
-	if err != nil {
-		logger.WithComponent("enterprise").Error("failed to list system configs", "error", err.Error())
-		response.InternalError(c, "Failed to list system configurations")
-		return
-	}
-	response.Success(c, configs)
-}
-
-func (h *EnterpriseHandler) SetSystemConfig(c *gin.Context) {
-	var req SetConfigRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request payload: "+err.Error())
-		return
-	}
-
-	if err := h.repo.SetSystemConfig(req.ConfigKey, req.Value); err != nil {
-		logger.WithComponent("enterprise").Error("failed to save system config",
-			"config_key", req.ConfigKey,
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to save system configuration")
-		return
-	}
-
-	logger.WithComponent("enterprise").Info("system config saved successfully",
-		"config_key", req.ConfigKey,
-	)
-
-	response.Success(c, gin.H{"updated": true, "key": req.ConfigKey})
 }

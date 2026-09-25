@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"errors"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -14,37 +13,6 @@ type EnterpriseRepository struct {
 
 func NewEnterpriseRepository(db *gorm.DB) *EnterpriseRepository {
 	return &EnterpriseRepository{db: db}
-}
-
-// ----------------- System Configuration -----------------
-
-func (r *EnterpriseRepository) GetSystemConfig(key string) (string, error) {
-	var cfg domain.SystemConfig
-	err := r.db.Where("config_key = ?", key).First(&cfg).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil
-		}
-		return "", err
-	}
-	return cfg.Value, nil
-}
-
-func (r *EnterpriseRepository) SetSystemConfig(key, value string) error {
-	cfg := domain.SystemConfig{
-		ConfigKey: key,
-		Value:     value,
-		UpdatedAt: time.Now().UTC(),
-	}
-	return r.db.Where(domain.SystemConfig{ConfigKey: key}).
-		Assign(domain.SystemConfig{Value: value, UpdatedAt: time.Now().UTC()}).
-		FirstOrCreate(&cfg).Error
-}
-
-func (r *EnterpriseRepository) ListSystemConfigs() ([]domain.SystemConfig, error) {
-	var list []domain.SystemConfig
-	err := r.db.Order("config_key ASC").Find(&list).Error
-	return list, err
 }
 
 // ----------------- Account Features -----------------

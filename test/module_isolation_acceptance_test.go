@@ -604,4 +604,22 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatalf("foreign CON reference accepted: %v", err)
 		}
 	})
+	t.Run("SYS_configs_do_not_depend_on_ENT_storage", func(t *testing.T) {
+		sysDB, entDB := openStore("SYS"), openStore("ENT")
+		configs := repository.NewSystemConfigRepository(sysDB)
+		features := repository.NewEnterpriseRepository(entDB)
+		if err := configs.Set("site_name", "Example"); err != nil {
+			t.Fatal(err)
+		}
+		value, err := configs.Get("site_name")
+		if err != nil || value != "Example" {
+			t.Fatalf("SYS config read: value=%q err=%v", value, err)
+		}
+		if err := features.SetAccountFeature(1, "chat", true); err != nil {
+			t.Fatal(err)
+		}
+		if entDB.Migrator().HasTable(&domain.SystemConfig{}) || sysDB.Migrator().HasTable(&domain.AccountFeature{}) {
+			t.Fatal("SYS or ENT created another owner's table")
+		}
+	})
 }

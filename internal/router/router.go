@@ -168,6 +168,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	webhookHandler := handler.NewWebhookHandler(webhookRepo)
 	webhookHandler.SetWebhookService(webhookService)
 	enterpriseHandler := handler.NewEnterpriseHandler(enterpriseRepo)
+	systemConfigHandler := handler.NewSystemConfigHandler(repository.NewSystemConfigRepository(db))
 	platformHandler := handler.NewPlatformHandler(platformRepo, userRepo)
 	platformHandler.SetJWTSecret(cfg.JWTSecret)
 	publicHandler := handler.NewPublicHandler(db, inboxRepo, contactRepo, convRepo, msgRepo)
@@ -495,8 +496,8 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		superAdmin := api.Group("/api/v1/super_admin")
 		superAdmin.Use(middleware.RequireSuperAdmin(cfg))
 		{
-			superAdmin.GET("/configs", enterpriseHandler.ListSystemConfigs)
-			superAdmin.POST("/configs", enterpriseHandler.SetSystemConfig)
+			superAdmin.GET("/configs", systemConfigHandler.ListSystemConfigs)
+			superAdmin.POST("/configs", systemConfigHandler.SetSystemConfig)
 		}
 
 		// 租户空间路由组 (严格多租户数据隔离)
