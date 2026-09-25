@@ -10,11 +10,16 @@ import (
 )
 
 type AccountRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	users teamUserPort
 }
 
 func NewAccountRepository(db *gorm.DB) *AccountRepository {
-	return &AccountRepository{db: db}
+	return NewAccountRepositoryWithUserPort(db, NewUserRepository(db))
+}
+
+func NewAccountRepositoryWithUserPort(db *gorm.DB, users teamUserPort) *AccountRepository {
+	return &AccountRepository{db: db, users: users}
 }
 
 func (r *AccountRepository) Create(account *domain.Account) error {
@@ -98,9 +103,29 @@ func (r *AccountRepository) ListAccountsForUser(userID uint) ([]domain.Account, 
 
 func (r *AccountRepository) ListMembers(accountID uint) ([]domain.AccountUser, error) {
 	var members []domain.AccountUser
-	err := r.db.Preload("User").Preload("CustomRole").Where("account_id = ?", accountID).Find(&members).Error
+	err := r.db.Preload("CustomRole").Where("account_id = ?", accountID).Find(&members).Error
 	if err != nil {
 		return nil, err
+	}
+	if len(members) > 0 {
+		if r.users == nil {
+			return nil, gorm.ErrInvalidData
+		}
+		ids := make([]uint, len(members))
+		for i := range members {
+			ids[i] = members[i].UserID
+		}
+		users, err := r.users.FindByIDs(ids)
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[uint]*domain.User, len(users))
+		for i := range users {
+			byID[users[i].ID] = &users[i]
+		}
+		for i := range members {
+			members[i].User = byID[members[i].UserID]
+		}
 	}
 	for i := range members {
 		if members[i].CustomRole == nil && members[i].Role != domain.RoleAdministrator && members[i].Role != domain.RoleAgent && members[i].Role != "" {
@@ -115,7 +140,7 @@ func (r *AccountRepository) ListMembers(accountID uint) ([]domain.AccountUser, e
 }
 
 func (r *AccountRepository) UpdateMember(member *domain.AccountUser) error {
-	return r.db.Save(member).Error
+	return r.db.Omit("User", "AgentCapacityPolicy").Save(member).Error
 }
 
 func (r *AccountRepository) RemoveMember(accountID, userID uint) error {

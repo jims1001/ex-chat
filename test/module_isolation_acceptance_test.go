@@ -622,4 +622,79 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("SYS or ENT created another owner's table")
 		}
 	})
+	t.Run("TEN_team_members_use_IAM_without_foreign_writes", func(t *testing.T) {
+		tenDB, iamDB := openStore("TEN"), openStore("IAM")
+		user := domain.User{Name: "Original"}
+		if err := iamDB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewTeamRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB))
+		team := domain.Team{AccountID: 1, Name: "Support"}
+		if err := owner.Create(&team); err != nil {
+			t.Fatal(err)
+		}
+		if err := owner.AddMember(team.ID, user.ID); err != nil {
+			t.Fatal(err)
+		}
+		found, err := owner.FindByID(1, team.ID)
+		if err != nil || found == nil || len(found.Members) != 1 || found.Members[0].ID != user.ID {
+			t.Fatalf("team hydration failed: team=%v err=%v", found, err)
+		}
+		found.Members[0].Name = "Must not be written by TEN"
+		found.Name = "Renamed"
+		if err := owner.Update(found); err != nil {
+			t.Fatal(err)
+		}
+		if err := iamDB.First(&user, user.ID).Error; err != nil || user.Name != "Original" {
+			t.Fatalf("TEN wrote IAM data: user=%v err=%v", user, err)
+		}
+		if err := owner.Delete(2, team.ID); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := owner.List(1)
+		if err != nil || len(listed) != 1 || len(listed[0].Members) != 1 {
+			t.Fatalf("foreign account removed team members: teams=%v err=%v", listed, err)
+		}
+		if tenDB.Migrator().HasTable(&domain.User{}) {
+			t.Fatal("TEN created IAM users table")
+		}
+		unwired := repository.NewTeamRepositoryWithUserPort(tenDB, nil)
+		if _, err := unwired.ListMembers(team.ID); !errors.Is(err, gorm.ErrInvalidData) {
+			t.Fatalf("missing IAM port hidden: %v", err)
+		}
+	})
+	t.Run("TEN_account_members_hydrate_IAM_and_only_save_membership", func(t *testing.T) {
+		tenDB, iamDB := openStore("TEN"), openStore("IAM")
+		user := domain.User{Name: "Account agent"}
+		if err := iamDB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewAccountRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB))
+		if err := owner.AddMember(1, user.ID, domain.RoleAgent); err != nil {
+			t.Fatal(err)
+		}
+		members, err := owner.ListMembers(1)
+		if err != nil || len(members) != 1 || members[0].User == nil || members[0].User.ID != user.ID {
+			t.Fatalf("account hydration failed: members=%v err=%v", members, err)
+		}
+		members[0].User.Name = "Should stay in IAM"
+		members[0].Role = domain.RoleAdministrator
+		if err := owner.UpdateMember(&members[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := iamDB.First(&user, user.ID).Error; err != nil || user.Name != "Account agent" {
+			t.Fatalf("TEN wrote IAM: %v %v", user, err)
+		}
+		membership, err := owner.GetMembership(1, user.ID)
+		if err != nil || membership == nil || membership.Role != domain.RoleAdministrator {
+			t.Fatalf("membership not saved: %v %v", membership, err)
+		}
+		foreign, err := owner.ListMembers(2)
+		if err != nil || len(foreign) != 0 {
+			t.Fatalf("foreign members returned: %v %v", foreign, err)
+		}
+		if tenDB.Migrator().HasTable(&domain.User{}) {
+			t.Fatal("TEN created IAM users table")
+		}
+	})
 }

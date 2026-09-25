@@ -8,24 +8,37 @@ import (
 )
 
 type TeamRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	users teamUserPort
+}
+
+type teamUserPort interface {
+	FindByIDs(ids []uint) ([]domain.User, error)
 }
 
 func NewTeamRepository(db *gorm.DB) *TeamRepository {
-	return &TeamRepository{db: db}
+	return NewTeamRepositoryWithUserPort(db, NewUserRepository(db))
+}
+
+func NewTeamRepositoryWithUserPort(db *gorm.DB, users teamUserPort) *TeamRepository {
+	return &TeamRepository{db: db, users: users}
 }
 
 func (r *TeamRepository) Create(team *domain.Team) error {
-	return r.db.Create(team).Error
+	return r.db.Omit("Members").Create(team).Error
 }
 
 func (r *TeamRepository) FindByID(accountID, id uint) (*domain.Team, error) {
 	var team domain.Team
-	err := r.db.Preload("Members").Where("account_id = ? AND id = ?", accountID, id).First(&team).Error
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&team).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	team.Members, err = r.ListMembers(team.ID)
+	if err != nil {
 		return nil, err
 	}
 	return &team, nil
@@ -42,17 +55,28 @@ func (r *TeamRepository) FindSummaryByID(accountID, id uint) (*domain.Team, erro
 
 func (r *TeamRepository) List(accountID uint) ([]domain.Team, error) {
 	var teams []domain.Team
-	err := r.db.Preload("Members").Where("account_id = ?", accountID).Find(&teams).Error
-	return teams, err
+	err := r.db.Where("account_id = ?", accountID).Find(&teams).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range teams {
+		teams[i].Members, err = r.ListMembers(teams[i].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return teams, nil
 }
 
 func (r *TeamRepository) Update(team *domain.Team) error {
-	return r.db.Save(team).Error
+	return r.db.Omit("Members").Save(team).Error
 }
 
 func (r *TeamRepository) Delete(accountID, id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		_ = tx.Where("team_id = ?", id).Delete(&domain.TeamMember{}).Error
+		if err := tx.Where("team_id IN (?)", tx.Model(&domain.Team{}).Select("id").Where("account_id = ? AND id = ?", accountID, id)).Delete(&domain.TeamMember{}).Error; err != nil {
+			return err
+		}
 		return tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Team{}).Error
 	})
 }
@@ -70,9 +94,15 @@ func (r *TeamRepository) RemoveMember(teamID, userID uint) error {
 }
 
 func (r *TeamRepository) ListMembers(teamID uint) ([]domain.User, error) {
-	var users []domain.User
-	err := r.db.Joins("JOIN team_members ON team_members.user_id = users.id").
-		Where("team_members.team_id = ?", teamID).
-		Find(&users).Error
-	return users, err
+	var ids []uint
+	if err := r.db.Model(&domain.TeamMember{}).Where("team_id = ?", teamID).Pluck("user_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []domain.User{}, nil
+	}
+	if r.users == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	return r.users.FindByIDs(ids)
 }

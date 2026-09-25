@@ -43,18 +43,19 @@ func (r *UserRepository) FindByID(id uint) (*domain.User, error) {
 	return &user, nil
 }
 
+func (r *UserRepository) FindByIDs(ids []uint) ([]domain.User, error) {
+	users := make([]domain.User, 0)
+	if len(ids) == 0 {
+		return users, nil
+	}
+	err := r.db.Where("id IN ?", ids).Order("id ASC").Find(&users).Error
+	return users, err
+}
+
 func (r *UserRepository) Update(user *domain.User) error {
 	return r.db.Save(user).Error
 }
 
 func (r *UserRepository) UpdateAvailability(userID uint, availability string) error {
 	return r.db.Model(&domain.User{}).Where("id = ?", userID).Update("availability", availability).Error
-}
-
-func (r *UserRepository) ListByAccount(accountID uint) ([]domain.User, error) {
-	var users []domain.User
-	err := r.db.Joins("JOIN account_users ON account_users.user_id = users.id").
-		Where("account_users.account_id = ?", accountID).
-		Find(&users).Error
-	return users, err
 }
