@@ -65,6 +65,7 @@ type conversationTeamPort interface {
 
 type conversationLabelPort interface {
 	FindByID(accountID, id uint) (*domain.Label, error)
+	FindIDsByTitles(accountID uint, titles []any) ([]uint, error)
 }
 
 func NewConversationRepositoryWithReferences(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort, inboxes conversationInboxPort, contacts conversationContactPort) *ConversationRepository {
@@ -192,46 +193,54 @@ func (r *ConversationRepository) FindByID(accountID, id uint) (*domain.Conversat
 		}
 		return nil, err
 	}
+	if err := r.hydrateConversation(accountID, &conv); err != nil {
+		return nil, err
+	}
+	return &conv, nil
+}
+
+func (r *ConversationRepository) hydrateConversation(accountID uint, conv *domain.Conversation) error {
+	var err error
 	if r.contacts != nil {
 		conv.Contact, err = r.contacts.FindSummaryByID(accountID, conv.ContactID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if r.inboxes != nil {
 		conv.Inbox, err = r.inboxes.FindSummaryByID(accountID, conv.InboxID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if conv.AssigneeID != nil && r.users != nil {
 		conv.Assignee, err = r.users.FindByID(*conv.AssigneeID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if conv.TeamID != nil && r.teams != nil {
 		conv.Team, err = r.teams.FindSummaryByID(accountID, *conv.TeamID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 	var links []domain.ConversationLabel
-	if err := r.db.Where("conversation_id = ?", id).Find(&links).Error; err != nil {
-		return nil, err
+	if err := r.db.Where("conversation_id = ?", conv.ID).Find(&links).Error; err != nil {
+		return err
 	}
 	if r.labels != nil {
 		for _, link := range links {
 			label, err := r.labels.FindByID(accountID, link.LabelID)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if label != nil {
 				conv.Labels = append(conv.Labels, *label)
 			}
 		}
 	}
-	return &conv, nil
+	return nil
 }
 
 func (r *ConversationRepository) FindByUUID(uuid string) (*domain.Conversation, error) {
@@ -260,7 +269,7 @@ func (r *ConversationRepository) FindForInbox(accountID, inboxID, conversationID
 
 func (r *ConversationRepository) FindOpenByContactAndInbox(accountID, contactID, inboxID uint) (*domain.Conversation, error) {
 	var conv domain.Conversation
-	err := r.db.Preload("Contact").Preload("Inbox").Preload("Assignee").
+	err := r.db.
 		Where("account_id = ? AND contact_id = ? AND inbox_id = ? AND status = ?", accountID, contactID, inboxID, domain.ConversationStatusOpen).
 		Order("id DESC").
 		First(&conv).Error
@@ -268,6 +277,9 @@ func (r *ConversationRepository) FindOpenByContactAndInbox(accountID, contactID,
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	if err := r.hydrateConversation(accountID, &conv); err != nil {
 		return nil, err
 	}
 	return &conv, nil
@@ -297,12 +309,20 @@ func (r *ConversationRepository) List(accountID uint, status, priority string, a
 	}
 
 	offset := (page - 1) * pageSize
-	err := query.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").Preload("Team").
+	err := query.
 		Offset(offset).Limit(pageSize).
 		Order("last_activity_at DESC").
 		Find(&conversations).Error
 
-	return conversations, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range conversations {
+		if err := r.hydrateConversation(accountID, &conversations[i]); err != nil {
+			return nil, 0, err
+		}
+	}
+	return conversations, total, nil
 }
 
 func (r *ConversationRepository) Update(c *domain.Conversation) error {
@@ -735,7 +755,14 @@ func (r *ConversationRepository) Filter(accountID uint, filters []domain.FilterR
 			}
 		case "labels":
 			if op == "equal_to" || op == "contains" {
-				query = query.Where("id IN (SELECT conversation_id FROM conversation_labels JOIN labels ON conversation_labels.label_id = labels.id WHERE labels.title IN (?))", rule.Values)
+				if r.labels == nil {
+					return nil, 0, gorm.ErrInvalidData
+				}
+				ids, err := r.labels.FindIDsByTitles(accountID, rule.Values)
+				if err != nil {
+					return nil, 0, err
+				}
+				query = query.Where("id IN (SELECT conversation_id FROM conversation_labels WHERE label_id IN ?)", ids)
 			}
 		case "custom_attributes":
 			for _, v := range rule.Values {
@@ -749,12 +776,20 @@ func (r *ConversationRepository) Filter(accountID uint, filters []domain.FilterR
 	}
 
 	offset := (page - 1) * pageSize
-	err := query.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").Preload("Team").
+	err := query.
 		Offset(offset).Limit(pageSize).
 		Order("last_activity_at DESC, id DESC").
 		Find(&conversations).Error
 
-	return conversations, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range conversations {
+		if err := r.hydrateConversation(accountID, &conversations[i]); err != nil {
+			return nil, 0, err
+		}
+	}
+	return conversations, total, nil
 }
 
 // UpdateCustomAttributes updates or merges key-values into conversation custom attributes

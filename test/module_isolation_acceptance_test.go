@@ -521,6 +521,14 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 		if found.Inbox == nil || found.Contact == nil || found.Assignee == nil || found.Team == nil || len(found.Labels) != 1 {
 			t.Fatalf("incomplete owner hydration: inbox=%v contact=%v assignee=%v team=%v labels=%d", found.Inbox, found.Contact, found.Assignee, found.Team, len(found.Labels))
 		}
+		listed, total, err := owner.List(1, "", "", nil, nil, 1, 10)
+		if err != nil || total != 1 || len(listed) != 1 || len(listed[0].Labels) != 1 {
+			t.Fatalf("cross-store conversation list: count=%d total=%d err=%v", len(listed), total, err)
+		}
+		filtered, total, err := owner.Filter(1, []domain.FilterRule{{AttributeKey: "labels", FilterOperator: "equal_to", Values: []any{"Priority"}}}, 1, 10)
+		if err != nil || total != 1 || len(filtered) != 1 {
+			t.Fatalf("cross-store label filter: count=%d total=%d err=%v", len(filtered), total, err)
+		}
 		if conDB.Migrator().HasTable(&domain.Inbox{}) || conDB.Migrator().HasTable(&domain.Contact{}) || conDB.Migrator().HasTable(&domain.User{}) {
 			t.Fatal("CON created foreign owner tables")
 		}

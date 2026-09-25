@@ -115,10 +115,11 @@ module APIs. A source inventory remains in
 foreign-owned tables. Conversation deletion now uses a durable CON deletion
 marker and retryable commands against each owner store; those commands remain
 in-process adapters. Conversation detail reads now hydrate owner data through
-CHN/CUS/IAM/TEN ports. Ordinary `make test`, `make test-docker`, and this staged
+CHN/CUS/IAM/TEN ports; conversation lists and label filters use the same owner
+boundary. Ordinary `make test`, `make test-docker`, and this staged
 gate do not establish ARCH-08 completion. Independent module startup, all
 business paths, failure handling, scaling, upgrade, backup, rollback, and
 topology acceptance still need implementation and verification.
 
 Current evidence and the next repair order are recorded in
-[ARCH-08 current evidence](Chatwoot完整文档/验收证据/E-ARCH-08-v5.md).
+[ARCH-08 current evidence](Chatwoot完整文档/验收证据/E-ARCH-08-v6.md).

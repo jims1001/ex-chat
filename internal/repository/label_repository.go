@@ -33,6 +33,12 @@ func (r *LabelRepository) FindByID(accountID, id uint) (*domain.Label, error) {
 	return &label, nil
 }
 
+func (r *LabelRepository) FindIDsByTitles(accountID uint, titles []any) ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&domain.Label{}).Where("account_id = ? AND title IN ?", accountID, titles).Pluck("id", &ids).Error
+	return ids, err
+}
+
 func (r *LabelRepository) FindByTitle(accountID uint, title string) (*domain.Label, error) {
 	var label domain.Label
 	err := r.db.Where("account_id = ? AND title = ?", accountID, title).First(&label).Error
