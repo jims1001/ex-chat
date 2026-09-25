@@ -20,24 +20,37 @@ func generateToken(length int) string {
 }
 
 type InboxRepository struct {
-	db *gorm.DB
+	db       *gorm.DB
+	accounts inboxAccountPort
+}
+
+type inboxAccountPort interface {
+	ListMembers(accountID uint) ([]domain.AccountUser, error)
 }
 
 func NewInboxRepository(db *gorm.DB) *InboxRepository {
-	return &InboxRepository{db: db}
+	return NewInboxRepositoryWithAccountPort(db, NewAccountRepository(db))
+}
+
+func NewInboxRepositoryWithAccountPort(db *gorm.DB, accounts inboxAccountPort) *InboxRepository {
+	return &InboxRepository{db: db, accounts: accounts}
 }
 
 func (r *InboxRepository) Create(inbox *domain.Inbox) error {
-	return r.db.Create(inbox).Error
+	return r.db.Omit("Members").Create(inbox).Error
 }
 
 func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 	var inbox domain.Inbox
-	err := r.db.Preload("Members").Preload("AssignmentPolicy").Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
+	err := r.db.Preload("AssignmentPolicy").Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	inbox.Members, err = r.ListMembers(inbox.ID)
+	if err != nil {
 		return nil, err
 	}
 	return &inbox, nil
@@ -82,8 +95,17 @@ func (r *InboxRepository) FindByWebsiteToken(token string) (*domain.Inbox, error
 
 func (r *InboxRepository) ListByAccount(accountID uint) ([]domain.Inbox, error) {
 	var inboxes []domain.Inbox
-	err := r.db.Preload("Members").Preload("AssignmentPolicy").Where("account_id = ?", accountID).Find(&inboxes).Error
-	return inboxes, err
+	err := r.db.Preload("AssignmentPolicy").Where("account_id = ?", accountID).Find(&inboxes).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range inboxes {
+		inboxes[i].Members, err = r.ListMembers(inboxes[i].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return inboxes, nil
 }
 
 func (r *InboxRepository) BindAssignmentPolicy(accountID, inboxID uint, policyID *uint) error {
@@ -126,7 +148,7 @@ func (r *InboxRepository) RemovePolicy(accountID, policyID uint, inboxIDs []uint
 }
 
 func (r *InboxRepository) Update(inbox *domain.Inbox) error {
-	return r.db.Save(inbox).Error
+	return r.db.Omit("Members").Save(inbox).Error
 }
 
 func (r *InboxRepository) Delete(accountID, id uint) error {
@@ -146,24 +168,68 @@ func (r *InboxRepository) RemoveMember(inboxID, userID uint) error {
 }
 
 func (r *InboxRepository) ListMembers(inboxID uint) ([]domain.User, error) {
-	var users []domain.User
-	err := r.db.Joins("JOIN inbox_members ON inbox_members.user_id = users.id").
-		Where("inbox_members.inbox_id = ?", inboxID).
-		Find(&users).Error
-	return users, err
+	var inbox domain.Inbox
+	if err := r.db.First(&inbox, inboxID).Error; err != nil {
+		return nil, err
+	}
+	var ids []uint
+	if err := r.db.Model(&domain.InboxMember{}).Where("inbox_id = ?", inboxID).Pluck("user_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []domain.User{}, nil
+	}
+	users, err := r.accountUsers(inbox.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	result := make([]domain.User, 0)
+	for _, user := range users {
+		if wanted[user.ID] {
+			result = append(result, user)
+		}
+	}
+	return result, nil
+}
+
+func (r *InboxRepository) accountUsers(accountID uint) ([]domain.User, error) {
+	if r.accounts == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	members, err := r.accounts.ListMembers(accountID)
+	if err != nil {
+		return nil, err
+	}
+	users := make([]domain.User, 0, len(members))
+	for _, member := range members {
+		if member.User != nil {
+			users = append(users, *member.User)
+		}
+	}
+	return users, nil
 }
 
 func (r *InboxRepository) ListAssignableAgents(accountID, inboxID uint) ([]domain.User, error) {
+	valid, err := r.Exists(accountID, inboxID)
+	if err != nil {
+		return nil, err
+	}
+	if !valid {
+		return nil, gorm.ErrRecordNotFound
+	}
 	members, err := r.ListMembers(inboxID)
-	if err == nil && len(members) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(members) > 0 {
 		return members, nil
 	}
 	// Fallback to all account agents
-	var agents []domain.User
-	err = r.db.Joins("JOIN account_users ON account_users.user_id = users.id").
-		Where("account_users.account_id = ?", accountID).
-		Find(&agents).Error
-	return agents, err
+	return r.accountUsers(accountID)
 }
 
 func (r *InboxRepository) ListCampaigns(accountID, inboxID uint) ([]domain.Campaign, error) {

@@ -697,4 +697,48 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("TEN created IAM users table")
 		}
 	})
+	t.Run("CHN_members_and_fallback_use_TEN_IAM_stores", func(t *testing.T) {
+		chnDB, tenDB, iamDB := openStore("CHN"), openStore("TEN"), openStore("IAM")
+		user := domain.User{Name: "Agent"}
+		if err := iamDB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		accounts := repository.NewAccountRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB))
+		if err := accounts.AddMember(1, user.ID, domain.RoleAgent); err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewInboxRepositoryWithAccountPort(chnDB, accounts)
+		inbox := domain.Inbox{AccountID: 1, Name: "Support", WebsiteToken: "split-chn"}
+		if err := owner.Create(&inbox); err != nil {
+			t.Fatal(err)
+		}
+		agents, err := owner.ListAssignableAgents(1, inbox.ID)
+		if err != nil || len(agents) != 1 {
+			t.Fatalf("account fallback: %v %v", agents, err)
+		}
+		if err := owner.AddMember(inbox.ID, user.ID); err != nil {
+			t.Fatal(err)
+		}
+		found, err := owner.FindByID(1, inbox.ID)
+		if err != nil || found == nil || len(found.Members) != 1 {
+			t.Fatalf("inbox hydration: %v %v", found, err)
+		}
+		found.Members[0].Name = "Do not save"
+		if err := owner.Update(found); err != nil {
+			t.Fatal(err)
+		}
+		if err := iamDB.First(&user, user.ID).Error; err != nil || user.Name != "Agent" {
+			t.Fatalf("foreign write: %v %v", user, err)
+		}
+		if _, err := owner.ListAssignableAgents(2, inbox.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("foreign inbox accepted: %v", err)
+		}
+		unwired := repository.NewInboxRepositoryWithAccountPort(chnDB, nil)
+		if _, err := unwired.ListAssignableAgents(1, inbox.ID); !errors.Is(err, gorm.ErrInvalidData) {
+			t.Fatalf("dependency failure hidden: %v", err)
+		}
+		if chnDB.Migrator().HasTable(&domain.User{}) || chnDB.Migrator().HasTable(&domain.AccountUser{}) {
+			t.Fatal("CHN created foreign tables")
+		}
+	})
 }
