@@ -577,4 +577,31 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("CON created foreign owner tables")
 		}
 	})
+	t.Run("BIL_order_update_validates_CON_reference_without_foreign_table", func(t *testing.T) {
+		bilDB, conDB := openStore("BIL"), openStore("CON")
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		order := domain.Order{AccountID: 1}
+		if err := bilDB.Create(&order).Error; err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewOrderRepositoryWithConversationPort(bilDB, repository.NewConversationRepository(conDB))
+		order.ConversationID = &conversation.ID
+		if err := owner.Update(1, &order); err != nil {
+			t.Fatalf("BIL could not validate CON reference: %v", err)
+		}
+		if bilDB.Migrator().HasTable(&domain.Conversation{}) {
+			t.Fatal("BIL created a foreign conversation table")
+		}
+		foreign := domain.Conversation{AccountID: 2, InboxID: 1, ContactID: 1}
+		if err := conDB.Create(&foreign).Error; err != nil {
+			t.Fatal(err)
+		}
+		order.ConversationID = &foreign.ID
+		if err := owner.Update(1, &order); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("foreign CON reference accepted: %v", err)
+		}
+	})
 }

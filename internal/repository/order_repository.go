@@ -7,11 +7,20 @@ import (
 
 // OrderRepository owns BIL order state mutations.
 type OrderRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	conversations orderConversationPort
+}
+
+type orderConversationPort interface {
+	MessageTargetExists(accountID, conversationID uint) (bool, error)
 }
 
 func NewOrderRepository(db *gorm.DB) *OrderRepository {
-	return &OrderRepository{db: db}
+	return NewOrderRepositoryWithConversationPort(db, NewConversationRepository(db))
+}
+
+func NewOrderRepositoryWithConversationPort(db *gorm.DB, conversations orderConversationPort) *OrderRepository {
+	return &OrderRepository{db: db, conversations: conversations}
 }
 
 func (r *OrderRepository) Update(accountID uint, order *domain.Order) error {
@@ -19,13 +28,14 @@ func (r *OrderRepository) Update(accountID uint, order *domain.Order) error {
 		return gorm.ErrRecordNotFound
 	}
 	if order.ConversationID != nil && *order.ConversationID > 0 {
-		var count int64
-		if err := r.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND id = ?", accountID, *order.ConversationID).
-			Count(&count).Error; err != nil {
+		if r.conversations == nil {
+			return gorm.ErrInvalidData
+		}
+		exists, err := r.conversations.MessageTargetExists(accountID, *order.ConversationID)
+		if err != nil {
 			return err
 		}
-		if count != 1 {
+		if !exists {
 			return gorm.ErrRecordNotFound
 		}
 	}
