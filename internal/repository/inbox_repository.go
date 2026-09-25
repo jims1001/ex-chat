@@ -49,6 +49,15 @@ func (r *InboxRepository) Exists(accountID, id uint) (bool, error) {
 	return count == 1, err
 }
 
+func (r *InboxRepository) FindSummaryByID(accountID, id uint) (*domain.Inbox, error) {
+	var inbox domain.Inbox
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &inbox, err
+}
+
 // FindByGlobalID is reserved for infrastructure authorization paths that must
 // first resolve an inbox before the caller's account scope can be checked.
 func (r *InboxRepository) FindByGlobalID(id uint) (*domain.Inbox, error) {

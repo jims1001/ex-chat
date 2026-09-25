@@ -491,4 +491,38 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatalf("pending orphan remained: count=%d err=%v", count, err)
 		}
 	})
+	t.Run("CON_find_hydrates_owner_data_without_foreign_tables", func(t *testing.T) {
+		conDB, chnDB, cusDB, iamDB, tenDB := openStore("CON"), openStore("CHN"), openStore("CUS"), openStore("IAM"), openStore("TEN")
+		inbox := domain.Inbox{AccountID: 1, Name: "Inbox"}
+		contact := domain.Contact{AccountID: 1, Name: "Contact"}
+		user := domain.User{Name: "Agent"}
+		team := domain.Team{AccountID: 1, Name: "Team"}
+		label := domain.Label{AccountID: 1, Title: "Priority"}
+		for _, item := range []struct {
+			db    *gorm.DB
+			model any
+		}{{chnDB, &inbox}, {cusDB, &contact}, {iamDB, &user}, {tenDB, &team}, {cusDB, &label}} {
+			if err := item.db.Create(item.model).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		conversation := domain.Conversation{AccountID: 1, InboxID: inbox.ID, ContactID: contact.ID, AssigneeID: &user.ID, TeamID: &team.ID}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := conDB.Create(&domain.ConversationLabel{ConversationID: conversation.ID, LabelID: label.ID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, repository.NewInboxRepository(chnDB), repository.NewContactRepository(cusDB), repository.NewUserRepository(iamDB), repository.NewTeamRepository(tenDB), repository.NewLabelRepository(cusDB))
+		found, err := owner.FindByID(1, conversation.ID)
+		if err != nil || found == nil {
+			t.Fatalf("separate-owner read failed: found=%v err=%v", found, err)
+		}
+		if found.Inbox == nil || found.Contact == nil || found.Assignee == nil || found.Team == nil || len(found.Labels) != 1 {
+			t.Fatalf("incomplete owner hydration: inbox=%v contact=%v assignee=%v team=%v labels=%d", found.Inbox, found.Contact, found.Assignee, found.Team, len(found.Labels))
+		}
+		if conDB.Migrator().HasTable(&domain.Inbox{}) || conDB.Migrator().HasTable(&domain.Contact{}) || conDB.Migrator().HasTable(&domain.User{}) {
+			t.Fatal("CON created foreign owner tables")
+		}
+	})
 }

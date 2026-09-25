@@ -16,8 +16,11 @@ type ConversationRepository struct {
 	db       *gorm.DB
 	messages conversationMessagePort
 	cleanup  conversationCleanupPort
-	inboxes  conversationReferencePort
-	contacts conversationReferencePort
+	inboxes  conversationInboxPort
+	contacts conversationContactPort
+	users    conversationUserPort
+	teams    conversationTeamPort
+	labels   conversationLabelPort
 	deleteMu sync.Mutex
 	deleteID uint
 }
@@ -42,12 +45,34 @@ func NewConversationRepositoryWithPorts(db *gorm.DB, messages conversationMessag
 	return NewConversationRepositoryWithReferences(db, messages, cleanup, NewInboxRepository(db), NewContactRepository(db))
 }
 
-type conversationReferencePort interface {
+type conversationInboxPort interface {
 	Exists(accountID, id uint) (bool, error)
+	FindSummaryByID(accountID, id uint) (*domain.Inbox, error)
 }
 
-func NewConversationRepositoryWithReferences(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort, inboxes, contacts conversationReferencePort) *ConversationRepository {
-	return &ConversationRepository{db: db, messages: messages, cleanup: cleanup, inboxes: inboxes, contacts: contacts}
+type conversationContactPort interface {
+	Exists(accountID, id uint) (bool, error)
+	FindSummaryByID(accountID, id uint) (*domain.Contact, error)
+}
+
+type conversationUserPort interface {
+	FindByID(id uint) (*domain.User, error)
+}
+
+type conversationTeamPort interface {
+	FindSummaryByID(accountID, id uint) (*domain.Team, error)
+}
+
+type conversationLabelPort interface {
+	FindByID(accountID, id uint) (*domain.Label, error)
+}
+
+func NewConversationRepositoryWithReferences(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort, inboxes conversationInboxPort, contacts conversationContactPort) *ConversationRepository {
+	return NewConversationRepositoryWithReadPorts(db, messages, cleanup, inboxes, contacts, NewUserRepository(db), NewTeamRepository(db), NewLabelRepository(db))
+}
+
+func NewConversationRepositoryWithReadPorts(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort, inboxes conversationInboxPort, contacts conversationContactPort, users conversationUserPort, teams conversationTeamPort, labels conversationLabelPort) *ConversationRepository {
+	return &ConversationRepository{db: db, messages: messages, cleanup: cleanup, inboxes: inboxes, contacts: contacts, users: users, teams: teams, labels: labels}
 }
 
 // MessageTargetExists is the CON-owned query used before a MSG command.
@@ -160,14 +185,51 @@ func (r *ConversationRepository) CreateImported(c *domain.Conversation) error {
 
 func (r *ConversationRepository) FindByID(accountID, id uint) (*domain.Conversation, error) {
 	var conv domain.Conversation
-	err := r.db.Preload("Contact").Preload("Inbox").Preload("Assignee").Preload("Labels").Preload("Team").
-		Where("account_id = ? AND id = ?", accountID, id).
-		First(&conv).Error
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&conv).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if r.contacts != nil {
+		conv.Contact, err = r.contacts.FindSummaryByID(accountID, conv.ContactID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if r.inboxes != nil {
+		conv.Inbox, err = r.inboxes.FindSummaryByID(accountID, conv.InboxID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if conv.AssigneeID != nil && r.users != nil {
+		conv.Assignee, err = r.users.FindByID(*conv.AssigneeID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if conv.TeamID != nil && r.teams != nil {
+		conv.Team, err = r.teams.FindSummaryByID(accountID, *conv.TeamID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var links []domain.ConversationLabel
+	if err := r.db.Where("conversation_id = ?", id).Find(&links).Error; err != nil {
+		return nil, err
+	}
+	if r.labels != nil {
+		for _, link := range links {
+			label, err := r.labels.FindByID(accountID, link.LabelID)
+			if err != nil {
+				return nil, err
+			}
+			if label != nil {
+				conv.Labels = append(conv.Labels, *label)
+			}
+		}
 	}
 	return &conv, nil
 }

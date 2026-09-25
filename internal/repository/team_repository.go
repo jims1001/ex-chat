@@ -31,6 +31,15 @@ func (r *TeamRepository) FindByID(accountID, id uint) (*domain.Team, error) {
 	return &team, nil
 }
 
+func (r *TeamRepository) FindSummaryByID(accountID, id uint) (*domain.Team, error) {
+	var team domain.Team
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&team).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &team, err
+}
+
 func (r *TeamRepository) List(accountID uint) ([]domain.Team, error) {
 	var teams []domain.Team
 	err := r.db.Preload("Members").Where("account_id = ?", accountID).Find(&teams).Error

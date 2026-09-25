@@ -40,6 +40,15 @@ func (r *ContactRepository) Exists(accountID, id uint) (bool, error) {
 	return count == 1, err
 }
 
+func (r *ContactRepository) FindSummaryByID(accountID, id uint) (*domain.Contact, error) {
+	var contact domain.Contact
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&contact).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &contact, err
+}
+
 func (r *ContactRepository) VisitorTokenMatches(accountID, contactID, inboxID uint, token string) bool {
 	contact, err := r.FindByID(accountID, contactID)
 	if err == nil && contact != nil && contact.PubsubToken != "" && token == contact.PubsubToken {
