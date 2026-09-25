@@ -35,6 +35,39 @@ type DataChangeFilter struct {
 
 // RecordChange 在业务变更事务内原子写入 Local Change Journal（LOG-01 ~ LOG-08 规范）
 func (r *JournalRepository) RecordChange(tx *gorm.DB, j *domain.LocalChangeJournal) error {
+	if err := r.RecordLocalChange(tx, j); err != nil {
+		return err
+	}
+	if tx == nil {
+		tx = r.db
+	}
+
+	// Combined-mode compatibility mirror. An isolated owner only persists its
+	// local journal; central AUD ingestion must consume it separately.
+	if !tx.Migrator().HasTable(&domain.AuditLog{}) {
+		return nil
+	}
+
+	summary := fmt.Sprintf("%s %s #%d", j.Action, j.ObjectType, j.ObjectID)
+	audit := domain.AuditLog{
+		ChangeID:           j.ChangeID,
+		AccountID:          j.AccountID,
+		SourceModule:       j.SourceModule,
+		EntityType:         j.ObjectType,
+		EntityID:           j.ObjectID,
+		Action:             j.Action,
+		Summary:            summary,
+		ActorType:          j.ActorType,
+		ActorID:            j.ActorID,
+		CorrelationID:      j.CorrelationID,
+		DataClassification: j.DataClassification,
+		CreatedAt:          j.CreatedAt,
+	}
+	return tx.Create(&audit).Error
+}
+
+// RecordLocalChange writes only the owner's atomic local capture record.
+func (r *JournalRepository) RecordLocalChange(tx *gorm.DB, j *domain.LocalChangeJournal) error {
 	if tx == nil {
 		tx = r.db
 	}
@@ -94,25 +127,7 @@ func (r *JournalRepository) RecordChange(tx *gorm.DB, j *domain.LocalChangeJourn
 	if err := tx.Create(j).Error; err != nil {
 		return fmt.Errorf("failed to write local change journal: %w", err)
 	}
-
-	// 同步生成集中审计日志镜像（面向管理层查询）
-	summary := fmt.Sprintf("%s %s #%d", j.Action, j.ObjectType, j.ObjectID)
-	audit := domain.AuditLog{
-		ChangeID:           j.ChangeID,
-		AccountID:          j.AccountID,
-		SourceModule:       j.SourceModule,
-		EntityType:         j.ObjectType,
-		EntityID:           j.ObjectID,
-		Action:             j.Action,
-		Summary:            summary,
-		ActorType:          j.ActorType,
-		ActorID:            j.ActorID,
-		CorrelationID:      j.CorrelationID,
-		DataClassification: j.DataClassification,
-		CreatedAt:          j.CreatedAt,
-	}
-
-	return tx.Create(&audit).Error
+	return nil
 }
 
 func (r *JournalRepository) ListAuditLogs(accountID uint, entityType string, entityID *uint, page, pageSize int) ([]domain.AuditLog, int64, error) {

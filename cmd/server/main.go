@@ -12,6 +12,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
@@ -33,6 +34,9 @@ func main() {
 	hub := ws.GetHub()
 
 	engine := router.SetupRouter(cfg, db, hub)
+	activityCtx, stopActivity := context.WithCancel(context.Background())
+	defer stopActivity()
+	go reconcileMessageActivity(activityCtx, repository.NewMessageRepository(db))
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -55,6 +59,7 @@ func main() {
 	<-quit
 
 	srvLog.Info("shutting down server gracefully...")
+	stopActivity()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -65,4 +70,20 @@ func main() {
 	}
 
 	srvLog.Info("server exited cleanly")
+}
+
+func reconcileMessageActivity(ctx context.Context, messages *repository.MessageRepository) {
+	log := logger.WithComponent("message_activity_reconcile")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		if _, err := messages.ReconcilePendingActivity(100); err != nil {
+			log.Warn("pending conversation activity reconciliation failed", "error", err.Error())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

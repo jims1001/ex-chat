@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 type mockWebhookTransport struct {
@@ -42,13 +44,13 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		t.Fatalf("failed to init db: %v", err)
 	}
 
-	var webhookHitCount int
-	var lastWebhookEvent string
+	var webhookHitCount atomic.Int64
+	var lastWebhookEvent atomic.Value
 	mockClient := &http.Client{
 		Transport: &mockWebhookTransport{
 			roundTripFunc: func(req *http.Request) (*http.Response, error) {
-				webhookHitCount++
-				lastWebhookEvent = req.Header.Get("X-Chatwoot-Event")
+				webhookHitCount.Add(1)
+				lastWebhookEvent.Store(req.Header.Get("X-Chatwoot-Event"))
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(bytes.NewBufferString(`{"status":"ack","code":200}`)),
@@ -107,7 +109,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 
 	webhook := domain.Webhook{
 		AccountID:     account.ID,
-		URL:           "https://api.external-crm.com/webhooks/listener",
+		URL:           "https://retry-webhook.example.com/webhooks/listener",
 		Subscriptions: `["message_created","message_updated"]`,
 	}
 	db.Create(&webhook)
@@ -115,7 +117,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 	token, _ := auth.GenerateToken(&user, cfg.JWTSecret, 24)
 
 	t.Run("Message Retry Actually Bumps Activity and Executes Real Delivery", func(t *testing.T) {
-		initialHits := webhookHitCount
+		initialHits := webhookHitCount.Load()
 
 		// Create failed message
 		failedMsg := domain.Message{
@@ -155,7 +157,10 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		}
 
 		// 3. Verify Webhook Delivery record was dispatched and executed via HTTP client
-		time.Sleep(150 * time.Millisecond)
+		require.Eventually(t, func() bool {
+			var count int64
+			return db.Model(&domain.WebhookDelivery{}).Where("account_id = ? AND event = ? AND status = ?", account.ID, "message_created", "delivered").Count(&count).Error == nil && count == 1
+		}, 2*time.Second, 10*time.Millisecond, "webhook delivery must reach its persisted terminal state")
 		var del domain.WebhookDelivery
 		err := db.Where("account_id = ? AND event = ?", account.ID, "message_created").Order("id DESC").First(&del).Error
 		if err != nil {
@@ -164,11 +169,11 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		if del.URL != webhook.URL {
 			t.Fatalf("expected delivery url to be %s, got %s", webhook.URL, del.URL)
 		}
-		if webhookHitCount <= initialHits {
-			t.Fatalf("expected webhook HTTP dispatch to execute, initial=%d now=%d", initialHits, webhookHitCount)
+		if webhookHitCount.Load() <= initialHits {
+			t.Fatalf("expected webhook HTTP dispatch to execute, initial=%d now=%d", initialHits, webhookHitCount.Load())
 		}
-		if lastWebhookEvent != "message_created" {
-			t.Fatalf("expected webhook event header 'message_created', got '%s'", lastWebhookEvent)
+		if lastWebhookEvent.Load() != "message_created" {
+			t.Fatalf("expected webhook event header 'message_created', got '%s'", lastWebhookEvent.Load())
 		}
 	})
 
@@ -202,16 +207,20 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		if reopenedConv.Status != domain.ConversationStatusOpen {
 			t.Fatalf("expected conversation to re-open to 'open', got '%s'", reopenedConv.Status)
 		}
+		require.Eventually(t, func() bool {
+			var count int64
+			return db.Model(&domain.WebhookDelivery{}).Where("account_id = ? AND event = ? AND status = ?", account.ID, "message_created", "delivered").Count(&count).Error == nil && count == 2
+		}, 2*time.Second, 10*time.Millisecond, "inbound retry delivery must finish before the next case")
 	})
 
 	t.Run("Webhook Delivery Real HTTP Retransmission", func(t *testing.T) {
-		initialHits := webhookHitCount
+		initialHits := webhookHitCount.Load()
 
 		failedDelivery := domain.WebhookDelivery{
 			AccountID:    account.ID,
 			WebhookID:    webhook.ID,
 			Event:        "message_created",
-			URL:          "https://api.external-crm.com/webhooks/listener",
+			URL:          "https://retry-webhook.example.com/webhooks/listener",
 			Payload:      `{"event":"message_created","id":999}`,
 			Attempts:     1,
 			Status:       "failed",
@@ -229,8 +238,8 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 			t.Fatalf("expected 200 on webhook delivery retry, got %d body=%s", w.Code, w.Body.String())
 		}
 
-		if webhookHitCount != initialHits+1 {
-			t.Fatalf("expected HTTP client to execute retransmission request, before=%d, after=%d", initialHits, webhookHitCount)
+		if webhookHitCount.Load() != initialHits+1 {
+			t.Fatalf("expected HTTP client to execute retransmission request, before=%d, after=%d", initialHits, webhookHitCount.Load())
 		}
 
 		var refreshedDelivery domain.WebhookDelivery

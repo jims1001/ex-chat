@@ -1,0 +1,843 @@
+{
+  "version": "module-runtime-draft-v1",
+  "foundationVersion": "foundation-v1",
+  "task": "ARCH-08",
+  "status": "draft",
+  "implementationBaseline": "2e732474d3757de739654ff24c65325b23155347",
+  "capabilityRegistry": "architecture/module_contracts.json",
+  "dependencyRegistry": "architecture/module_dependencies.json",
+  "currentEntryPoint": "cmd/server",
+  "currentTopology": "combined-single-process",
+  "currentDatabaseConfig": [
+    "DB_DRIVER",
+    "DB_PATH",
+    "DB_DSN"
+  ],
+  "currentHealthPath": "/health",
+  "independentReadinessImplemented": false,
+  "storagePreparation": "cmd/module-migrate",
+  "sharedRequirements": {
+    "localJournal": "LocalChangeJournal must share the owner transaction; Central AUD unavailability must not bypass local capture",
+    "references": "Cross-owner relationships use stable IDs and public queries, never shared transactions or foreign storage",
+    "events": "Persist before publish; deduplicate by event_id; detect version gaps and replay from checkpoints",
+    "scale": "Require module/account limits, command idempotency and single task ownership before scaling",
+    "upgrade": "Expand-compatible schema, mixed-version verification, canary, rollback with new facts preserved",
+    "recovery": "Restore only owner data and journal; replay projections; reconcile before readiness",
+    "observability": [
+      "module_id",
+      "foundation_version",
+      "contract_version",
+      "availability",
+      "backlog",
+      "latency",
+      "error_rate",
+      "checkpoint"
+    ],
+    "configuration": "Current database and process configuration is shared; isolated per-module credentials and runtime wiring remain unimplemented"
+  },
+  "modules": [
+    {
+      "module": "IAM",
+      "defaultUnit": "U2",
+      "contractVersion": "v1",
+      "capabilitiesRef": "IAM",
+      "startupRequired": [],
+      "capabilityDependencies": [],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "MFAProfile",
+        "PasswordResetToken",
+        "RevokedToken",
+        "SAMLSetting",
+        "User",
+        "UserSession"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "新登录和身份验证受限；有效短期会话按策略处理",
+        "recovery": "会话和撤销状态一致"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "TEN",
+      "defaultUnit": "U2",
+      "contractVersion": "v1",
+      "capabilitiesRef": "TEN",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "IAM"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "Account",
+        "AccountUser",
+        "CustomRole",
+        "Onboarding",
+        "Team",
+        "TeamMember"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "新的账号权限判断不可用时拒绝敏感写入",
+        "recovery": "成员和角色版本恢复"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "ENT",
+      "defaultUnit": "U2",
+      "contractVersion": "v1",
+      "capabilitiesRef": "ENT",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "AccountFeature",
+        "AccountLimit",
+        "BrandedEmailLayout"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "使用最后有效短期能力快照或保守拒绝高成本动作",
+        "recovery": "额度和 Feature 重新对账"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "SYS",
+      "defaultUnit": "U2",
+      "contractVersion": "v1",
+      "capabilitiesRef": "SYS",
+      "startupRequired": [
+        "IAM",
+        "TEN"
+      ],
+      "capabilityDependencies": [
+        "IAM",
+        "TEN",
+        "ENT"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "SystemConfig"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "安装管理入口不可用，Account 业务继续",
+        "recovery": "配置版本和缓存一致"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "CHN",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "CHN",
+      "startupRequired": [
+        "TEN"
+      ],
+      "capabilityDependencies": [
+        "TEN",
+        "ENT"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "Inbox",
+        "InboxMember",
+        "InboxMessageTemplate"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "受影响 Inbox 停止外部收发，内部历史可读",
+        "recovery": "健康、Token 和回调补偿"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "CUS",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "CUS",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CHN"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "Company",
+        "CompanyNote",
+        "Contact",
+        "ContactInbox",
+        "ContactLabel",
+        "ContactNote",
+        "CustomAttributeDefinition",
+        "Label"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "新客户和客户修改暂停；既有会话按最小快照展示",
+        "recovery": "身份去重后再恢复入站"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "MED",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "MED",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "新附件暂停，纯文本消息仍可运行",
+        "recovery": "补传和孤立引用清理"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "CON",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "CON",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CHN",
+        "CUS"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "Conversation",
+        "ConversationLabel",
+        "ConversationParticipant"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "不能创建或改变会话；历史消息不应被删除",
+        "recovery": "状态和事件版本检查"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "MSG",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "MSG",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CHN",
+        "CON",
+        "MED"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "Attachment",
+        "DraftMessage",
+        "EmailLog",
+        "Message"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "消息收发暂停；其他管理功能可用",
+        "recovery": "Provider 回执补读和幂等恢复"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "RTE",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "RTE",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CHN",
+        "CON",
+        "MSG"
+      ],
+      "asynchronousDependencies": [
+        "MSG"
+      ],
+      "storedModels": [
+        "AgentCapacityPolicy",
+        "AssignmentPolicy",
+        "CapacityPolicy",
+        "InboxCapacityLimit"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "自动分配暂停，允许按策略人工领取或保持排队",
+        "recovery": "重算队列和容量"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "TKT",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "TKT",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CUS",
+        "CON"
+      ],
+      "asynchronousDependencies": [
+        "MSG"
+      ],
+      "storedModels": [
+        "Ticket",
+        "TicketActivity",
+        "TicketAttachment",
+        "TicketComment",
+        "TicketStatusHistory",
+        "TicketWatcher"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "工单入口不可用，客服会话继续",
+        "recovery": "关联事件补读"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "QLT",
+      "defaultUnit": "U3",
+      "contractVersion": "v1",
+      "capabilitiesRef": "QLT",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "CSATSurvey",
+        "QAAppeal",
+        "QAAppealActivity",
+        "QACriterion",
+        "QAEvaluationScore",
+        "QASamplingRule",
+        "QAScorecard",
+        "QATask"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "评价和质检暂停，客服会话继续",
+        "recovery": "补收允许窗口内结果"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "KB",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "KB",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "MED"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "Article",
+        "Category",
+        "Portal"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "帮助中心受限，既有已缓存公开内容按策略",
+        "recovery": "索引和发布版本同步"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "BIL",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "BIL",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "ENT"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "AccountBilling",
+        "AccountSubscription",
+        "Order",
+        "SubscriptionPlan"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "新购买暂停；现有权益按策略保持",
+        "recovery": "支付回调补读和对账"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "EXT",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "EXT",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "CHN"
+      ],
+      "asynchronousDependencies": [
+        "CON",
+        "MSG"
+      ],
+      "storedModels": [
+        "AgentBot",
+        "AgentBotInbox",
+        "DashboardApp",
+        "IntegrationInstallation",
+        "PlatformApp",
+        "Webhook",
+        "WebhookDelivery"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "插件和 Webhook 暂停，核心业务继续",
+        "recovery": "事件保留窗口和授权检查"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "NTF",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "NTF",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "IAM",
+        "TEN",
+        "CON"
+      ],
+      "asynchronousDependencies": [
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT"
+      ],
+      "storedModels": [
+        "Notification",
+        "NotificationSetting",
+        "NotificationSubscription",
+        "PushDeliveryLog"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "外部通知暂停，核心业务继续",
+        "recovery": "投递保留窗口内补偿"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "AUT",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "AUT",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "ENT",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "NTF",
+        "EXT"
+      ],
+      "asynchronousDependencies": [
+        "CHN",
+        "CUS",
+        "TKT",
+        "QLT"
+      ],
+      "storedModels": [
+        "AutomationRule",
+        "AutomationRuleExecution"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "自动化暂停，手工操作继续",
+        "recovery": "从事件游标继续且不重复"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "OPS",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "OPS",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "ENT",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "QLT",
+        "EXT",
+        "NTF",
+        "AUT"
+      ],
+      "asynchronousDependencies": [
+        "MSG"
+      ],
+      "storedModels": [
+        "Campaign",
+        "CampaignDelivery",
+        "CannedResponse",
+        "Macro"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "Macro/Campaign 暂停，普通回复继续",
+        "recovery": "恢复计划和逐目标状态"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "AIC",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "AIC",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "ENT",
+        "BIL",
+        "KB",
+        "CON",
+        "MSG",
+        "TKT",
+        "EXT",
+        "OPS"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "AICustomTool",
+        "AIScenario",
+        "AIToolExecutionLog",
+        "AIUsageQuota",
+        "CaptainAssistant",
+        "CaptainAssistantResponse",
+        "CaptainDocChunk",
+        "CaptainInbox",
+        "CaptainKnowledgeDoc",
+        "CopilotThread",
+        "CopilotThreadMessage"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "AI 降级或转人工，人工客服继续",
+        "recovery": "模型、额度和知识版本检查"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "MIG",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "MIG",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "DataImport",
+        "EmailChannelMigration",
+        "MigrationJob"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "导入迁移暂停，在线业务继续",
+        "recovery": "从检查点恢复"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "RPT",
+      "defaultUnit": "U5",
+      "contractVersion": "v1",
+      "capabilitiesRef": "RPT",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN",
+        "CON"
+      ],
+      "asynchronousDependencies": [
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "AUT",
+        "OPS",
+        "AIC",
+        "EXT",
+        "BIL",
+        "MIG"
+      ],
+      "storedModels": [
+        "AppliedSLA",
+        "ReportingEvent",
+        "SLABreachLog",
+        "SLAEvent",
+        "SLAPolicy"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "报表和 SLA 投影延迟，核心业务继续",
+        "recovery": "事件补读和指标重算"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "SRH",
+      "defaultUnit": "U5",
+      "contractVersion": "v1",
+      "capabilitiesRef": "SRH",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "TEN"
+      ],
+      "asynchronousDependencies": [
+        "CUS",
+        "CON",
+        "MSG",
+        "TKT",
+        "KB"
+      ],
+      "storedModels": [
+        "CustomFilter"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "搜索不可用，按明确筛选列表降级",
+        "recovery": "索引检查点重建"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "ORC",
+      "defaultUnit": "U4",
+      "contractVersion": "v1",
+      "capabilitiesRef": "ORC",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "KB",
+        "EXT",
+        "NTF",
+        "AUT",
+        "OPS",
+        "AIC",
+        "BIL",
+        "MIG",
+        "RPT",
+        "SRH"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "新跨模块流程暂停，运行流程保持可恢复",
+        "recovery": "步骤版本和结果查询后继续"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "API",
+      "defaultUnit": "U1",
+      "contractVersion": "v1",
+      "capabilitiesRef": "API",
+      "startupRequired": [
+        "IAM",
+        "TEN"
+      ],
+      "capabilityDependencies": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "SYS",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "KB",
+        "EXT",
+        "NTF",
+        "AUT",
+        "OPS",
+        "AIC",
+        "BIL",
+        "MIG",
+        "RPT",
+        "SRH",
+        "ORC"
+      ],
+      "asynchronousDependencies": [],
+      "storedModels": [
+        "WidgetEvent"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "外部入口不可用；内部模块不应因此停止",
+        "recovery": "幂等收据和限流状态恢复"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "RTM",
+      "defaultUnit": "U1",
+      "contractVersion": "v1",
+      "capabilitiesRef": "RTM",
+      "startupRequired": [],
+      "capabilityDependencies": [
+        "IAM",
+        "TEN"
+      ],
+      "asynchronousDependencies": [
+        "API",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "NTF",
+        "AUT",
+        "OPS"
+      ],
+      "storedModels": [
+        "Call",
+        "CallICECandidate",
+        "Conference"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "即时更新停止，客户端使用 REST 补读",
+        "recovery": "游标恢复和重复事件处理"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    },
+    {
+      "module": "AUD",
+      "defaultUnit": "U5",
+      "contractVersion": "v1",
+      "capabilitiesRef": "AUD",
+      "startupRequired": [],
+      "capabilityDependencies": [],
+      "asynchronousDependencies": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "SYS",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "KB",
+        "EXT",
+        "NTF",
+        "AUT",
+        "OPS",
+        "AIC",
+        "BIL",
+        "MIG",
+        "RPT",
+        "SRH",
+        "ORC",
+        "API",
+        "RTM"
+      ],
+      "storedModels": [
+        "AccessLog",
+        "AuditExport",
+        "AuditLog",
+        "DataChangeCorrection",
+        "IntegrityVerification",
+        "SecurityAuditLog"
+      ],
+      "localJournal": "LocalChangeJournal",
+      "failurePolicy": {
+        "whenStopped": "Local Capture 不可用时拒绝所有数据写入；Central Ledger 不可用时本地积压并按水位逐级限制",
+        "recovery": "补投、摘要链验证和完整对账"
+      },
+      "independentRuntimeImplemented": false,
+      "acceptanceStatus": "pending"
+    }
+  ]
+}

@@ -53,7 +53,11 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 }
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	return db.AutoMigrate(allModels()...)
+}
+
+func allModels() []any {
+	return []any{
 		&domain.Account{},
 		&domain.User{},
 		&domain.AccountUser{},
@@ -161,5 +165,5 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.QAAppeal{},
 		&domain.QAAppealActivity{},
 		&domain.InboxMessageTemplate{},
-	)
+	}
 }

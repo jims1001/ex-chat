@@ -1,4 +1,11 @@
+.DEFAULT_GOAL := test
+
 .PHONY: test test-fast test-coverage test-race test-stress test-soak test-docker docker-up docker-down build run lint
+
+.PHONY: test-module-isolation
+# Staged MSG/CON store acceptance; a pass is not full ARCH-08 acceptance.
+test-module-isolation:
+	EX_CHAT_MODULE_ACCEPTANCE=1 go test ./test/... -run '^TestModuleIsolationAcceptance$$' -count=1 -v
 
 # Fast test isolating backend packages and avoiding frontend node_modules recursive scanning
 test:

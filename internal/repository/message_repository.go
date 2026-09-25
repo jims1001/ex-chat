@@ -4,32 +4,65 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
 
 type MessageRepository struct {
-	db *gorm.DB
+	db           *gorm.DB
+	conversation messageConversationPort
+	users        messageUserPort
+	contacts     messageContactPort
+	reconcileMu  sync.Mutex
+	reconcileID  uint
+}
+
+type messageUserPort interface {
+	FindByID(id uint) (*domain.User, error)
+}
+
+type messageContactPort interface {
+	FindByID(accountID, id uint) (*domain.Contact, error)
+}
+
+type messageConversationPort interface {
+	MessageTargetExists(accountID, conversationID uint) (bool, error)
+	ApplyMessageActivity(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, messageChangeID string) error
 }
 
 func NewMessageRepository(db *gorm.DB) *MessageRepository {
-	return &MessageRepository{db: db}
+	return NewMessageRepositoryWithConversationPort(db, NewConversationRepository(db))
+}
+
+// NewMessageRepositoryWithConversationPort allows CON and MSG to use separate
+// stores while preserving the owner boundary at the repository call site.
+func NewMessageRepositoryWithConversationPort(db *gorm.DB, conversation messageConversationPort) *MessageRepository {
+	return NewMessageRepositoryWithPorts(db, conversation, NewUserRepository(db), NewContactRepository(db))
+}
+
+// NewMessageRepositoryWithPorts routes sender enrichment to the IAM/CUS owners.
+func NewMessageRepositoryWithPorts(db *gorm.DB, conversation messageConversationPort, users messageUserPort, contacts messageContactPort) *MessageRepository {
+	return &MessageRepository{db: db, conversation: conversation, users: users, contacts: contacts}
 }
 
 func (r *MessageRepository) Create(msg *domain.Message) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var conversationCount int64
-		if err := tx.Model(&domain.Conversation{}).
-			Where("account_id = ? AND id = ?", msg.AccountID, msg.ConversationID).
-			Count(&conversationCount).Error; err != nil {
-			return err
-		}
-		if conversationCount != 1 {
-			return gorm.ErrRecordNotFound
-		}
+	if r.conversation == nil {
+		return gorm.ErrInvalidData
+	}
+	exists, err := r.conversation.MessageTargetExists(msg.AccountID, msg.ConversationID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	changeID := foundation.GenerateUUID()
+	err = r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(msg).Error; err != nil {
 			logger.WithComponent("message").Error("failed to persist message",
 				"account_id", msg.AccountID,
@@ -41,49 +74,114 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 			)
 			return err
 		}
-
-		updates := map[string]any{
-			"last_activity_at": time.Now().UTC(),
+		change := domain.LocalChangeJournal{
+			ChangeID: changeID, SourceModule: "MSG", AccountID: msg.AccountID,
+			ObjectType: "Message", ObjectID: msg.ID, ObjectVersionBefore: 0, ObjectVersionAfter: 1,
+			Action: "create", ChangedFields: "message", ActorType: msg.SenderType,
+			ActorID: msg.SenderID, SourceType: "msg.message.create.v1",
+			CommandID: changeID, CorrelationID: changeID, Status: "pending",
+			OccurredAt: msg.CreatedAt,
 		}
-		if msg.MessageType == domain.MessageTypeIncoming {
-			updates["unread_count"] = gorm.Expr("unread_count + 1")
-		}
-
-		if err := tx.Model(&domain.Conversation{}).
-			Where("account_id = ? AND id = ?", msg.AccountID, msg.ConversationID).
-			Updates(updates).Error; err != nil {
-			return err
-		}
-
-		logger.WithComponent("message").Info("message persisted",
-			"message_id", msg.ID,
-			"account_id", msg.AccountID,
-			"conversation_id", msg.ConversationID,
-			"sender_type", msg.SenderType,
-			"sender_id", msg.SenderID,
-			"message_type", msg.MessageType,
-			"content_type", msg.ContentType,
-			"private", msg.Private,
-		)
-
-		return nil
+		return NewJournalRepository(tx).RecordLocalChange(tx, &change)
 	})
+	if err != nil {
+		return err
+	}
+	logger.WithComponent("message").Info("message persisted",
+		"message_id", msg.ID,
+		"account_id", msg.AccountID,
+		"conversation_id", msg.ConversationID,
+		"sender_type", msg.SenderType,
+		"sender_id", msg.SenderID,
+		"message_type", msg.MessageType,
+		"content_type", msg.ContentType,
+		"private", msg.Private,
+	)
+	// The message and local journal are authoritative once committed. CON's
+	// activity update can be replayed safely if the other store is unavailable.
+	if err := r.applyMessageActivity(msg, changeID); err != nil {
+		logger.WithComponent("message").Warn("conversation activity deferred", "message_id", msg.ID, "account_id", msg.AccountID)
+	}
+	return nil
+}
+
+func (r *MessageRepository) applyMessageActivity(msg *domain.Message, changeID string) error {
+	if err := r.conversation.ApplyMessageActivity(msg.AccountID, msg.ConversationID, msg.SenderID, msg.MessageType == domain.MessageTypeIncoming, msg.CreatedAt, changeID); err != nil {
+		return err
+	}
+	return r.db.Model(&domain.LocalChangeJournal{}).Where("change_id = ? AND source_module = ?", changeID, "MSG").Update("status", "delivered").Error
+}
+
+// ReconcilePendingActivity resumes committed MSG changes after CON recovers.
+// The CON command is idempotent on the MSG change ID.
+func (r *MessageRepository) ReconcilePendingActivity(limit int) (int, error) {
+	if limit <= 0 || limit > 1000 {
+		return 0, gorm.ErrInvalidData
+	}
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+	var pending []domain.LocalChangeJournal
+	query := func(after uint) *gorm.DB {
+		q := r.db.Where("source_module = ? AND object_type = ? AND action = ? AND status = ?", "MSG", "Message", "create", "pending")
+		if after != 0 {
+			q = q.Where("id > ?", after)
+		}
+		return q.Order("id ASC").Limit(limit)
+	}
+	if err := query(r.reconcileID).Find(&pending).Error; err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 && r.reconcileID != 0 {
+		r.reconcileID = 0
+		if err := query(0).Find(&pending).Error; err != nil {
+			return 0, err
+		}
+	}
+	if len(pending) != 0 {
+		r.reconcileID = pending[len(pending)-1].ID
+	}
+	processed := 0
+	var firstError error
+	for _, change := range pending {
+		var msg domain.Message
+		if err := r.db.Where("account_id = ? AND id = ?", change.AccountID, change.ObjectID).First(&msg).Error; err != nil {
+			if firstError == nil {
+				firstError = err
+			}
+			continue
+		}
+		if err := r.applyMessageActivity(&msg, change.ChangeID); err != nil {
+			if firstError == nil {
+				firstError = err
+			}
+			continue
+		}
+		processed++
+	}
+	return processed, firstError
 }
 
 // CreateImported persists historical message state without applying live
 // delivery side effects such as unread increments or activity timestamps.
 func (r *MessageRepository) CreateImported(msg *domain.Message) error {
+	exists, err := r.conversation.MessageTargetExists(msg.AccountID, msg.ConversationID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		var conversationCount int64
-		if err := tx.Model(&domain.Conversation{}).
-			Where("account_id = ? AND id = ?", msg.AccountID, msg.ConversationID).
-			Count(&conversationCount).Error; err != nil {
+		if err := tx.Create(msg).Error; err != nil {
 			return err
 		}
-		if conversationCount != 1 {
-			return gorm.ErrRecordNotFound
+		change := domain.LocalChangeJournal{
+			ChangeID: foundation.GenerateUUID(), SourceModule: "MSG", AccountID: msg.AccountID,
+			ObjectType: "Message", ObjectID: msg.ID, ObjectVersionAfter: 1,
+			Action: "migrate", ChangedFields: "message", ActorType: "system",
+			SourceType: "migration", OccurredAt: msg.CreatedAt,
 		}
-		return tx.Create(msg).Error
+		return NewJournalRepository(tx).RecordLocalChange(tx, &change)
 	})
 }
 
@@ -104,6 +202,25 @@ func (r *MessageRepository) DeleteDraft(accountID, conversationID, userID uint) 
 	return r.db.Where("account_id = ? AND conversation_id = ? AND user_id = ?", accountID, conversationID, userID).Delete(&domain.DraftMessage{}).Error
 }
 
+// IncomingUnreadWindow is an MSG-owned query for CON's mark-unread command.
+func (r *MessageRepository) IncomingUnreadWindow(accountID, conversationID uint) (time.Time, int64, bool, error) {
+	var latest domain.Message
+	err := r.db.Where("account_id = ? AND conversation_id = ? AND message_type = ?", accountID, conversationID, domain.MessageTypeIncoming).
+		Order("created_at DESC, id DESC").First(&latest).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return time.Time{}, 0, false, nil
+	}
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	seenAt := latest.CreatedAt.Add(-1 * time.Second)
+	var count int64
+	err = r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND conversation_id = ? AND message_type = ? AND created_at > ?", accountID, conversationID, domain.MessageTypeIncoming, seenAt).
+		Count(&count).Error
+	return latest.CreatedAt, count, true, err
+}
+
 func (r *MessageRepository) ListByConversation(accountID, conversationID uint, includePrivate bool, page, pageSize int) ([]domain.Message, int64, error) {
 	var messages []domain.Message
 	var total int64
@@ -122,17 +239,19 @@ func (r *MessageRepository) ListByConversation(accountID, conversationID uint, i
 	offset := (page - 1) * pageSize
 	err := query.Offset(offset).Limit(pageSize).Order("id ASC").Find(&messages).Error
 
-	// Hydrate sender
+	// Hydrate sender through the owning repositories.
 	for i := range messages {
 		if messages[i].SenderType == domain.SenderTypeUser {
-			var user domain.User
-			if r.db.First(&user, messages[i].SenderID).Error == nil {
-				messages[i].Sender = user
+			if r.users != nil {
+				if user, err := r.users.FindByID(messages[i].SenderID); err == nil && user != nil {
+					messages[i].Sender = *user
+				}
 			}
 		} else if messages[i].SenderType == domain.SenderTypeContact {
-			var contact domain.Contact
-			if r.db.First(&contact, messages[i].SenderID).Error == nil {
-				messages[i].Sender = contact
+			if r.contacts != nil {
+				if contact, err := r.contacts.FindByID(accountID, messages[i].SenderID); err == nil && contact != nil {
+					messages[i].Sender = *contact
+				}
 			}
 		}
 	}

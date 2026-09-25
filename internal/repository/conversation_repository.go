@@ -14,11 +14,77 @@ import (
 )
 
 type ConversationRepository struct {
-	db *gorm.DB
+	db       *gorm.DB
+	messages conversationMessagePort
 }
 
 func NewConversationRepository(db *gorm.DB) *ConversationRepository {
-	return &ConversationRepository{db: db}
+	return NewConversationRepositoryWithMessagePort(db, NewMessageRepositoryWithConversationPort(db, nil))
+}
+
+type conversationMessagePort interface {
+	IncomingUnreadWindow(accountID, conversationID uint) (time.Time, int64, bool, error)
+}
+
+func NewConversationRepositoryWithMessagePort(db *gorm.DB, messages conversationMessagePort) *ConversationRepository {
+	return &ConversationRepository{db: db, messages: messages}
+}
+
+// MessageTargetExists is the CON-owned query used before a MSG command.
+// It deliberately reads no other module's table or preload association.
+func (r *ConversationRepository) MessageTargetExists(accountID, conversationID uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, conversationID).
+		Count(&count).Error
+	return count == 1, err
+}
+
+// ApplyMessageActivity accepts the stable MSG change ID as its idempotency key.
+// A duplicate delivery cannot increment unread_count twice. CON owns both its
+// state change and corresponding local change record.
+func (r *ConversationRepository) ApplyMessageActivity(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, messageChangeID string) error {
+	if accountID == 0 || conversationID == 0 || messageChangeID == "" {
+		return gorm.ErrInvalidData
+	}
+	activityChangeID := "con-activity-" + messageChangeID
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var existing int64
+		if err := tx.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", activityChangeID).Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != 0 {
+			return nil
+		}
+		var conversation domain.Conversation
+		if err := tx.Where("account_id = ? AND id = ?", accountID, conversationID).First(&conversation).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{"object_version": gorm.Expr("object_version + 1")}
+		if conversation.LastActivityAt.Before(occurredAt) {
+			updates["last_activity_at"] = occurredAt
+		}
+		if incoming {
+			updates["unread_count"] = gorm.Expr("unread_count + 1")
+		}
+		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Updates(updates).Error; err != nil {
+			return err
+		}
+		var version int
+		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Select("object_version").Scan(&version).Error; err != nil {
+			return err
+		}
+		change := domain.LocalChangeJournal{
+			ChangeID: activityChangeID, SourceModule: "CON", AccountID: accountID,
+			ObjectType: "Conversation", ObjectID: conversationID,
+			ObjectVersionBefore: version - 1, ObjectVersionAfter: version,
+			Action: "update", ChangedFields: "last_activity_at,unread_count",
+			ActorType: "system", ActorID: actorID, SourceType: "msg.message.created.v1",
+			CommandID: messageChangeID, CorrelationID: messageChangeID, CausationID: messageChangeID,
+			OccurredAt: occurredAt,
+		}
+		return NewJournalRepository(tx).RecordLocalChange(tx, &change)
+	})
 }
 
 func (r *ConversationRepository) Create(c *domain.Conversation) error {
@@ -282,18 +348,16 @@ func (r *ConversationRepository) UpdateLastSeen(accountID, id, userID uint, seen
 
 // MarkUnread rewinds the agent's read position before the latest incoming message
 func (r *ConversationRepository) MarkUnread(accountID, id uint) error {
-	var latestMsg domain.Message
-	err := r.db.Where("account_id = ? AND conversation_id = ? AND message_type = ?", accountID, id, domain.MessageTypeIncoming).
-		Order("created_at DESC, id DESC").
-		First(&latestMsg).Error
-
+	if r.messages == nil {
+		return gorm.ErrInvalidData
+	}
+	latestAt, unreadCount, found, err := r.messages.IncomingUnreadWindow(accountID, id)
+	if err != nil {
+		return err
+	}
 	updates := map[string]any{}
-	if err == nil {
-		seenAt := latestMsg.CreatedAt.Add(-1 * time.Second)
-		var unreadCount int64
-		_ = r.db.Model(&domain.Message{}).
-			Where("account_id = ? AND conversation_id = ? AND message_type = ? AND created_at > ?", accountID, id, domain.MessageTypeIncoming, seenAt).
-			Count(&unreadCount)
+	if found {
+		seenAt := latestAt.Add(-1 * time.Second)
 		if unreadCount < 1 {
 			unreadCount = 1
 		}

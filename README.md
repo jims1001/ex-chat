@@ -75,3 +75,47 @@ docker compose up -d --wait
 cd Chatwoot客服系统界面原型
 npm test
 ```
+
+### Module schema preparation (ARCH-08 work in progress)
+
+The runtime inventory is in `architecture/module_runtime.json`. It covers all
+26 logical modules and records their existing storage models, declared
+dependencies, default U1–U5 units, and stop/recovery policies. It is a draft;
+the current server still starts all modules in one process with one database.
+
+To prepare a **separate** module database, explicitly select its target:
+
+```bash
+go run ./cmd/module-migrate -module MSG -sqlite-path /path/to/isolated-message.db
+# For PostgreSQL, supply MODULE_DB_DSN securely in the environment:
+go run ./cmd/module-migrate -module MSG -postgres
+```
+
+This creates only that module's registered tables and local journal. Association
+migration is disabled so GORM cannot implicitly create other owners' tables.
+It does not migrate existing business records, implement public module calls,
+or start an independently working business service. The combined server's
+migration behavior is unchanged. API, MED and ORC currently have no registered
+persistent domain model in this migration list; their local journal alone does
+not establish runtime readiness.
+
+Run the independent-store acceptance gate separately:
+
+```bash
+make test-module-isolation
+```
+
+The staged gate now passes for message creation with separate CON/MSG databases:
+MSG records an atomic local change, invokes a CON-owned activity command, and
+replays a pending command after a simulated CON outage. It also checks CON
+mark-unread against a separate MSG store and MSG sender enrichment against
+separate IAM/CUS stores. These are in-process owner ports, not deployed public
+module APIs. A source inventory remains in
+`scripts/audit-module-storage.py`; other repository operations still access
+foreign-owned tables. Ordinary `make test`, `make test-docker`, and this staged
+gate do not establish ARCH-08 completion. Independent module startup, all
+business paths, failure handling, scaling, upgrade, backup, rollback, and
+topology acceptance still need implementation and verification.
+
+Current evidence and the next repair order are recorded in
+[ARCH-08 current evidence](Chatwoot完整文档/验收证据/E-ARCH-08-v3.md).

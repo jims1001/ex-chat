@@ -21,6 +21,7 @@ func setupOwnershipBoundaryDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.Conversation{},
 		&domain.Message{}, &domain.Label{}, &domain.ConversationLabel{},
+		&domain.LocalChangeJournal{},
 		&domain.Ticket{}, &domain.TicketActivity{}, &domain.TicketStatusHistory{},
 		&domain.Order{},
 	); err != nil {
