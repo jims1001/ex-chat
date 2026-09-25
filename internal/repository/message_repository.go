@@ -100,9 +100,28 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 	// The message and local journal are authoritative once committed. CON's
 	// activity update can be replayed safely if the other store is unavailable.
 	if err := r.applyMessageActivity(msg, changeID); err != nil {
+		if removed, checkErr := r.conversation.MessageTargetExists(msg.AccountID, msg.ConversationID); checkErr == nil && !removed {
+			if cancelErr := r.cancelOrphanedCreate(msg, changeID); cancelErr != nil {
+				return cancelErr
+			}
+			return gorm.ErrRecordNotFound
+		}
 		logger.WithComponent("message").Warn("conversation activity deferred", "message_id", msg.ID, "account_id", msg.AccountID)
 	}
 	return nil
+}
+
+// A CON deletion can race with MSG's initial existence check. If the owner
+// confirms the target is gone, cancel the locally committed create atomically.
+func (r *MessageRepository) cancelOrphanedCreate(msg *domain.Message, changeID string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("account_id = ? AND id = ?", msg.AccountID, msg.ID).Delete(&domain.Message{}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.LocalChangeJournal{}).
+			Where("account_id = ? AND change_id = ? AND status = ?", msg.AccountID, changeID, "pending").
+			Updates(map[string]any{"status": "superseded", "result": "rejected"}).Error
+	})
 }
 
 func (r *MessageRepository) applyMessageActivity(msg *domain.Message, changeID string) error {
@@ -151,6 +170,14 @@ func (r *MessageRepository) ReconcilePendingActivity(limit int) (int, error) {
 			continue
 		}
 		if err := r.applyMessageActivity(&msg, change.ChangeID); err != nil {
+			if exists, checkErr := r.conversation.MessageTargetExists(msg.AccountID, msg.ConversationID); checkErr == nil && !exists {
+				if cancelErr := r.cancelOrphanedCreate(&msg, change.ChangeID); cancelErr == nil {
+					processed++
+					continue
+				} else {
+					err = cancelErr
+				}
+			}
 			if firstError == nil {
 				firstError = err
 			}

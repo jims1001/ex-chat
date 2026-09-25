@@ -34,6 +34,12 @@ func (r *ContactRepository) FindByID(accountID, id uint) (*domain.Contact, error
 	return &contact, nil
 }
 
+func (r *ContactRepository) Exists(accountID, id uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
+	return count == 1, err
+}
+
 func (r *ContactRepository) VisitorTokenMatches(accountID, contactID, inboxID uint, token string) bool {
 	contact, err := r.FindByID(accountID, contactID)
 	if err == nil && contact != nil && contact.PubsubToken != "" && token == contact.PubsubToken {

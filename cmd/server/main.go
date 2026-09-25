@@ -37,6 +37,7 @@ func main() {
 	activityCtx, stopActivity := context.WithCancel(context.Background())
 	defer stopActivity()
 	go reconcileMessageActivity(activityCtx, repository.NewMessageRepository(db))
+	go reconcileConversationDeletes(activityCtx, repository.NewConversationRepository(db))
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -79,6 +80,22 @@ func reconcileMessageActivity(ctx context.Context, messages *repository.MessageR
 	for {
 		if _, err := messages.ReconcilePendingActivity(100); err != nil {
 			log.Warn("pending conversation activity reconciliation failed", "error", err.Error())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func reconcileConversationDeletes(ctx context.Context, conversations *repository.ConversationRepository) {
+	log := logger.WithComponent("conversation_delete_reconcile")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		if _, err := conversations.ReconcilePendingDeletes(100); err != nil {
+			log.Warn("pending conversation deletion reconciliation failed", "error", err.Error())
 		}
 		select {
 		case <-ctx.Done():

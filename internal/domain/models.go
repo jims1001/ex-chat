@@ -71,6 +71,7 @@ const (
 	ConversationStatusResolved = "resolved"
 	ConversationStatusPending  = "pending"
 	ConversationStatusSnoozed  = "snoozed"
+	ConversationStatusDeleting = "deleting"
 )
 
 // Conversation priority constants

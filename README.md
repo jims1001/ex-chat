@@ -112,10 +112,12 @@ mark-unread against a separate MSG store and MSG sender enrichment against
 separate IAM/CUS stores. These are in-process owner ports, not deployed public
 module APIs. A source inventory remains in
 `scripts/audit-module-storage.py`; other repository operations still access
-foreign-owned tables. Ordinary `make test`, `make test-docker`, and this staged
+foreign-owned tables. Conversation deletion now uses a durable CON deletion
+marker and retryable commands against each owner store; those commands remain
+in-process adapters. Ordinary `make test`, `make test-docker`, and this staged
 gate do not establish ARCH-08 completion. Independent module startup, all
 business paths, failure handling, scaling, upgrade, backup, rollback, and
 topology acceptance still need implementation and verification.
 
 Current evidence and the next repair order are recorded in
-[ARCH-08 current evidence](Chatwoot完整文档/验收证据/E-ARCH-08-v3.md).
+[ARCH-08 current evidence](Chatwoot完整文档/验收证据/E-ARCH-08-v4.md).

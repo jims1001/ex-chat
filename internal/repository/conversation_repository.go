@@ -4,9 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -16,10 +15,15 @@ import (
 type ConversationRepository struct {
 	db       *gorm.DB
 	messages conversationMessagePort
+	cleanup  conversationCleanupPort
+	inboxes  conversationReferencePort
+	contacts conversationReferencePort
+	deleteMu sync.Mutex
+	deleteID uint
 }
 
 func NewConversationRepository(db *gorm.DB) *ConversationRepository {
-	return NewConversationRepositoryWithMessagePort(db, NewMessageRepositoryWithConversationPort(db, nil))
+	return NewConversationRepositoryWithPorts(db, NewMessageRepositoryWithConversationPort(db, nil), NewCombinedConversationCleanup(db))
 }
 
 type conversationMessagePort interface {
@@ -27,7 +31,23 @@ type conversationMessagePort interface {
 }
 
 func NewConversationRepositoryWithMessagePort(db *gorm.DB, messages conversationMessagePort) *ConversationRepository {
-	return &ConversationRepository{db: db, messages: messages}
+	return NewConversationRepositoryWithPorts(db, messages, NewCombinedConversationCleanup(db))
+}
+
+type conversationCleanupPort interface {
+	CleanupConversation(accountID, conversationID uint) error
+}
+
+func NewConversationRepositoryWithPorts(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort) *ConversationRepository {
+	return NewConversationRepositoryWithReferences(db, messages, cleanup, NewInboxRepository(db), NewContactRepository(db))
+}
+
+type conversationReferencePort interface {
+	Exists(accountID, id uint) (bool, error)
+}
+
+func NewConversationRepositoryWithReferences(db *gorm.DB, messages conversationMessagePort, cleanup conversationCleanupPort, inboxes, contacts conversationReferencePort) *ConversationRepository {
+	return &ConversationRepository{db: db, messages: messages, cleanup: cleanup, inboxes: inboxes, contacts: contacts}
 }
 
 // MessageTargetExists is the CON-owned query used before a MSG command.
@@ -35,7 +55,7 @@ func NewConversationRepositoryWithMessagePort(db *gorm.DB, messages conversation
 func (r *ConversationRepository) MessageTargetExists(accountID, conversationID uint) (bool, error) {
 	var count int64
 	err := r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, conversationID).
+		Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).
 		Count(&count).Error
 	return count == 1, err
 }
@@ -57,7 +77,7 @@ func (r *ConversationRepository) ApplyMessageActivity(accountID, conversationID,
 			return nil
 		}
 		var conversation domain.Conversation
-		if err := tx.Where("account_id = ? AND id = ?", accountID, conversationID).First(&conversation).Error; err != nil {
+		if err := tx.Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).First(&conversation).Error; err != nil {
 			return err
 		}
 		updates := map[string]any{"object_version": gorm.Expr("object_version + 1")}
@@ -67,8 +87,12 @@ func (r *ConversationRepository) ApplyMessageActivity(accountID, conversationID,
 		if incoming {
 			updates["unread_count"] = gorm.Expr("unread_count + 1")
 		}
-		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Updates(updates).Error; err != nil {
-			return err
+		result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
 		}
 		var version int
 		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Select("object_version").Scan(&version).Error; err != nil {
@@ -106,17 +130,21 @@ func (r *ConversationRepository) Create(c *domain.Conversation) error {
 // CreateImported preserves a source display ID when one is supplied while
 // keeping display-ID allocation inside the CON owner boundary.
 func (r *ConversationRepository) CreateImported(c *domain.Conversation) error {
+	if r.inboxes == nil || r.contacts == nil {
+		return gorm.ErrInvalidData
+	}
+	inboxExists, err := r.inboxes.Exists(c.AccountID, c.InboxID)
+	if err != nil {
+		return err
+	}
+	contactExists, err := r.contacts.Exists(c.AccountID, c.ContactID)
+	if err != nil {
+		return err
+	}
+	if !inboxExists || !contactExists {
+		return gorm.ErrRecordNotFound
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		var inboxCount, contactCount int64
-		if err := tx.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", c.AccountID, c.InboxID).Count(&inboxCount).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", c.AccountID, c.ContactID).Count(&contactCount).Error; err != nil {
-			return err
-		}
-		if inboxCount != 1 || contactCount != 1 {
-			return gorm.ErrRecordNotFound
-		}
 		if c.DisplayID == 0 {
 			var maxDisplayID uint
 			row := tx.Model(&domain.Conversation{}).
@@ -416,108 +444,102 @@ func (r *ConversationRepository) DetachLabel(accountID, conversationID, labelID 
 	).Delete(&domain.ConversationLabel{}).Error
 }
 
-// Delete cascades deletion of conversation and associated records
+// Delete coordinates idempotent cleanup commands from each owning module. A
+// durable CON marker lets a later retry resume if one owner is unavailable.
 func (r *ConversationRepository) Delete(accountID, id uint) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		// 1. Find message IDs and remove physical attachment files from disk
-		var attachments []domain.Attachment
-		tx.Table("attachments").
-			Joins("INNER JOIN messages ON attachments.message_id = messages.id").
-			Where("messages.account_id = ? AND messages.conversation_id = ?", accountID, id).
-			Find(&attachments)
-		for _, att := range attachments {
-			if strings.HasPrefix(att.DataURL, "/uploads/") || strings.HasPrefix(att.DataURL, "uploads/") {
-				cleanPath := strings.TrimPrefix(att.DataURL, "/")
-				_ = os.Remove(cleanPath)
-			}
-		}
-
-		var msgIDs []uint
-		tx.Model(&domain.Message{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Pluck("id", &msgIDs)
-		if len(msgIDs) > 0 {
-			if err := tx.Where("account_id = ? AND message_id IN (?)", accountID, msgIDs).Delete(&domain.Attachment{}).Error; err != nil {
-				return err
-			}
-		}
-
-		// Also remove directory uploads/account_X/conv_Y if exists
-		convUploadDir := filepath.Join("uploads", fmt.Sprintf("account_%d", accountID), fmt.Sprintf("conv_%d", id))
-		_ = os.RemoveAll(convUploadDir)
-
-		// 2. Delete messages
-		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.Message{}).Error; err != nil {
+	if accountID == 0 || id == 0 || r.cleanup == nil {
+		return gorm.ErrInvalidData
+	}
+	changeID := fmt.Sprintf("con-delete-%d-%d", accountID, id)
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		var conversation domain.Conversation
+		if err := tx.Where("account_id = ? AND id = ?", accountID, id).First(&conversation).Error; err != nil {
 			return err
 		}
-
-		// 3. Delete conversation labels
+		var existing int64
+		if err := tx.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", changeID).Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != 0 {
+			return nil
+		}
+		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, id).
+			Updates(map[string]any{"status": domain.ConversationStatusDeleting, "object_version": gorm.Expr("object_version + 1")}).Error; err != nil {
+			return err
+		}
+		change := domain.LocalChangeJournal{
+			ChangeID: changeID, SourceModule: "CON", AccountID: accountID,
+			ObjectType: "Conversation", ObjectID: id,
+			ObjectVersionBefore: conversation.ObjectVersion, ObjectVersionAfter: conversation.ObjectVersion + 1,
+			Action: "delete", ChangedFields: "status", ActorType: "system",
+			SourceType: "con.conversation.delete.v1", CommandID: changeID,
+			CorrelationID: changeID, Status: "pending",
+		}
+		return NewJournalRepository(tx).RecordLocalChange(tx, &change)
+	}); err != nil {
+		return err
+	}
+	if err := r.cleanup.CleanupConversation(accountID, id); err != nil {
+		return err
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("conversation_id = ?", id).Delete(&domain.ConversationLabel{}).Error; err != nil {
 			return err
 		}
-
-		// 4. Delete conversation participants
 		if err := tx.Where("conversation_id = ?", id).Delete(&domain.ConversationParticipant{}).Error; err != nil {
 			return err
 		}
-
-		// 5. Delete draft messages
-		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.DraftMessage{}).Error; err != nil {
-			return err
+		result := tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Conversation{})
+		if result.Error != nil {
+			return result.Error
 		}
-
-		// 6. Delete applied SLAs & events
-		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.AppliedSLA{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.SLAEvent{}).Error; err != nil {
-			return err
-		}
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.SLABreachLog{}).Error
-
-		// 7. Delete CSAT survey responses
-		if err := tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.CSATSurvey{}).Error; err != nil {
-			return err
-		}
-
-		// 8. Delete / Unlink Calls and ICE Candidates
-		var callIDs []uint
-		tx.Model(&domain.Call{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Pluck("id", &callIDs)
-		if len(callIDs) > 0 {
-			_ = tx.Where("call_id IN (?)", callIDs).Delete(&domain.CallICECandidate{}).Error
-			_ = tx.Where("account_id = ? AND id IN (?)", accountID, callIDs).Delete(&domain.Call{}).Error
-		}
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.Conference{}).Error
-
-		// 9. Unlink Tickets (preserve ticket but nullify conversation reference to prevent dangling foreign key)
-		_ = tx.Model(&domain.Ticket{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Update("conversation_id", nil).Error
-
-		// 10. Delete Widget Events
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.WidgetEvent{}).Error
-
-		// 11. Delete Copilot Threads
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.CopilotThread{}).Error
-
-		// 12. Delete Email Logs
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.EmailLog{}).Error
-
-		// 13. Delete Campaign Deliveries
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.CampaignDelivery{}).Error
-
-		// 14. Delete Reporting Events
-		_ = tx.Where("account_id = ? AND conversation_id = ?", accountID, id).Delete(&domain.ReportingEvent{}).Error
-
-		// 15. Delete Order associations if any
-		_ = tx.Model(&domain.Order{}).Where("account_id = ? AND conversation_id = ?", accountID, id).Update("conversation_id", nil).Error
-
-		// 16. Delete conversation
-		res := tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Conversation{})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
+		if result.RowsAffected != 1 {
 			return gorm.ErrRecordNotFound
 		}
-		return nil
+		return tx.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", changeID).Update("status", "delivered").Error
 	})
+}
+
+// ReconcilePendingDeletes resumes owner cleanup after a process or dependency
+// failure. Idempotent owner commands make replay safe.
+func (r *ConversationRepository) ReconcilePendingDeletes(limit int) (int, error) {
+	if limit <= 0 || limit > 1000 {
+		return 0, gorm.ErrInvalidData
+	}
+	r.deleteMu.Lock()
+	defer r.deleteMu.Unlock()
+	var pending []domain.Conversation
+	query := func(after uint) *gorm.DB {
+		q := r.db.Where("status = ?", domain.ConversationStatusDeleting)
+		if after != 0 {
+			q = q.Where("id > ?", after)
+		}
+		return q.Order("id ASC").Limit(limit)
+	}
+	if err := query(r.deleteID).Find(&pending).Error; err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 && r.deleteID != 0 {
+		r.deleteID = 0
+		if err := query(0).Find(&pending).Error; err != nil {
+			return 0, err
+		}
+	}
+	if len(pending) != 0 {
+		r.deleteID = pending[len(pending)-1].ID
+	}
+	completed := 0
+	var firstError error
+	for _, conversation := range pending {
+		if err := r.Delete(conversation.AccountID, conversation.ID); err != nil {
+			if firstError == nil {
+				firstError = err
+			}
+			continue
+		}
+		completed++
+	}
+	return completed, firstError
 }
 
 // GetMeta calculates conversation count summaries across dimensions

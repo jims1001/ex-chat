@@ -43,6 +43,12 @@ func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 	return &inbox, nil
 }
 
+func (r *InboxRepository) Exists(accountID, id uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
+	return count == 1, err
+}
+
 // FindByGlobalID is reserved for infrastructure authorization paths that must
 // first resolve an inbox before the caller's account scope can be checked.
 func (r *InboxRepository) FindByGlobalID(id uint) (*domain.Inbox, error) {

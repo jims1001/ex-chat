@@ -20,6 +20,28 @@ type recoverableConversationPort struct {
 	unavailable bool
 }
 
+type unavailableCleanupPort struct{}
+
+func (unavailableCleanupPort) CleanupConversation(uint, uint) error {
+	return errors.New("owner unavailable")
+}
+
+type deletingDuringCreatePort struct {
+	owner *repository.ConversationRepository
+	db    *gorm.DB
+}
+
+func (p *deletingDuringCreatePort) MessageTargetExists(accountID, conversationID uint) (bool, error) {
+	return p.owner.MessageTargetExists(accountID, conversationID)
+}
+
+func (p *deletingDuringCreatePort) ApplyMessageActivity(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, changeID string) error {
+	if err := p.db.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Update("status", domain.ConversationStatusDeleting).Error; err != nil {
+		return err
+	}
+	return p.owner.ApplyMessageActivity(accountID, conversationID, actorID, incoming, occurredAt, changeID)
+}
+
 func (p *recoverableConversationPort) MessageTargetExists(accountID, conversationID uint) (bool, error) {
 	return p.owner.MessageTargetExists(accountID, conversationID)
 }
@@ -238,8 +260,8 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 		port.unavailable = false
-		if count, err := messages.ReconcilePendingActivity(1); count != 0 || err == nil {
-			t.Fatalf("expected stale first change to report error: count=%d err=%v", count, err)
+		if count, err := messages.ReconcilePendingActivity(1); count != 1 || err != nil {
+			t.Fatalf("expected stale first change to be cancelled: count=%d err=%v", count, err)
 		}
 		if count, err := messages.ReconcilePendingActivity(1); count != 1 || err != nil {
 			t.Fatalf("expected next bounded batch to progress: count=%d err=%v", count, err)
@@ -247,6 +269,226 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 		var updated domain.Conversation
 		if err := conDB.First(&updated, second.ID).Error; err != nil || updated.UnreadCount != 1 {
 			t.Fatalf("healthy conversation unread=%d err=%v", updated.UnreadCount, err)
+		}
+	})
+	t.Run("CON_delete_cleans_each_owner_store", func(t *testing.T) {
+		conDB := openStore("CON")
+		stores := map[string]*gorm.DB{}
+		for _, owner := range []string{"MSG", "RPT", "QLT", "RTM", "TKT", "API", "AIC", "OPS", "BIL"} {
+			stores[owner] = openStore(owner)
+		}
+		cleanup, err := repository.NewConversationCleanup(stores)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		msg := domain.Message{AccountID: 1, ConversationID: conversation.ID, Content: "remove"}
+		if err := stores["MSG"].Create(&msg).Error; err != nil {
+			t.Fatal(err)
+		}
+		otherTenantMessage := domain.Message{AccountID: 2, ConversationID: conversation.ID, Content: "must remain"}
+		if err := stores["MSG"].Create(&otherTenantMessage).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range []struct {
+			owner string
+			model any
+		}{
+			{"MSG", &domain.Attachment{AccountID: 1, MessageID: msg.ID, DataURL: "https://example.test/file"}},
+			{"MSG", &domain.DraftMessage{AccountID: 1, ConversationID: conversation.ID}},
+			{"QLT", &domain.CSATSurvey{AccountID: 1, ConversationID: conversation.ID}},
+			{"API", &domain.WidgetEvent{AccountID: 1, ConversationID: &conversation.ID}},
+			{"AIC", &domain.CopilotThread{AccountID: 1, ConversationID: &conversation.ID}},
+			{"MSG", &domain.EmailLog{AccountID: 1, ConversationID: &conversation.ID}},
+			{"TKT", &domain.Ticket{AccountID: 1, ConversationID: &conversation.ID, TicketNumber: "isolation-1", Title: "keep ticket"}},
+			{"RTM", &domain.Call{AccountID: 1, ConversationID: &conversation.ID}},
+			{"BIL", &domain.Order{AccountID: 1, ConversationID: &conversation.ID}},
+		} {
+			if err := stores[item.owner].Create(item.model).Error; err != nil {
+				t.Fatalf("seed %s: %v", item.owner, err)
+			}
+		}
+		owner := repository.NewConversationRepositoryWithPorts(conDB, repository.NewMessageRepositoryWithConversationPort(stores["MSG"], nil), cleanup)
+		if err := owner.Delete(1, conversation.ID); err != nil {
+			t.Fatal(err)
+		}
+		var count int64
+		if err := conDB.Model(&domain.Conversation{}).Where("id = ?", conversation.ID).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("CON retained deleted conversation: count=%d err=%v", count, err)
+		}
+		for _, check := range []struct {
+			owner string
+			model any
+		}{
+			{"MSG", &domain.Attachment{}}, {"MSG", &domain.DraftMessage{}},
+			{"QLT", &domain.CSATSurvey{}}, {"API", &domain.WidgetEvent{}}, {"AIC", &domain.CopilotThread{}},
+			{"MSG", &domain.EmailLog{}}, {"RTM", &domain.Call{}},
+		} {
+			if err := stores[check.owner].Model(check.model).Where("account_id = ?", 1).Count(&count).Error; err != nil || count != 0 {
+				t.Fatalf("%s %T retained: count=%d err=%v", check.owner, check.model, count, err)
+			}
+		}
+		if err := stores["MSG"].Model(&domain.Message{}).Where("account_id = ? AND id = ?", 1, msg.ID).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("target message remained: count=%d err=%v", count, err)
+		}
+		if err := stores["MSG"].Model(&domain.Message{}).Where("account_id = ? AND id = ?", 2, otherTenantMessage.ID).Count(&count).Error; err != nil || count != 1 {
+			t.Fatalf("other tenant message was removed: count=%d err=%v", count, err)
+		}
+		var ticket domain.Ticket
+		if err := stores["TKT"].First(&ticket).Error; err != nil || ticket.ConversationID != nil {
+			t.Fatalf("ticket link not cleared: link=%v err=%v", ticket.ConversationID, err)
+		}
+		if conDB.Migrator().HasTable(&domain.Message{}) {
+			t.Fatal("CON created a foreign owner table")
+		}
+	})
+	t.Run("CON_delete_resumes_after_owner_failure", func(t *testing.T) {
+		conDB := openStore("CON")
+		stores := map[string]*gorm.DB{}
+		for _, owner := range []string{"MSG", "RPT", "QLT", "RTM", "TKT", "API", "AIC", "OPS", "BIL"} {
+			stores[owner] = openStore(owner)
+		}
+		cleanup, err := repository.NewConversationCleanup(stores)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		broken := repository.NewConversationRepositoryWithPorts(conDB, nil, unavailableCleanupPort{})
+		if err := broken.Delete(1, conversation.ID); err == nil {
+			t.Fatal("owner outage was hidden")
+		}
+		var pending domain.Conversation
+		if err := conDB.First(&pending, conversation.ID).Error; err != nil || pending.Status != domain.ConversationStatusDeleting {
+			t.Fatalf("missing durable deletion marker: status=%s err=%v", pending.Status, err)
+		}
+		if exists, err := broken.MessageTargetExists(1, conversation.ID); err != nil || exists {
+			t.Fatalf("deleting conversation still accepts messages: exists=%v err=%v", exists, err)
+		}
+		recovered := repository.NewConversationRepositoryWithPorts(conDB, nil, cleanup)
+		if count, err := recovered.ReconcilePendingDeletes(10); err != nil || count != 1 {
+			t.Fatalf("delete recovery count=%d err=%v", count, err)
+		}
+		var changes int64
+		if err := conDB.Model(&domain.LocalChangeJournal{}).Where("change_id = ? AND status = ?", "con-delete-1-1", "delivered").Count(&changes).Error; err != nil || changes != 1 {
+			t.Fatalf("deletion journal=%d err=%v", changes, err)
+		}
+	})
+	t.Run("CON_delete_replays_after_partial_owner_cleanup", func(t *testing.T) {
+		conDB := openStore("CON")
+		stores := map[string]*gorm.DB{}
+		for _, owner := range []string{"MSG", "RPT", "QLT", "RTM", "TKT", "API", "AIC", "OPS", "BIL"} {
+			stores[owner] = openStore(owner)
+		}
+		cleanup, err := repository.NewConversationCleanup(stores)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		msg := domain.Message{AccountID: 1, ConversationID: conversation.ID, Content: "partial"}
+		if err := stores["MSG"].Create(&msg).Error; err != nil {
+			t.Fatal(err)
+		}
+		reportConn, err := stores["RPT"].DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reportConn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewConversationRepositoryWithPorts(conDB, nil, cleanup)
+		if err := owner.Delete(1, conversation.ID); err == nil {
+			t.Fatal("closed RPT store did not interrupt deletion")
+		}
+		var count int64
+		if err := stores["MSG"].Model(&domain.Message{}).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("MSG owner cleanup did not commit before RPT failure: count=%d err=%v", count, err)
+		}
+		stores["RPT"] = openStore("RPT")
+		recoveredCleanup, err := repository.NewConversationCleanup(stores)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovered := repository.NewConversationRepositoryWithPorts(conDB, nil, recoveredCleanup)
+		if count, err := recovered.ReconcilePendingDeletes(10); err != nil || count != 1 {
+			t.Fatalf("partial cleanup recovery count=%d err=%v", count, err)
+		}
+	})
+	t.Run("CON_import_checks_CHN_CUS_owner_references", func(t *testing.T) {
+		conDB, chnDB, cusDB := openStore("CON"), openStore("CHN"), openStore("CUS")
+		inbox := domain.Inbox{AccountID: 1, Name: "Imported inbox"}
+		contact := domain.Contact{AccountID: 1, Name: "Imported contact"}
+		if err := chnDB.Create(&inbox).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := cusDB.Create(&contact).Error; err != nil {
+			t.Fatal(err)
+		}
+		owner := repository.NewConversationRepositoryWithReferences(conDB, nil, nil, repository.NewInboxRepository(chnDB), repository.NewContactRepository(cusDB))
+		imported := domain.Conversation{AccountID: 1, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 37}
+		if err := owner.CreateImported(&imported); err != nil {
+			t.Fatal(err)
+		}
+		if imported.DisplayID != 37 {
+			t.Fatalf("historical display ID was changed: %d", imported.DisplayID)
+		}
+		foreign := domain.Conversation{AccountID: 2, InboxID: inbox.ID, ContactID: contact.ID}
+		if err := owner.CreateImported(&foreign); err == nil {
+			t.Fatal("cross-tenant imported references were accepted")
+		}
+		if conDB.Migrator().HasTable(&domain.Inbox{}) || conDB.Migrator().HasTable(&domain.Contact{}) {
+			t.Fatal("CON created foreign owner reference tables")
+		}
+	})
+	t.Run("MSG_create_cancels_if_CON_deletes_between_check_and_commit", func(t *testing.T) {
+		conDB, msgDB := openStore("CON"), openStore("MSG")
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		port := &deletingDuringCreatePort{owner: repository.NewConversationRepository(conDB), db: conDB}
+		msg := domain.Message{AccountID: 1, ConversationID: conversation.ID, MessageType: domain.MessageTypeIncoming, Content: "raced"}
+		if err := repository.NewMessageRepositoryWithConversationPort(msgDB, port).Create(&msg); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("expected deleted CON target to reject message: %v", err)
+		}
+		var count int64
+		if err := msgDB.Model(&domain.Message{}).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("orphaned message remained: count=%d err=%v", count, err)
+		}
+		if err := msgDB.Model(&domain.LocalChangeJournal{}).Where("status = ? AND result = ?", "superseded", "rejected").Count(&count).Error; err != nil || count != 1 {
+			t.Fatalf("missing cancelled fact: count=%d err=%v", count, err)
+		}
+	})
+	t.Run("MSG_replay_cancels_if_CON_was_deleted", func(t *testing.T) {
+		conDB, msgDB := openStore("CON"), openStore("MSG")
+		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1}
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		port := &recoverableConversationPort{owner: repository.NewConversationRepository(conDB), unavailable: true}
+		repo := repository.NewMessageRepositoryWithConversationPort(msgDB, port)
+		msg := domain.Message{AccountID: 1, ConversationID: conversation.ID, MessageType: domain.MessageTypeIncoming, Content: "pending orphan"}
+		if err := repo.Create(&msg); err != nil {
+			t.Fatal(err)
+		}
+		if err := conDB.Model(&domain.Conversation{}).Where("id = ?", conversation.ID).Update("status", domain.ConversationStatusDeleting).Error; err != nil {
+			t.Fatal(err)
+		}
+		port.unavailable = false
+		if count, err := repo.ReconcilePendingActivity(10); err != nil || count != 1 {
+			t.Fatalf("orphan replay count=%d err=%v", count, err)
+		}
+		var count int64
+		if err := msgDB.Model(&domain.Message{}).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("pending orphan remained: count=%d err=%v", count, err)
 		}
 	})
 }
