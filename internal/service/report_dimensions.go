@@ -7,8 +7,7 @@ import (
 )
 
 func (s *ReportService) loadInboxesMap(accountID uint) map[uint]*domain.Inbox {
-	var inboxes []domain.Inbox
-	_ = s.db.Where("account_id = ?", accountID).Find(&inboxes)
+	inboxes, _ := s.inboxes.ListByAccount(accountID)
 	m := make(map[uint]*domain.Inbox, len(inboxes))
 	for i := range inboxes {
 		m[inboxes[i].ID] = &inboxes[i]
@@ -19,11 +18,8 @@ func (s *ReportService) loadInboxesMap(accountID uint) map[uint]*domain.Inbox {
 func (s *ReportService) loadAccountConversations(accountID uint, filter ReportFilter) ([]domain.Conversation, map[uint]*domain.Inbox, error) {
 	inboxesMap := s.loadInboxesMap(accountID)
 
-	q := s.db.Where("account_id = ?", accountID)
-	q = applyBaseTimeFilter(q, filter, "created_at")
-
-	var convs []domain.Conversation
-	if err := q.Order("id DESC").Find(&convs).Error; err != nil {
+	convs, err := s.conversations.ListForReport(accountID, filter.Since, filter.Until)
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -33,17 +29,19 @@ func (s *ReportService) loadAccountConversations(accountID uint, filter ReportFi
 	return convs, inboxesMap, nil
 }
 
-func (s *ReportService) loadMessagesForConversations(convIDs []uint) map[uint][]domain.Message {
+func (s *ReportService) loadMessagesForConversations(accountID uint, convIDs []uint, filter ReportFilter) (map[uint][]domain.Message, error) {
 	res := make(map[uint][]domain.Message)
 	if len(convIDs) == 0 {
-		return res
+		return res, nil
 	}
-	var msgs []domain.Message
-	_ = s.db.Where("conversation_id IN (?)", convIDs).Order("id ASC").Find(&msgs)
+	msgs, err := s.messages.ListForReport(accountID, convIDs, filter.Since, filter.Until)
+	if err != nil {
+		return nil, err
+	}
 	for _, m := range msgs {
 		res[m.ConversationID] = append(res[m.ConversationID], m)
 	}
-	return res
+	return res, nil
 }
 
 // GetAgentMetrics compiles agent productivity and performance metrics
@@ -62,7 +60,10 @@ func (s *ReportService) GetAgentMetrics(accountID uint, filters ...ReportFilter)
 	for _, c := range convs {
 		convIDs = append(convIDs, c.ID)
 	}
-	messagesMap := s.loadMessagesForConversations(convIDs)
+	messagesMap, err := s.loadMessagesForConversations(accountID, convIDs, filter)
+	if err != nil {
+		return nil, err
+	}
 
 	var members []domain.AccountUser
 	if err := s.db.Preload("User").Where("account_id = ?", accountID).Find(&members).Error; err != nil {
@@ -120,9 +121,13 @@ func (s *ReportService) GetAgentMetrics(accountID uint, filters ...ReportFilter)
 		}
 
 		var totalSent int64
-		_ = s.db.Model(&domain.Message{}).
-			Where("account_id = ? AND sender_type = ? AND sender_id = ?", accountID, domain.SenderTypeUser, m.UserID).
-			Count(&totalSent)
+		for _, messages := range messagesMap {
+			for _, message := range messages {
+				if message.SenderType == domain.SenderTypeUser && message.SenderID == m.UserID {
+					totalSent++
+				}
+			}
+		}
 
 		metrics = append(metrics, AgentMetric{
 			UserID:                m.UserID,
@@ -156,7 +161,10 @@ func (s *ReportService) GetTeamMetrics(accountID uint, filters ...ReportFilter) 
 	for _, c := range convs {
 		convIDs = append(convIDs, c.ID)
 	}
-	messagesMap := s.loadMessagesForConversations(convIDs)
+	messagesMap, err := s.loadMessagesForConversations(accountID, convIDs, filter)
+	if err != nil {
+		return nil, err
+	}
 
 	var teams []domain.Team
 	if err := s.db.Where("account_id = ?", accountID).Find(&teams).Error; err != nil {
@@ -245,10 +253,13 @@ func (s *ReportService) GetInboxMetrics(accountID uint, filters ...ReportFilter)
 	for _, c := range convs {
 		convIDs = append(convIDs, c.ID)
 	}
-	messagesMap := s.loadMessagesForConversations(convIDs)
+	messagesMap, err := s.loadMessagesForConversations(accountID, convIDs, filter)
+	if err != nil {
+		return nil, err
+	}
 
-	var inboxes []domain.Inbox
-	if err := s.db.Where("account_id = ?", accountID).Find(&inboxes).Error; err != nil {
+	inboxes, err := s.inboxes.ListByAccount(accountID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -338,21 +349,27 @@ func (s *ReportService) GetLabelMetrics(accountID uint, filters ...ReportFilter)
 		convIDs = append(convIDs, c.ID)
 		convMap[c.ID] = c
 	}
-	messagesMap := s.loadMessagesForConversations(convIDs)
-
-	var labels []domain.Label
-	if err := s.db.Where("account_id = ?", accountID).Find(&labels).Error; err != nil {
+	messagesMap, err := s.loadMessagesForConversations(accountID, convIDs, filter)
+	if err != nil {
 		return nil, err
+	}
+
+	labels, err := s.labels.List(accountID)
+	if err != nil {
+		return nil, err
+	}
+	relations, err := s.conversations.ListLabelRelationsForReport(accountID, convIDs)
+	if err != nil {
+		return nil, err
+	}
+	byLabel := make(map[uint][]uint)
+	for _, relation := range relations {
+		byLabel[relation.LabelID] = append(byLabel[relation.LabelID], relation.ConversationID)
 	}
 
 	metrics := make([]LabelMetric, 0, len(labels))
 	for _, l := range labels {
-		var matchedConvIDs []uint
-		if len(convIDs) > 0 {
-			_ = s.db.Model(&domain.ConversationLabel{}).
-				Where("label_id = ? AND conversation_id IN (?)", l.ID, convIDs).
-				Pluck("conversation_id", &matchedConvIDs)
-		}
+		matchedConvIDs := byLabel[l.ID]
 
 		var count, resolvedCount int64
 		var frtSum, rtSum float64
@@ -417,7 +434,10 @@ func (s *ReportService) GetFirstResponseDistribution(accountID uint, filters ...
 	for _, c := range convs {
 		convIDs = append(convIDs, c.ID)
 	}
-	messagesMap := s.loadMessagesForConversations(convIDs)
+	messagesMap, err := s.loadMessagesForConversations(accountID, convIDs, filter)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &FirstResponseDistributionReport{
 		Channels: make([]ChannelFRTDistribution, 0),

@@ -7,159 +7,163 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
-	"gorm.io/gorm"
 )
 
 // GetLiveConversationMetrics returns real-time open/unattended/unassigned/pending conversation metrics
 func (s *ReportService) GetLiveConversationMetrics(accountID uint, teamID *uint) (*LiveMetricsReport, error) {
-	q := s.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID)
-	if teamID != nil && *teamID > 0 {
-		q = q.Where("team_id = ?", *teamID)
+	conversations, err := s.conversations.ListForReport(accountID, nil, nil)
+	if err != nil {
+		return nil, err
 	}
-
-	var openCount, unassignedCount, unattendedCount, pendingCount int64
-
-	// 1. Open count
-	_ = q.Session(&gorm.Session{}).Where("status = ?", domain.ConversationStatusOpen).Count(&openCount).Error
-
-	// 2. Unassigned (in open conversations)
-	_ = q.Session(&gorm.Session{}).Where("status = ? AND (assignee_id IS NULL OR assignee_id = 0)", domain.ConversationStatusOpen).Count(&unassignedCount).Error
-
-	// 3. Unattended: open conversations where unread_count > 0 or agent_last_seen_at is nil
-	_ = q.Session(&gorm.Session{}).Where("status = ? AND (unread_count > 0 OR agent_last_seen_at IS NULL)", domain.ConversationStatusOpen).Count(&unattendedCount).Error
-
-	// 4. Pending count
-	_ = q.Session(&gorm.Session{}).Where("status = ?", domain.ConversationStatusPending).Count(&pendingCount).Error
-
-	return &LiveMetricsReport{
-		Open:       openCount,
-		Unattended: unattendedCount,
-		Unassigned: unassignedCount,
-		Pending:    pendingCount,
-	}, nil
+	result := &LiveMetricsReport{}
+	for _, conversation := range conversations {
+		if teamID != nil && *teamID > 0 && (conversation.TeamID == nil || *conversation.TeamID != *teamID) {
+			continue
+		}
+		switch conversation.Status {
+		case domain.ConversationStatusOpen:
+			result.Open++
+			if conversation.AssigneeID == nil || *conversation.AssigneeID == 0 {
+				result.Unassigned++
+			}
+			if conversation.UnreadCount > 0 || conversation.AgentLastSeenAt == nil {
+				result.Unattended++
+			}
+		case domain.ConversationStatusPending:
+			result.Pending++
+		}
+	}
+	return result, nil
 }
 
 // GetGroupedLiveMetrics returns real-time metrics grouped by team_id, assignee_id, or inbox_id
 func (s *ReportService) GetGroupedLiveMetrics(accountID uint, groupBy string, teamID *uint) ([]GroupedLiveMetricItem, error) {
-	col := "assignee_id"
-	switch strings.ToLower(strings.TrimSpace(groupBy)) {
-	case "team_id", "team":
-		col = "team_id"
-	case "inbox_id", "inbox":
-		col = "inbox_id"
-	default:
-		col = "assignee_id"
-	}
-
-	type groupRow struct {
-		GroupID    uint  `gorm:"column:group_id"`
-		Open       int64 `gorm:"column:open_cnt"`
-		Unassigned int64 `gorm:"column:unassigned_cnt"`
-		Unattended int64 `gorm:"column:unattended_cnt"`
-	}
-
-	var rows []groupRow
-	query := s.db.Model(&domain.Conversation{}).
-		Select(fmt.Sprintf("%s AS group_id, "+
-			"COUNT(id) AS open_cnt, "+
-			"SUM(CASE WHEN assignee_id IS NULL OR assignee_id = 0 THEN 1 ELSE 0 END) AS unassigned_cnt, "+
-			"SUM(CASE WHEN unread_count > 0 OR agent_last_seen_at IS NULL THEN 1 ELSE 0 END) AS unattended_cnt", col)).
-		Where("account_id = ? AND status = ? AND "+col+" IS NOT NULL AND "+col+" > 0", accountID, domain.ConversationStatusOpen)
-
-	if teamID != nil && *teamID > 0 {
-		query = query.Where("team_id = ?", *teamID)
-	}
-
-	if err := query.Group(col).Scan(&rows).Error; err != nil {
+	conversations, err := s.conversations.ListForReport(accountID, nil, nil)
+	if err != nil {
 		return nil, err
 	}
-
-	res := make([]GroupedLiveMetricItem, 0, len(rows))
-	for _, r := range rows {
-		item := GroupedLiveMetricItem{
-			Open:       r.Open,
-			Unattended: r.Unattended,
-			Unassigned: r.Unassigned,
+	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
+	groups := map[uint]*GroupedLiveMetricItem{}
+	for _, conversation := range conversations {
+		if conversation.Status != domain.ConversationStatusOpen || (teamID != nil && *teamID > 0 && (conversation.TeamID == nil || *conversation.TeamID != *teamID)) {
+			continue
 		}
-		gID := r.GroupID
-		switch col {
-		case "team_id":
-			item.TeamID = &gID
-		case "inbox_id":
-			item.InboxID = &gID
+		var id uint
+		switch groupBy {
+		case "team_id", "team":
+			if conversation.TeamID != nil {
+				id = *conversation.TeamID
+			}
+		case "inbox_id", "inbox":
+			id = conversation.InboxID
 		default:
-			item.AssigneeID = &gID
+			if conversation.AssigneeID != nil {
+				id = *conversation.AssigneeID
+			}
 		}
-		res = append(res, item)
+		if id == 0 {
+			continue
+		}
+		item := groups[id]
+		if item == nil {
+			item = &GroupedLiveMetricItem{}
+			groups[id] = item
+		}
+		item.Open++
+		if conversation.AssigneeID == nil || *conversation.AssigneeID == 0 {
+			item.Unassigned++
+		}
+		if conversation.UnreadCount > 0 || conversation.AgentLastSeenAt == nil {
+			item.Unattended++
+		}
 	}
-	return res, nil
+	ids := make([]int, 0, len(groups))
+	for id := range groups {
+		ids = append(ids, int(id))
+	}
+	sort.Ints(ids)
+	result := make([]GroupedLiveMetricItem, 0, len(ids))
+	for _, raw := range ids {
+		id := uint(raw)
+		item := groups[id]
+		switch groupBy {
+		case "team_id", "team":
+			item.TeamID = &id
+		case "inbox_id", "inbox":
+			item.InboxID = &id
+		default:
+			item.AssigneeID = &id
+		}
+		result = append(result, *item)
+	}
+	return result, nil
 }
 
 // GetBotMetrics aggregates performance statistics for automated agent bots
 func (s *ReportService) GetBotMetrics(accountID uint, filter ReportFilter) (*BotMetricsReport, error) {
-	// Find bot-enabled inboxes
+	inboxes, err := s.inboxes.ListByAccount(accountID)
+	if err != nil {
+		return nil, err
+	}
+	inboxIDs := make([]uint, 0, len(inboxes))
+	for _, inbox := range inboxes {
+		inboxIDs = append(inboxIDs, inbox.ID)
+	}
 	var botInboxes []uint
-	_ = s.db.Model(&domain.AgentBotInbox{}).
-		Joins("JOIN inboxes ON inboxes.id = agent_bot_inboxes.inbox_id").
-		Where("inboxes.account_id = ?", accountID).
-		Pluck("agent_bot_inboxes.inbox_id", &botInboxes).Error
-
-	var totalConvs int64
-	cq := s.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID)
-	cq = applyBaseTimeFilter(cq, filter, "created_at")
-	if len(botInboxes) > 0 {
-		cq = cq.Where("inbox_id IN (?)", botInboxes)
+	if len(inboxIDs) > 0 {
+		_ = s.db.Model(&domain.AgentBotInbox{}).Where("inbox_id IN ?", inboxIDs).Pluck("inbox_id", &botInboxes).Error
 	}
-	_ = cq.Count(&totalConvs).Error
-
-	// Bot messages: outgoing messages where sender_type = 'AgentBot' or in bot inboxes
+	allowed := uintSet(botInboxes)
+	conversations, err := s.conversations.ListForReport(accountID, filter.Since, filter.Until)
+	if err != nil {
+		return nil, err
+	}
+	selected := []domain.Conversation{}
+	ids := []uint{}
+	for _, c := range conversations {
+		if len(allowed) == 0 || allowed[c.InboxID] {
+			selected = append(selected, c)
+			ids = append(ids, c.ID)
+		}
+	}
+	messages, err := s.messages.ListForReport(accountID, ids, filter.Since, filter.Until)
+	if err != nil {
+		return nil, err
+	}
 	var msgCount int64
-	mq := s.db.Model(&domain.Message{}).
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("messages.account_id = ? AND messages.message_type = ?", accountID, domain.MessageTypeOutgoing)
-	mq = applyBaseTimeFilter(mq, filter, "messages.created_at")
-	if len(botInboxes) > 0 {
-		mq = mq.Where("conversations.inbox_id IN (?)", botInboxes)
+	for _, m := range messages {
+		if m.MessageType == domain.MessageTypeOutgoing {
+			msgCount++
+		}
 	}
-	_ = mq.Count(&msgCount).Error
-
-	// Bot resolutions: reporting_events with name = 'conversation_bot_resolved' or status = 'resolved' with no human assignee
-	var botResolutions int64
+	var botResolutions, botHandoffs int64
 	eq := s.db.Model(&domain.ReportingEvent{}).Where("account_id = ? AND name = ?", accountID, "conversation_bot_resolved")
 	eq = applyBaseTimeFilter(eq, filter, "created_at")
 	_ = eq.Count(&botResolutions).Error
-
-	if botResolutions == 0 && totalConvs > 0 {
-		// Fallback to conversations resolved without human assignee
-		s.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND status = ? AND (assignee_id IS NULL OR assignee_id = 0)", accountID, domain.ConversationStatusResolved).
-			Count(&botResolutions)
-	}
-
-	// Bot handoffs: reporting_events with name = 'conversation_bot_handoff'
-	var botHandoffs int64
 	hq := s.db.Model(&domain.ReportingEvent{}).Where("account_id = ? AND name = ?", accountID, "conversation_bot_handoff")
 	hq = applyBaseTimeFilter(hq, filter, "created_at")
 	_ = hq.Count(&botHandoffs).Error
-
-	if botHandoffs == 0 && totalConvs > 0 {
-		s.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND assignee_id IS NOT NULL AND assignee_id > 0", accountID).
-			Count(&botHandoffs)
+	if botResolutions == 0 {
+		for _, c := range selected {
+			if c.Status == domain.ConversationStatusResolved && (c.AssigneeID == nil || *c.AssigneeID == 0) {
+				botResolutions++
+			}
+		}
 	}
-
-	var resRate, handoffRate float64
-	if totalConvs > 0 {
-		resRate = RoundToOneDecimal(float64(botResolutions) / float64(totalConvs) * 100.0)
-		handoffRate = RoundToOneDecimal(float64(botHandoffs) / float64(totalConvs) * 100.0)
+	if botHandoffs == 0 {
+		for _, c := range selected {
+			if c.AssigneeID != nil && *c.AssigneeID > 0 {
+				botHandoffs++
+			}
+		}
 	}
-
-	return &BotMetricsReport{
-		ConversationCount: totalConvs,
-		MessageCount:      msgCount,
-		ResolutionRate:    resRate,
-		HandoffRate:       handoffRate,
-	}, nil
+	total := int64(len(selected))
+	var rr, hr float64
+	if total > 0 {
+		rr = RoundToOneDecimal(float64(botResolutions) / float64(total) * 100)
+		hr = RoundToOneDecimal(float64(botHandoffs) / float64(total) * 100)
+	}
+	return &BotMetricsReport{ConversationCount: total, MessageCount: msgCount, ResolutionRate: rr, HandoffRate: hr}, nil
 }
 
 // GetBotSummary provides current vs previous period comparison for bot resolutions and handoffs
@@ -208,232 +212,238 @@ func (s *ReportService) GetBotSummary(accountID uint, filter ReportFilter) (*Bot
 
 // GetChannelSummary breaks down conversation states across channel types
 func (s *ReportService) GetChannelSummary(accountID uint, filter ReportFilter) (map[string]ChannelSummaryStats, error) {
-	type row struct {
-		ChannelType string `gorm:"column:channel_type"`
-		Status      string `gorm:"column:status"`
-		Count       int64  `gorm:"column:cnt"`
-	}
-
-	var rows []row
-	q := s.db.Model(&domain.Conversation{}).
-		Select("inboxes.channel_type, conversations.status, COUNT(conversations.id) as cnt").
-		Joins("JOIN inboxes ON inboxes.id = conversations.inbox_id").
-		Where("conversations.account_id = ?", accountID)
-	q = applyBaseTimeFilter(q, filter, "conversations.created_at")
-
-	if err := q.Group("inboxes.channel_type, conversations.status").Scan(&rows).Error; err != nil {
+	conversations, err := s.conversations.ListForReport(accountID, filter.Since, filter.Until)
+	if err != nil {
 		return nil, err
 	}
-
-	res := make(map[string]ChannelSummaryStats)
-	for _, r := range rows {
-		ch := r.ChannelType
-		if ch == "" {
-			ch = "Channel::WebWidget"
+	inboxes, err := s.inboxes.ListByAccount(accountID)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[uint]string{}
+	result := map[string]ChannelSummaryStats{}
+	for _, inbox := range inboxes {
+		channel := inbox.ChannelType
+		if channel == "" {
+			channel = "Channel::WebWidget"
 		}
-		stats := res[ch]
-		switch r.Status {
+		byID[inbox.ID] = channel
+		result[channel] = result[channel]
+	}
+	for _, conversation := range conversations {
+		channel := byID[conversation.InboxID]
+		if channel == "" {
+			channel = "Channel::WebWidget"
+		}
+		stats := result[channel]
+		switch conversation.Status {
 		case domain.ConversationStatusOpen:
-			stats.Open += r.Count
+			stats.Open++
 		case domain.ConversationStatusResolved:
-			stats.Resolved += r.Count
+			stats.Resolved++
 		case domain.ConversationStatusPending:
-			stats.Pending += r.Count
+			stats.Pending++
 		case domain.ConversationStatusSnoozed:
-			stats.Snoozed += r.Count
+			stats.Snoozed++
 		}
-		stats.Total += r.Count
-		res[ch] = stats
+		stats.Total++
+		result[channel] = stats
 	}
-
-	// Ensure standard channels are present if empty
-	if len(res) == 0 {
-		var inboxes []domain.Inbox
-		_ = s.db.Where("account_id = ?", accountID).Find(&inboxes).Error
-		for _, inb := range inboxes {
-			ch := inb.ChannelType
-			if ch == "" {
-				ch = "Channel::WebWidget"
-			}
-			if _, ok := res[ch]; !ok {
-				res[ch] = ChannelSummaryStats{}
-			}
-		}
-	}
-	return res, nil
+	return result, nil
 }
 
 // GetInboxLabelMatrix builds a cross-matrix between inboxes and labels
 func (s *ReportService) GetInboxLabelMatrix(accountID uint, filter ReportFilter, inboxIDs, labelIDs []uint) (*InboxLabelMatrixReport, error) {
-	var inboxes []domain.Inbox
-	iq := s.db.Where("account_id = ?", accountID)
-	if len(inboxIDs) > 0 {
-		iq = iq.Where("id IN (?)", inboxIDs)
-	}
-	if err := iq.Order("name ASC").Find(&inboxes).Error; err != nil {
+	inboxes, err := s.inboxes.ListByAccount(accountID)
+	if err != nil {
 		return nil, err
 	}
-
-	var labels []domain.Label
-	lq := s.db.Where("account_id = ?", accountID)
-	if len(labelIDs) > 0 {
-		lq = lq.Where("id IN (?)", labelIDs)
-	}
-	if err := lq.Order("title ASC").Find(&labels).Error; err != nil {
+	labels, err := s.labels.List(accountID)
+	if err != nil {
 		return nil, err
 	}
-
-	type countRow struct {
-		InboxID uint  `gorm:"column:inbox_id"`
-		LabelID uint  `gorm:"column:label_id"`
-		Count   int64 `gorm:"column:cnt"`
+	allowInbox := uintSet(inboxIDs)
+	allowLabel := uintSet(labelIDs)
+	inboxes = filterInboxes(inboxes, allowInbox)
+	labels = filterLabels(labels, allowLabel)
+	sort.Slice(inboxes, func(i, j int) bool { return inboxes[i].Name < inboxes[j].Name })
+	sort.Slice(labels, func(i, j int) bool { return labels[i].Title < labels[j].Title })
+	conversations, err := s.conversations.ListForReport(accountID, filter.Since, filter.Until)
+	if err != nil {
+		return nil, err
 	}
-
-	var counts []countRow
-	cq := s.db.Model(&domain.ConversationLabel{}).
-		Select("conversations.inbox_id, conversation_labels.label_id, COUNT(DISTINCT conversations.id) AS cnt").
-		Joins("JOIN conversations ON conversations.id = conversation_labels.conversation_id").
-		Where("conversations.account_id = ?", accountID)
-	cq = applyBaseTimeFilter(cq, filter, "conversations.created_at")
-
-	if len(inboxIDs) > 0 {
-		cq = cq.Where("conversations.inbox_id IN (?)", inboxIDs)
-	}
-	if len(labelIDs) > 0 {
-		cq = cq.Where("conversation_labels.label_id IN (?)", labelIDs)
-	}
-
-	_ = cq.Group("conversations.inbox_id, conversation_labels.label_id").Scan(&counts).Error
-
-	lookup := make(map[string]int64)
-	for _, c := range counts {
-		lookup[fmt.Sprintf("%d_%d", c.InboxID, c.LabelID)] = c.Count
-	}
-
-	inboxEntities := make([]MatrixEntity, len(inboxes))
-	for i, inb := range inboxes {
-		inboxEntities[i] = MatrixEntity{ID: inb.ID, Name: inb.Name}
-	}
-
-	labelEntities := make([]MatrixEntity, len(labels))
-	for j, lbl := range labels {
-		labelEntities[j] = MatrixEntity{ID: lbl.ID, Title: lbl.Title}
-	}
-
-	matrix := make([][]int64, len(inboxes))
-	for i, inb := range inboxes {
-		matrix[i] = make([]int64, len(labels))
-		for j, lbl := range labels {
-			matrix[i][j] = lookup[fmt.Sprintf("%d_%d", inb.ID, lbl.ID)]
+	convInbox := map[uint]uint{}
+	ids := []uint{}
+	for _, c := range conversations {
+		if len(allowInbox) == 0 || allowInbox[c.InboxID] {
+			convInbox[c.ID] = c.InboxID
+			ids = append(ids, c.ID)
 		}
 	}
+	relations, err := s.conversations.ListLabelRelationsForReport(accountID, ids)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int64{}
+	for _, relation := range relations {
+		if len(allowLabel) > 0 && !allowLabel[relation.LabelID] {
+			continue
+		}
+		counts[fmt.Sprintf("%d_%d", convInbox[relation.ConversationID], relation.LabelID)]++
+	}
+	ie := make([]MatrixEntity, len(inboxes))
+	matrix := make([][]int64, len(inboxes))
+	le := make([]MatrixEntity, len(labels))
+	for j, l := range labels {
+		le[j] = MatrixEntity{ID: l.ID, Title: l.Title}
+	}
+	for i, in := range inboxes {
+		ie[i] = MatrixEntity{ID: in.ID, Name: in.Name}
+		matrix[i] = make([]int64, len(labels))
+		for j, l := range labels {
+			matrix[i][j] = counts[fmt.Sprintf("%d_%d", in.ID, l.ID)]
+		}
+	}
+	return &InboxLabelMatrixReport{Inboxes: ie, Labels: le, Matrix: matrix}, nil
+}
 
-	return &InboxLabelMatrixReport{
-		Inboxes: inboxEntities,
-		Labels:  labelEntities,
-		Matrix:  matrix,
-	}, nil
+func uintSet(ids []uint) map[uint]bool {
+	result := map[uint]bool{}
+	for _, id := range ids {
+		result[id] = true
+	}
+	return result
+}
+func filterInboxes(items []domain.Inbox, allowed map[uint]bool) []domain.Inbox {
+	if len(allowed) == 0 {
+		return items
+	}
+	out := []domain.Inbox{}
+	for _, item := range items {
+		if allowed[item.ID] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+func filterLabels(items []domain.Label, allowed map[uint]bool) []domain.Label {
+	if len(allowed) == 0 {
+		return items
+	}
+	out := []domain.Label{}
+	for _, item := range items {
+		if allowed[item.ID] {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // GetOutgoingMessagesCount aggregates outgoing messages by agent, team, inbox, or label
 func (s *ReportService) GetOutgoingMessagesCount(accountID uint, filter ReportFilter, groupBy string) ([]OutgoingMessagesCountItem, error) {
+	conversations, err := s.conversations.ListForReport(accountID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	convByID := map[uint]domain.Conversation{}
+	ids := []uint{}
+	for _, c := range conversations {
+		convByID[c.ID] = c
+		ids = append(ids, c.ID)
+	}
+	messages, err := s.messages.ListForReport(accountID, ids, filter.Since, filter.Until)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[uint]int64{}
+	names := map[uint]string{}
 	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
-	var items []OutgoingMessagesCountItem
-
 	switch groupBy {
 	case "agent", "user":
-		type row struct {
-			ID    uint   `gorm:"column:id"`
-			Name  string `gorm:"column:name"`
-			Count int64  `gorm:"column:cnt"`
+		var users []domain.User
+		_ = s.db.Where("id IN ?", senderIDs(messages)).Find(&users).Error
+		for _, u := range users {
+			names[u.ID] = u.Name
 		}
-		var rows []row
-		q := s.db.Model(&domain.Message{}).
-			Select("users.id, users.name, COUNT(messages.id) as cnt").
-			Joins("JOIN users ON users.id = messages.sender_id").
-			Where("messages.account_id = ? AND messages.sender_type = ? AND messages.message_type = ?", accountID, domain.SenderTypeUser, domain.MessageTypeOutgoing)
-		q = applyBaseTimeFilter(q, filter, "messages.created_at")
-		_ = q.Group("users.id, users.name").Scan(&rows).Error
-
-		for _, r := range rows {
-			items = append(items, OutgoingMessagesCountItem{
-				ID:                    r.ID,
-				Name:                  r.Name,
-				OutgoingMessagesCount: r.Count,
-			})
+		for _, m := range messages {
+			if m.MessageType == domain.MessageTypeOutgoing && m.SenderType == domain.SenderTypeUser {
+				counts[m.SenderID]++
+			}
 		}
-
 	case "team":
-		type row struct {
-			ID    uint   `gorm:"column:id"`
-			Name  string `gorm:"column:name"`
-			Count int64  `gorm:"column:cnt"`
+		var teams []domain.Team
+		_ = s.db.Where("account_id = ?", accountID).Find(&teams).Error
+		for _, t := range teams {
+			names[t.ID] = t.Name
 		}
-		var rows []row
-		q := s.db.Model(&domain.Message{}).
-			Select("teams.id, teams.name, COUNT(messages.id) as cnt").
-			Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-			Joins("JOIN teams ON teams.id = conversations.team_id").
-			Where("messages.account_id = ? AND messages.message_type = ?", accountID, domain.MessageTypeOutgoing)
-		q = applyBaseTimeFilter(q, filter, "messages.created_at")
-		_ = q.Group("teams.id, teams.name").Scan(&rows).Error
-
-		for _, r := range rows {
-			items = append(items, OutgoingMessagesCountItem{
-				ID:                    r.ID,
-				Name:                  r.Name,
-				OutgoingMessagesCount: r.Count,
-			})
+		for _, m := range messages {
+			if m.MessageType == domain.MessageTypeOutgoing {
+				if c, ok := convByID[m.ConversationID]; ok && c.TeamID != nil {
+					counts[*c.TeamID]++
+				}
+			}
 		}
-
 	case "inbox":
-		type row struct {
-			ID    uint   `gorm:"column:id"`
-			Name  string `gorm:"column:name"`
-			Count int64  `gorm:"column:cnt"`
+		inboxes, e := s.inboxes.ListByAccount(accountID)
+		if e != nil {
+			return nil, e
 		}
-		var rows []row
-		q := s.db.Model(&domain.Message{}).
-			Select("inboxes.id, inboxes.name, COUNT(messages.id) as cnt").
-			Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-			Joins("JOIN inboxes ON inboxes.id = conversations.inbox_id").
-			Where("messages.account_id = ? AND messages.message_type = ?", accountID, domain.MessageTypeOutgoing)
-		q = applyBaseTimeFilter(q, filter, "messages.created_at")
-		_ = q.Group("inboxes.id, inboxes.name").Scan(&rows).Error
-
-		for _, r := range rows {
-			items = append(items, OutgoingMessagesCountItem{
-				ID:                    r.ID,
-				Name:                  r.Name,
-				OutgoingMessagesCount: r.Count,
-			})
+		for _, i := range inboxes {
+			names[i.ID] = i.Name
 		}
-
+		for _, m := range messages {
+			if m.MessageType == domain.MessageTypeOutgoing {
+				if c, ok := convByID[m.ConversationID]; ok {
+					counts[c.InboxID]++
+				}
+			}
+		}
 	case "label":
-		type row struct {
-			ID    uint   `gorm:"column:id"`
-			Name  string `gorm:"column:name"`
-			Count int64  `gorm:"column:cnt"`
+		labels, e := s.labels.List(accountID)
+		if e != nil {
+			return nil, e
 		}
-		var rows []row
-		q := s.db.Model(&domain.Message{}).
-			Select("labels.id, labels.title AS name, COUNT(messages.id) as cnt").
-			Joins("JOIN conversation_labels ON conversation_labels.conversation_id = messages.conversation_id").
-			Joins("JOIN labels ON labels.id = conversation_labels.label_id").
-			Where("messages.account_id = ? AND messages.message_type = ?", accountID, domain.MessageTypeOutgoing)
-		q = applyBaseTimeFilter(q, filter, "messages.created_at")
-		_ = q.Group("labels.id, labels.title").Scan(&rows).Error
-
-		for _, r := range rows {
-			items = append(items, OutgoingMessagesCountItem{
-				ID:                    r.ID,
-				Name:                  r.Name,
-				OutgoingMessagesCount: r.Count,
-			})
+		for _, l := range labels {
+			names[l.ID] = l.Title
+		}
+		relations, e := s.conversations.ListLabelRelationsForReport(accountID, ids)
+		if e != nil {
+			return nil, e
+		}
+		byConv := map[uint][]uint{}
+		for _, r := range relations {
+			byConv[r.ConversationID] = append(byConv[r.ConversationID], r.LabelID)
+		}
+		for _, m := range messages {
+			if m.MessageType == domain.MessageTypeOutgoing {
+				for _, id := range byConv[m.ConversationID] {
+					counts[id]++
+				}
+			}
 		}
 	}
-
+	keys := make([]int, 0, len(counts))
+	for id := range counts {
+		keys = append(keys, int(id))
+	}
+	sort.Ints(keys)
+	items := make([]OutgoingMessagesCountItem, 0, len(keys))
+	for _, raw := range keys {
+		id := uint(raw)
+		items = append(items, OutgoingMessagesCountItem{ID: id, Name: names[id], OutgoingMessagesCount: counts[id]})
+	}
 	return items, nil
+}
+func senderIDs(messages []domain.Message) []uint {
+	seen := map[uint]bool{}
+	ids := []uint{}
+	for _, m := range messages {
+		if m.SenderType == domain.SenderTypeUser && !seen[m.SenderID] {
+			seen[m.SenderID] = true
+			ids = append(ids, m.SenderID)
+		}
+	}
+	return ids
 }
 
 // GetConversationTraffic produces an hourly heatmap matrix across dates
@@ -449,10 +459,10 @@ func (s *ReportService) GetConversationTraffic(accountID uint, filter ReportFilt
 		endDate = *filter.Until
 	}
 
-	var convs []domain.Conversation
-	_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at <= ?", accountID, startDate, endDate).
-		Order("created_at ASC").
-		Find(&convs).Error
+	convs, err := s.conversations.ListForReport(accountID, &startDate, &endDate)
+	if err != nil {
+		return nil, err
+	}
 
 	// Generate list of unique dates
 	dateMap := make(map[string]bool)
@@ -511,24 +521,32 @@ func (s *ReportService) GetYearInReview(accountID, userID uint, year int) (*Year
 	start := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(year, 12, 31, 23, 59, 59, 999999999, time.UTC)
 
+	conversations, err := s.conversations.ListForReport(accountID, &start, &end)
+	if err != nil {
+		return nil, err
+	}
 	var totalConvs int64
-	_ = s.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND assignee_id = ? AND created_at >= ? AND created_at <= ?", accountID, userID, start, end).
-		Count(&totalConvs).Error
-
-	// Busiest day
+	dayCounts := map[string]int64{}
+	for _, conversation := range conversations {
+		if conversation.AssigneeID != nil && *conversation.AssigneeID == userID {
+			totalConvs++
+			dayCounts[conversation.CreatedAt.UTC().Format("2006-01-02")]++
+		}
+	}
 	type dayCount struct {
-		Day   string `gorm:"column:day"`
-		Count int64  `gorm:"column:cnt"`
+		Day   string
+		Count int64
 	}
 	var days []dayCount
-	_ = s.db.Model(&domain.Conversation{}).
-		Select("strftime('%Y-%m-%d', created_at) AS day, COUNT(id) AS cnt").
-		Where("account_id = ? AND assignee_id = ? AND created_at >= ? AND created_at <= ?", accountID, userID, start, end).
-		Group("strftime('%Y-%m-%d', created_at)").
-		Order("cnt DESC").
-		Limit(1).
-		Scan(&days).Error
+	for day, count := range dayCounts {
+		days = append(days, dayCount{Day: day, Count: count})
+	}
+	sort.Slice(days, func(i, j int) bool {
+		if days[i].Count == days[j].Count {
+			return days[i].Day < days[j].Day
+		}
+		return days[i].Count > days[j].Count
+	})
 
 	var busiestDay *YearInReviewBusiestDay
 	if len(days) > 0 && days[0].Count > 0 {
@@ -571,101 +589,89 @@ func (s *ReportService) GetDrilldown(accountID uint, metric, dimensionType strin
 	if perPage > 100 {
 		perPage = 100
 	}
-
-	bucketStart := time.Date(bucketTime.Year(), bucketTime.Month(), bucketTime.Day(), 0, 0, 0, 0, time.UTC)
-	bucketEnd := bucketStart.Add(24 * time.Hour).Add(-time.Nanosecond)
-
-	var totalCount int64
-	var convCount int64
-	var records []any
-
-	isMessageMetric := metric == "incoming_messages_count" || metric == "outgoing_messages_count"
-
-	if isMessageMetric {
-		msgType := domain.MessageTypeIncoming
-		if metric == "outgoing_messages_count" {
-			msgType = domain.MessageTypeOutgoing
+	start := time.Date(bucketTime.Year(), bucketTime.Month(), bucketTime.Day(), 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour).Add(-time.Nanosecond)
+	conversations, err := s.conversations.ListForReport(accountID, &start, &end)
+	if err != nil {
+		return nil, err
+	}
+	matches := func(c domain.Conversation) bool {
+		if dimensionID == nil || *dimensionID == 0 {
+			return true
 		}
-
-		mq := s.db.Model(&domain.Message{}).
-			Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-			Where("messages.account_id = ? AND messages.message_type = ? AND messages.created_at >= ? AND messages.created_at <= ?",
-				accountID, msgType, bucketStart, bucketEnd)
-
-		if dimensionID != nil && *dimensionID > 0 {
-			switch strings.ToLower(dimensionType) {
-			case "inbox":
-				mq = mq.Where("conversations.inbox_id = ?", *dimensionID)
-			case "agent":
-				mq = mq.Where("conversations.assignee_id = ?", *dimensionID)
-			case "team":
-				mq = mq.Where("conversations.team_id = ?", *dimensionID)
+		switch strings.ToLower(dimensionType) {
+		case "inbox":
+			return c.InboxID == *dimensionID
+		case "agent":
+			return c.AssigneeID != nil && *c.AssigneeID == *dimensionID
+		case "team":
+			return c.TeamID != nil && *c.TeamID == *dimensionID
+		}
+		return true
+	}
+	selected := []domain.Conversation{}
+	ids := []uint{}
+	for _, c := range conversations {
+		if matches(c) && (metric != "resolutions_count" || c.Status == domain.ConversationStatusResolved) {
+			selected = append(selected, c)
+			ids = append(ids, c.ID)
+		}
+	}
+	isMessage := metric == "incoming_messages_count" || metric == "outgoing_messages_count"
+	records := []any{}
+	var total, convCount int64
+	if isMessage {
+		messages, e := s.messages.ListForReport(accountID, ids, &start, &end)
+		if e != nil {
+			return nil, e
+		}
+		wanted := domain.MessageTypeIncoming
+		if metric == "outgoing_messages_count" {
+			wanted = domain.MessageTypeOutgoing
+		}
+		filtered := []domain.Message{}
+		seen := map[uint]bool{}
+		for _, m := range messages {
+			if m.MessageType == wanted {
+				filtered = append(filtered, m)
+				seen[m.ConversationID] = true
 			}
 		}
-
-		_ = mq.Count(&totalCount).Error
-		_ = mq.Select("COUNT(DISTINCT messages.conversation_id)").Scan(&convCount).Error
-
-		var msgs []domain.Message
-		offset := (page - 1) * perPage
-		_ = mq.Preload("Conversation").Order("messages.created_at DESC").Offset(offset).Limit(perPage).Find(&msgs).Error
-
-		for _, m := range msgs {
+		sort.Slice(filtered, func(i, j int) bool { return filtered[i].CreatedAt.After(filtered[j].CreatedAt) })
+		total = int64(len(filtered))
+		convCount = int64(len(seen))
+		from := (page - 1) * perPage
+		to := from + perPage
+		if from > len(filtered) {
+			from = len(filtered)
+		}
+		if to > len(filtered) {
+			to = len(filtered)
+		}
+		for _, m := range filtered[from:to] {
 			records = append(records, m)
 		}
 	} else {
-		// Conversation metric
-		cq := s.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND created_at >= ? AND created_at <= ?", accountID, bucketStart, bucketEnd)
-
-		if metric == "resolutions_count" {
-			cq = cq.Where("status = ?", domain.ConversationStatusResolved)
+		sort.Slice(selected, func(i, j int) bool { return selected[i].CreatedAt.After(selected[j].CreatedAt) })
+		total = int64(len(selected))
+		convCount = total
+		from := (page - 1) * perPage
+		to := from + perPage
+		if from > len(selected) {
+			from = len(selected)
 		}
-
-		if dimensionID != nil && *dimensionID > 0 {
-			switch strings.ToLower(dimensionType) {
-			case "inbox":
-				cq = cq.Where("inbox_id = ?", *dimensionID)
-			case "agent":
-				cq = cq.Where("assignee_id = ?", *dimensionID)
-			case "team":
-				cq = cq.Where("team_id = ?", *dimensionID)
-			}
+		if to > len(selected) {
+			to = len(selected)
 		}
-
-		_ = cq.Count(&totalCount).Error
-		convCount = totalCount
-
-		var convs []domain.Conversation
-		offset := (page - 1) * perPage
-		_ = cq.Preload("Assignee").Preload("Contact").Preload("Inbox").
-			Order("created_at DESC").Offset(offset).Limit(perPage).Find(&convs).Error
-
-		for _, c := range convs {
+		for _, c := range selected[from:to] {
 			records = append(records, c)
 		}
 	}
-
 	recordType := "Conversation"
-	if isMessageMetric {
+	if isMessage {
 		recordType = "Message"
 	}
-
-	return &DrilldownReport{
-		Meta: DrilldownMeta{
-			Metric:     metric,
-			RecordType: recordType,
-			Bucket: DrilldownMetaBucket{
-				Since: bucketStart.Unix(),
-				Until: bucketEnd.Unix(),
-			},
-			CurrentPage:       page,
-			PerPage:           perPage,
-			TotalCount:        totalCount,
-			ConversationCount: convCount,
-		},
-		Payload: records,
-	}, nil
+	return &DrilldownReport{Meta: DrilldownMeta{Metric: metric, RecordType: recordType, Bucket: DrilldownMetaBucket{Since: start.Unix(), Until: end.Unix()}, CurrentPage: page, PerPage: perPage, TotalCount: total, ConversationCount: convCount}, Payload: records}, nil
 }
 
 // GetConversationsReport returns live conversation metrics by account or per-agent breakdown
@@ -704,12 +710,18 @@ func (s *ReportService) GetConversationsReport(accountID uint, reportType string
 		}
 		// Custom open/unattended for this specific agent
 		var agentOpen, agentUnattended int64
-		_ = s.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND assignee_id = ? AND status = ?", accountID, uID, domain.ConversationStatusOpen).
-			Count(&agentOpen).Error
-		_ = s.db.Model(&domain.Conversation{}).
-			Where("account_id = ? AND assignee_id = ? AND status = ? AND (unread_count > 0 OR agent_last_seen_at IS NULL)", accountID, uID, domain.ConversationStatusOpen).
-			Count(&agentUnattended).Error
+		conversations, loadErr := s.conversations.ListForReport(accountID, nil, nil)
+		if loadErr != nil {
+			continue
+		}
+		for _, conversation := range conversations {
+			if conversation.AssigneeID != nil && *conversation.AssigneeID == uID && conversation.Status == domain.ConversationStatusOpen {
+				agentOpen++
+				if conversation.UnreadCount > 0 || conversation.AgentLastSeenAt == nil {
+					agentUnattended++
+				}
+			}
+		}
 
 		m.Open = agentOpen
 		m.Unattended = agentUnattended

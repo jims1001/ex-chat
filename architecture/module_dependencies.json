@@ -23,7 +23,7 @@
     {"name":"OPS","layer":4,"order":18,"synchronous":["TEN","ENT","CHN","CUS","CON","MSG","RTE","QLT","EXT","NTF","AUT"],"events":["MSG"],"shared":[],"startup":[]},
     {"name":"AIC","layer":4,"order":19,"synchronous":["TEN","ENT","BIL","KB","CHN","CON","MSG","TKT","EXT","OPS"],"events":[],"shared":["KB"],"startup":[]},
     {"name":"MIG","layer":4,"order":20,"synchronous":["TEN","CHN","CUS","MED","CON","MSG"],"events":[],"shared":[],"startup":[]},
-    {"name":"RPT","layer":4,"order":21,"synchronous":["TEN","CHN","CON","MSG"],"events":["CHN","CUS","CON","MSG","RTE","TKT","QLT","AUT","OPS","AIC","EXT","BIL","MIG"],"shared":[],"startup":[]},
+    {"name":"RPT","layer":4,"order":21,"synchronous":["TEN","CHN","CUS","CON","MSG"],"events":["CHN","CUS","CON","MSG","RTE","TKT","QLT","AUT","OPS","AIC","EXT","BIL","MIG"],"shared":[],"startup":[]},
     {"name":"SRH","layer":4,"order":22,"synchronous":["TEN"],"events":["CUS","CON","MSG","TKT","KB"],"shared":[],"startup":[]},
     {"name":"ORC","layer":5,"order":23,"synchronous":["IAM","TEN","ENT","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH"],"events":[],"shared":[],"startup":[]},
     {"name":"API","layer":5,"order":24,"synchronous":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC"],"events":[],"shared":[],"startup":["IAM","TEN"]},

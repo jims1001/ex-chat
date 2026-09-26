@@ -4,15 +4,42 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"gorm.io/gorm"
 )
 
 type ReportService struct {
-	db *gorm.DB
+	db            *gorm.DB
+	conversations reportConversationPort
+	inboxes       reportInboxPort
+	messages      reportMessagePort
+	contacts      reportContactPort
+	labels        reportLabelPort
+}
+
+type reportConversationPort interface {
+	ListForReport(uint, *time.Time, *time.Time) ([]domain.Conversation, error)
+	ListLabelRelationsForReport(uint, []uint) ([]domain.ConversationLabel, error)
+}
+type reportInboxPort interface {
+	ListByAccount(uint) ([]domain.Inbox, error)
+}
+type reportMessagePort interface {
+	ListForReport(uint, []uint, *time.Time, *time.Time) ([]domain.Message, error)
+}
+type reportContactPort interface {
+	CountForReport(uint, *time.Time, *time.Time) (int64, error)
+}
+type reportLabelPort interface {
+	List(uint) ([]domain.Label, error)
 }
 
 func NewReportService(db *gorm.DB) *ReportService {
-	return &ReportService{db: db}
+	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db)}
+}
+
+func (s *ReportService) SetOwnerRepositories(conversations reportConversationPort, inboxes reportInboxPort, messages reportMessagePort, contacts reportContactPort, labels reportLabelPort) {
+	s.conversations, s.inboxes, s.messages, s.contacts, s.labels = conversations, inboxes, messages, contacts, labels
 }
 
 func applyBaseTimeFilter(tx *gorm.DB, filter ReportFilter, timeCol string) *gorm.DB {
@@ -41,7 +68,10 @@ func (s *ReportService) GetAccountSummary(accountID uint, filters ...ReportFilte
 	for _, c := range convs {
 		convIDs = append(convIDs, c.ID)
 	}
-	messagesMap := s.loadMessagesForConversations(convIDs)
+	messagesMap, err := s.loadMessagesForConversations(accountID, convIDs, filter)
+	if err != nil {
+		return nil, err
+	}
 
 	var openCount, resolvedCount, pendingCount int64
 	var frtSum, rtSum, artSum float64
@@ -104,23 +134,25 @@ func (s *ReportService) GetAccountSummary(accountID uint, filters ...ReportFilte
 			}
 		}
 	} else if !filter.BusinessHours {
-		qMsg := s.db.Model(&domain.Message{}).Where("account_id = ?", accountID)
-		qMsg = applyBaseTimeFilter(qMsg, filter, "created_at")
-		qMsg.Count(&totalMessages)
-
-		qIn := s.db.Model(&domain.Message{}).Where("account_id = ? AND message_type = ?", accountID, domain.MessageTypeIncoming)
-		qIn = applyBaseTimeFilter(qIn, filter, "created_at")
-		qIn.Count(&incomingMessages)
-
-		qOut := s.db.Model(&domain.Message{}).Where("account_id = ? AND message_type = ?", accountID, domain.MessageTypeOutgoing)
-		qOut = applyBaseTimeFilter(qOut, filter, "created_at")
-		qOut.Count(&outgoingMessages)
+		messages, loadErr := s.messages.ListForReport(accountID, nil, filter.Since, filter.Until)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		for _, message := range messages {
+			totalMessages++
+			if message.MessageType == domain.MessageTypeIncoming {
+				incomingMessages++
+			}
+			if message.MessageType == domain.MessageTypeOutgoing {
+				outgoingMessages++
+			}
+		}
 	}
 
-	var totalContacts int64
-	qContact := s.db.Model(&domain.Contact{}).Where("account_id = ?", accountID)
-	qContact = applyBaseTimeFilter(qContact, filter, "created_at")
-	qContact.Count(&totalContacts)
+	totalContacts, err := s.contacts.CountForReport(accountID, filter.Since, filter.Until)
+	if err != nil {
+		return nil, err
+	}
 
 	// FCR and Bot handling metrics
 	fcrRate, botResolved, botHandoff := CalculateFCRAndBotMetrics(convs, messagesMap)
@@ -181,22 +213,19 @@ func (s *ReportService) GetConversationTrends(accountID uint, days int, filters 
 	// Load conversations with business hours if applicable
 	var convsCurrent, convsPrev []domain.Conversation
 	inboxesMap := s.loadInboxesMap(accountID)
-
+	rawCurrent, err := s.conversations.ListForReport(accountID, &startDate, &endDate)
+	if err != nil {
+		return nil, err
+	}
+	rawPrev, err := s.conversations.ListForReport(accountID, &prevStart, &prevEnd)
+	if err != nil {
+		return nil, err
+	}
 	if filter.BusinessHours {
-		var rawCurrent []domain.Conversation
-		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, startDate, endDate).
-			Find(&rawCurrent)
 		convsCurrent = FilterConversationsByBusinessHours(rawCurrent, inboxesMap)
-
-		var rawPrev []domain.Conversation
-		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, prevStart, prevEnd).
-			Find(&rawPrev)
 		convsPrev = FilterConversationsByBusinessHours(rawPrev, inboxesMap)
 	} else {
-		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, startDate, endDate).
-			Find(&convsCurrent)
-		_ = s.db.Where("account_id = ? AND created_at >= ? AND created_at < ?", accountID, prevStart, prevEnd).
-			Find(&convsPrev)
+		convsCurrent, convsPrev = rawCurrent, rawPrev
 	}
 
 	// Group current conversations into daily buckets

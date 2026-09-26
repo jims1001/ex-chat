@@ -89,6 +89,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RTE_capacity_policies_use_TEN_CHN_owner_contracts", func(t *testing.T) { testAgentCapacityPolicyOwnerBoundary(t, openStore) })
 	t.Run("RPT_applied_slas_use_CON_owner_queries", func(t *testing.T) { testAppliedSLAConversationBoundary(t, openStore) })
 	t.Run("RPT_SLA_service_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testSLAServiceOwnerBoundary(t, openStore) })
+	t.Run("RPT_reports_use_CHN_CON_MSG_CUS_owner_queries", func(t *testing.T) { testReportServiceOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1102,6 +1103,58 @@ func testSLAServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) 
 		t.Fatalf("expected one breach from TEN-owned account enumeration, got %d", breaches)
 	}
 	for name, model := range map[string]any{"TEN": &domain.Account{}, "CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}} {
+		if rptDB.Migrator().HasTable(model) {
+			t.Fatalf("RPT store contains %s authority table", name)
+		}
+	}
+}
+
+func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	rptDB, conDB, chnDB, msgDB, cusDB := openStore("RPT"), openStore("CON"), openStore("CHN"), openStore("MSG"), openStore("CUS")
+	inbox := domain.Inbox{AccountID: 192, Name: "Report Inbox", ChannelType: "Channel::WebWidget"}
+	contact := domain.Contact{AccountID: 192, Name: "Report Contact"}
+	label := domain.Label{AccountID: 192, Title: "priority", Color: "red"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	conversation := domain.Conversation{AccountID: 192, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 1, Status: domain.ConversationStatusResolved, CreatedAt: createdAt, UpdatedAt: createdAt.Add(30 * time.Minute)}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&domain.ConversationLabel{ConversationID: conversation.ID, LabelID: label.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := msgDB.Create(&domain.Message{AccountID: 192, ConversationID: conversation.ID, MessageType: domain.MessageTypeIncoming, CreatedAt: createdAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := msgDB.Create(&domain.Message{AccountID: 192, ConversationID: conversation.ID, MessageType: domain.MessageTypeOutgoing, CreatedAt: createdAt.Add(5 * time.Minute)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reports := service.NewReportService(rptDB)
+	reports.SetOwnerRepositories(repository.NewConversationRepository(conDB), repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB), repository.NewContactRepository(cusDB), repository.NewLabelRepositoryWithConversationPort(cusDB, repository.NewConversationRepository(conDB)))
+	summary, err := reports.GetAccountSummary(192)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels, err := reports.GetLabelMetrics(192)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels, err := reports.GetChannelSummary(192, service.ReportFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalConversations != 1 || summary.TotalMessages != 2 || summary.TotalContacts != 1 || len(labels) != 1 || labels[0].ConversationCount != 1 || channels["Channel::WebWidget"].Resolved != 1 {
+		t.Fatalf("unexpected owner-composed report: summary=%+v labels=%+v channels=%+v", summary, labels, channels)
+	}
+	for name, model := range map[string]any{"CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}, "CUS": &domain.Contact{}} {
 		if rptDB.Migrator().HasTable(model) {
 			t.Fatalf("RPT store contains %s authority table", name)
 		}

@@ -339,6 +339,31 @@ func (r *ConversationRepository) FindSLACandidates(accountID uint) ([]domain.Con
 	return conversations, err
 }
 
+func (r *ConversationRepository) ListForReport(accountID uint, since, until *time.Time) ([]domain.Conversation, error) {
+	query := r.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID)
+	if since != nil {
+		query = query.Where("created_at >= ?", *since)
+	}
+	if until != nil {
+		query = query.Where("created_at <= ?", *until)
+	}
+	var conversations []domain.Conversation
+	err := query.Order("created_at ASC, id ASC").Find(&conversations).Error
+	return conversations, err
+}
+
+func (r *ConversationRepository) ListLabelRelationsForReport(accountID uint, conversationIDs []uint) ([]domain.ConversationLabel, error) {
+	if len(conversationIDs) == 0 {
+		return []domain.ConversationLabel{}, nil
+	}
+	var relations []domain.ConversationLabel
+	ownedIDs := r.db.Model(&domain.Conversation{}).Select("id").Where("account_id = ? AND id IN ?", accountID, conversationIDs)
+	err := r.db.Model(&domain.ConversationLabel{}).
+		Where("conversation_id IN (?)", ownedIDs).
+		Find(&relations).Error
+	return relations, err
+}
+
 func (r *ConversationRepository) ListForWidget(accountID, inboxID, contactID uint, page, pageSize int) ([]domain.Conversation, int64, error) {
 	if page <= 0 {
 		page = 1

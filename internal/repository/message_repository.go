@@ -422,6 +422,25 @@ func (r *MessageRepository) ListSLATimeline(accountID, conversationID uint) ([]d
 	return messages, err
 }
 
+func (r *MessageRepository) ListForReport(accountID uint, conversationIDs []uint, since, until *time.Time) ([]domain.Message, error) {
+	query := r.db.Model(&domain.Message{}).Where("account_id = ?", accountID)
+	if conversationIDs != nil {
+		if len(conversationIDs) == 0 {
+			return []domain.Message{}, nil
+		}
+		query = query.Where("conversation_id IN ?", conversationIDs)
+	}
+	if since != nil {
+		query = query.Where("created_at >= ?", *since)
+	}
+	if until != nil {
+		query = query.Where("created_at <= ?", *until)
+	}
+	var messages []domain.Message
+	err := query.Order("created_at ASC, id ASC").Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ListPublicByConversation(accountID, conversationID, beforeID, afterID uint, page, pageSize int) ([]domain.Message, int64, error) {
 	if page <= 0 {
 		page = 1

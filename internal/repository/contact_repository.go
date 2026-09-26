@@ -180,6 +180,19 @@ func (r *ContactRepository) List(accountID uint, page, pageSize int, search stri
 	return r.ListFiltered(accountID, page, pageSize, search, "", nil)
 }
 
+func (r *ContactRepository) CountForReport(accountID uint, since, until *time.Time) (int64, error) {
+	query := r.db.Model(&domain.Contact{}).Where("account_id = ?", accountID)
+	if since != nil {
+		query = query.Where("created_at >= ?", *since)
+	}
+	if until != nil {
+		query = query.Where("created_at <= ?", *until)
+	}
+	var count int64
+	err := query.Count(&count).Error
+	return count, err
+}
+
 func (r *ContactRepository) ListFiltered(accountID uint, page, pageSize int, search, label string, companyID *uint) ([]domain.Contact, int64, error) {
 	var contacts []domain.Contact
 	var total int64
