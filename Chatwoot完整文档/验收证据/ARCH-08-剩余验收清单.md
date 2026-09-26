@@ -79,4 +79,5 @@
 - 已完成并验证：TicketRepository 通过 TEN/IAM/CUS/CON 所有者合同完成引用校验与详情组合，RPT SLA 标识保持不透明且 TKT 不访问 SLA 表（E-ARCH-08-v33）。
 - 已完成并验证：ConversationRepository 的收件箱移动通过 CHN 所有者查询校验源和目标收件箱，CON 不再直接访问 Inbox 表（E-ARCH-08-v34）。
 - 已完成并验证：ConversationCleanup 只协调 MSG/RPT/QLT/RTM/TKT/API/AIC/OPS/BIL 所有者命令，不再包含外部领域模型和数据库查询（E-ARCH-08-v35）。
-- 下一项：CopilotThreadRepository 的 IAM 用户和 CON 会话预加载边界。
+- 已完成并验证：CopilotThreadRepository 通过 IAM/CON 所有者查询组合用户和会话，AIC 仅预加载自有助手数据（E-ARCH-08-v36）。
+- 下一项：CSATExtensionRepository 的 CON/CUS/CHN/IAM 预加载边界。

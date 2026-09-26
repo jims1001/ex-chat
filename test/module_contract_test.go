@@ -396,6 +396,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/ticket_repository.go":                {"Model(&domain.AccountUser", "Model(&domain.User", "Model(&domain.Contact", "Model(&domain.Conversation", "Model(&domain.SLAPolicy", "Preload(\"Assignee\")", "Preload(\"Contact\")", "Preload(\"Creator\")", "Preload(\"Conversation\")", "Preload(\"User\")"},
 		"../internal/repository/conversation_repository.go":          {"Model(&domain.Inbox", "Model(&domain.Contact", "Model(&domain.User", "Model(&domain.Team", "Model(&domain.Message", "Model(&domain.Attachment", "Model(&domain.Label"},
 		"../internal/repository/conversation_cleanup.go":             {"domain.", ".Where(", ".Model(", ".Transaction("},
+		"../internal/repository/copilot_thread_repository.go":        {"Preload(\"User\")", "Preload(\"Conversation\")", "Model(&domain.User", "Model(&domain.Conversation"},
 		"../internal/repository/channel_auth_iam_repository.go":      {"domain.Call", "domain.Conference", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
 		"../internal/repository/channel_auth_rtm_repository.go":      {"domain.SAMLSetting", "domain.UserSession", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
 		"../internal/repository/channel_auth_mig_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},

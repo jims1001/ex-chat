@@ -102,6 +102,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
+	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -988,6 +989,45 @@ func testConversationMoveInboxBoundary(t *testing.T, openStore func(string) *gor
 	}
 	if chnDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CHN store contains CON Conversation table")
+	}
+}
+
+func testCopilotThreadOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	aicDB, iamDB, conDB := openStore("AIC"), openStore("IAM"), openStore("CON")
+	user := domain.User{Name: "Copilot owner", Email: "copilot-owner@example.test"}
+	if err := iamDB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 121, InboxID: 1, ContactID: 1, DisplayID: 1}
+	foreignConversation := domain.Conversation{AccountID: 122, InboxID: 1, ContactID: 1, DisplayID: 1}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&foreignConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewCopilotThreadRepositoryWithOwners(aicDB, repository.NewUserRepository(iamDB), repository.NewConversationRepository(conDB))
+	thread := domain.CopilotThread{AccountID: 121, UserID: user.ID, ConversationID: &conversation.ID, Title: "owner boundary"}
+	if err := repo.CreateThread(&thread); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetThread(121, thread.ID)
+	if err != nil || got.User == nil || got.User.ID != user.ID || got.Conversation == nil || got.Conversation.ID != conversation.ID {
+		t.Fatalf("owner hydration failed: thread=%+v err=%v", got, err)
+	}
+	threads, total, err := repo.ListThreads(121, repository.CopilotThreadFilter{})
+	if err != nil || total != 1 || len(threads) != 1 || threads[0].User == nil || threads[0].Conversation == nil {
+		t.Fatalf("owner list hydration failed: total=%d threads=%+v err=%v", total, threads, err)
+	}
+	foreign := domain.CopilotThread{AccountID: 121, UserID: user.ID, ConversationID: &foreignConversation.ID, Title: "foreign conversation"}
+	if err := repo.CreateThread(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetThread(121, foreign.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("foreign CON conversation accepted: %v", err)
+	}
+	if aicDB.Migrator().HasTable(&domain.User{}) || aicDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("AIC store contains IAM or CON authority table")
 	}
 }
 

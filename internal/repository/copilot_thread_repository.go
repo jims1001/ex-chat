@@ -36,12 +36,26 @@ type CopilotThreadMetrics struct {
 
 // CopilotThreadRepository manages database persistence for Copilot threads and messages
 type CopilotThreadRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	users         copilotThreadUserPort
+	conversations copilotThreadConversationPort
+}
+
+type copilotThreadUserPort interface {
+	FindByID(id uint) (*domain.User, error)
+}
+
+type copilotThreadConversationPort interface {
+	FindSummaryByID(accountID, conversationID uint) (*domain.Conversation, error)
 }
 
 // NewCopilotThreadRepository creates a new instance of CopilotThreadRepository
 func NewCopilotThreadRepository(db *gorm.DB) *CopilotThreadRepository {
-	return &CopilotThreadRepository{db: db}
+	return NewCopilotThreadRepositoryWithOwners(db, NewUserRepository(db), NewConversationRepository(db))
+}
+
+func NewCopilotThreadRepositoryWithOwners(db *gorm.DB, users copilotThreadUserPort, conversations copilotThreadConversationPort) *CopilotThreadRepository {
+	return &CopilotThreadRepository{db: db, users: users, conversations: conversations}
 }
 
 // CreateThread stores a new CopilotThread record
@@ -61,15 +75,33 @@ func (r *CopilotThreadRepository) CreateThread(thread *domain.CopilotThread) err
 // GetThread retrieves a single CopilotThread with associations
 func (r *CopilotThreadRepository) GetThread(accountID, threadID uint) (*domain.CopilotThread, error) {
 	var thread domain.CopilotThread
-	err := r.db.Where("account_id = ? AND id = ?", accountID, threadID).
-		Preload("User").
-		Preload("Conversation").
-		Preload("Assistant").
-		First(&thread).Error
+	err := r.db.Where("account_id = ? AND id = ?", accountID, threadID).Preload("Assistant").First(&thread).Error
 	if err != nil {
 		return nil, err
 	}
+	if err := r.hydrateOwnerReferences(&thread); err != nil {
+		return nil, err
+	}
 	return &thread, nil
+}
+
+func (r *CopilotThreadRepository) hydrateOwnerReferences(thread *domain.CopilotThread) error {
+	if r.users == nil || (thread.ConversationID != nil && r.conversations == nil) {
+		return gorm.ErrInvalidData
+	}
+	user, err := r.users.FindByID(thread.UserID)
+	if err != nil {
+		return err
+	}
+	thread.User = user
+	if thread.ConversationID != nil {
+		conversation, err := r.conversations.FindSummaryByID(thread.AccountID, *thread.ConversationID)
+		if err != nil {
+			return err
+		}
+		thread.Conversation = conversation
+	}
+	return nil
 }
 
 // UpdateThread updates fields of a CopilotThread
@@ -144,15 +176,20 @@ func (r *CopilotThreadRepository) ListThreads(accountID uint, filter CopilotThre
 	}
 	offset := (page - 1) * pageSize
 
-	err := q.Preload("User").
-		Preload("Assistant").
-		Preload("Conversation").
+	err := q.Preload("Assistant").
 		Order("COALESCE(last_message_at, updated_at) DESC").
 		Limit(pageSize).
 		Offset(offset).
 		Find(&threads).Error
-
-	return threads, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range threads {
+		if err := r.hydrateOwnerReferences(&threads[i]); err != nil {
+			return nil, 0, err
+		}
+	}
+	return threads, total, nil
 }
 
 // AddMessage appends a message to a thread and updates thread aggregate stats
