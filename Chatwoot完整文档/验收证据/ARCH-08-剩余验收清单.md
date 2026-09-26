@@ -84,4 +84,5 @@
 - 已完成并验证：QARepository 保留 QLT 自有关联预加载，质检人、二次复核人、坐席、申诉人、审核人和活动参与人均由 IAM 组合（E-ARCH-08-v38）。
 - 已完成并验证：PortalRepository 保留 KB 门户、分类和文章关联，文章作者由 IAM 所有者查询组合（E-ARCH-08-v39）。
 - 已完成并验证：InboxRepository 通过 CON 获取收件箱会话范围，由 MSG 统计投递失败和连续失败，CHN 不再联表访问会话和消息（E-ARCH-08-v40）。
-- 下一项：AutomationService 分配坐席/团队时的 TEN/IAM 访问边界。
+- 已完成并验证：AutomationService 通过 TEN 账号成员及团队合同执行分配，TEN 通过 IAM 组合用户，AUT 不再访问三类外部权威表（E-ARCH-08-v41）。
+- 下一项：AutomationService 自动化条件中的 CUS 联系人/公司访问边界。

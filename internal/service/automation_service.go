@@ -43,10 +43,20 @@ type AutomationService struct {
 	convRepo  *repository.ConversationRepository
 	msgRepo   *repository.MessageRepository
 	labelRepo *repository.LabelRepository
+	accounts  automationAccountPort
+	teams     automationTeamPort
 
 	// Idempotency cache to prevent same-second duplicated execution for same conversation+event+rule
 	recentExecMu sync.Mutex
 	recentExec   map[string]time.Time
+}
+
+type automationAccountPort interface {
+	FindMember(accountID, userID uint) (*domain.AccountUser, error)
+}
+
+type automationTeamPort interface {
+	FindSummaryByID(accountID, id uint) (*domain.Team, error)
 }
 
 func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepos ...*repository.LabelRepository) *AutomationService {
@@ -54,11 +64,17 @@ func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationReposito
 	if len(labelRepos) > 0 && labelRepos[0] != nil {
 		labelRepo = labelRepos[0]
 	}
+	return NewAutomationServiceWithOwnerPorts(db, convRepo, msgRepo, labelRepo, repository.NewAccountRepository(db), repository.NewTeamRepository(db))
+}
+
+func NewAutomationServiceWithOwnerPorts(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepo *repository.LabelRepository, accounts automationAccountPort, teams automationTeamPort) *AutomationService {
 	return &AutomationService{
 		db:         db,
 		convRepo:   convRepo,
 		msgRepo:    msgRepo,
 		labelRepo:  labelRepo,
+		accounts:   accounts,
+		teams:      teams,
 		recentExec: make(map[string]time.Time),
 	}
 }
@@ -705,17 +721,14 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 	case "assign_agent":
 		uid := getParamUint("user_id", "agent_id")
 		if uid > 0 {
-			// Verify agent belongs to this tenant account if account_users table exists
-			hasTable := s.db.Migrator().HasTable(&domain.AccountUser{})
-			allowed := true
-			if hasTable {
-				var count int64
-				_ = s.db.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", conv.AccountID, uid).Count(&count).Error
-				if count == 0 {
-					allowed = false
-				}
+			if s.accounts == nil {
+				return gorm.ErrInvalidData
 			}
-			if !allowed {
+			member, err := s.accounts.FindMember(conv.AccountID, uid)
+			if err != nil {
+				return err
+			}
+			if member == nil || member.User == nil {
 				logger.WithComponent("automation").Warn("blocked cross-tenant agent assignment in automation rule",
 					"account_id", conv.AccountID,
 					"target_agent_id", uid,
@@ -724,10 +737,7 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 			} else {
 				_ = s.convRepo.Assign(conv.AccountID, conv.ID, &uid)
 				conv.AssigneeID = &uid
-				var agent domain.User
-				if err := s.db.Where("id = ?", uid).First(&agent).Error; err == nil {
-					conv.Assignee = &agent
-				}
+				conv.Assignee = member.User
 			}
 		}
 	case "remove_assigned_agent":
@@ -737,11 +747,17 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 	case "assign_team":
 		tid := getParamUint("team_id", "team_ids", "id")
 		if tid > 0 {
-			var team domain.Team
-			if err := s.db.Where("account_id = ? AND id = ?", conv.AccountID, tid).First(&team).Error; err == nil {
+			if s.teams == nil {
+				return gorm.ErrInvalidData
+			}
+			team, err := s.teams.FindSummaryByID(conv.AccountID, tid)
+			if err != nil {
+				return err
+			}
+			if team != nil {
 				_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, &tid)
 				conv.TeamID = &tid
-				conv.Team = &team
+				conv.Team = team
 			}
 		}
 	case "remove_assigned_team":

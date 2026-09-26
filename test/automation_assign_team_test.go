@@ -21,6 +21,7 @@ func setupAutomationTeamTestDB(t *testing.T) (*gorm.DB, *domain.Account, *domain
 
 	if err := db.AutoMigrate(
 		&domain.Account{},
+		&domain.AccountUser{},
 		&domain.User{},
 		&domain.Inbox{},
 		&domain.Contact{},
@@ -44,6 +45,7 @@ func setupAutomationTeamTestDB(t *testing.T) (*gorm.DB, *domain.Account, *domain
 
 	agent := domain.User{Email: "agent_support@example.com", Name: "Support Agent", Role: domain.RoleAgent}
 	_ = db.Create(&agent).Error
+	_ = db.Create(&domain.AccountUser{AccountID: account.ID, UserID: agent.ID, Role: domain.RoleAgent}).Error
 
 	teamAlpha := domain.Team{AccountID: account.ID, Name: "Alpha Team"}
 	_ = db.Create(&teamAlpha).Error

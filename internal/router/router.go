@@ -118,7 +118,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	routingService.SetOwnerRepositories(inboxRepo, accountRepo, teamRepo, assignmentPolicyRepo, agentCapacityPolicyRepo, msgRepo)
 	reportService := service.NewReportService(db)
 	pushService := service.NewPushService(db, deviceRepo)
-	automationService := service.NewAutomationService(db, convRepo, msgRepo, labelRepo)
+	automationService := service.NewAutomationServiceWithOwnerPorts(db, convRepo, msgRepo, labelRepo, accountRepo, teamRepo)
 	webhookService := service.NewWebhookService(db, webhookRepo)
 	if options.WebhookHTTPClient != nil {
 		webhookService.SetHTTPClient(options.WebhookHTTPClient)

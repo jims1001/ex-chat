@@ -14,6 +14,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -102,6 +103,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
 	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
 	t.Run("CHN_health_uses_CON_MSG_delivery_queries", func(t *testing.T) { testInboxHealthOwnerBoundary(t, openStore) })
+	t.Run("AUT_assignments_use_TEN_IAM_owner_queries", func(t *testing.T) { testAutomationAssignmentOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
@@ -936,6 +938,46 @@ func testInboxHealthOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB)
 	}
 	if chnDB.Migrator().HasTable(&domain.Conversation{}) || chnDB.Migrator().HasTable(&domain.Message{}) {
 		t.Fatal("CHN store contains CON or MSG authority table")
+	}
+}
+
+func testAutomationAssignmentOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	autDB, conDB, tenDB, iamDB := openStore("AUT"), openStore("CON"), openStore("TEN"), openStore("IAM")
+	user := domain.User{Name: "Automation Agent", Email: "automation-owner@example.com", Role: domain.RoleAgent}
+	if err := iamDB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	member := domain.AccountUser{AccountID: 161, UserID: user.ID, Role: domain.RoleAgent}
+	team := domain.Team{AccountID: 161, Name: "Automation Team"}
+	for _, value := range []any{&member, &team} {
+		if err := tenDB.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversation := domain.Conversation{AccountID: 161, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	actions, _ := json.Marshal([]map[string]any{
+		{"action_name": "assign_agent", "action_params": map[string]any{"user_id": user.ID}},
+		{"action_name": "assign_team", "action_params": map[string]any{"team_id": team.ID}},
+	})
+	rule := domain.AutomationRule{AccountID: 161, Name: "Owner assignments", EventName: "conversation_created", Conditions: "[]", Actions: string(actions), Active: true}
+	if err := autDB.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversations := repository.NewConversationRepository(conDB)
+	accounts := repository.NewAccountRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB))
+	service := service.NewAutomationServiceWithOwnerPorts(autDB, conversations, repository.NewMessageRepository(openStore("MSG")), repository.NewLabelRepository(openStore("CUS")), accounts, repository.NewTeamRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB)))
+	service.HandleConversationCreated(&conversation)
+	var updated domain.Conversation
+	if err := conDB.First(&updated, conversation.ID).Error; err != nil || updated.AssigneeID == nil || *updated.AssigneeID != user.ID || updated.TeamID == nil || *updated.TeamID != team.ID {
+		t.Fatalf("AUT owner assignment failed: conversation=%+v err=%v", updated, err)
+	}
+	for name, model := range map[string]any{"TEN": &domain.AccountUser{}, "IAM": &domain.User{}, "CON": &domain.Conversation{}} {
+		if autDB.Migrator().HasTable(model) {
+			t.Fatalf("AUT store contains %s authority table", name)
+		}
 	}
 }
 

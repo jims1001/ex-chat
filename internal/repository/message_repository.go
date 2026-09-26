@@ -41,12 +41,18 @@ func (r *MessageRepository) ChannelDeliveryStats(accountID uint, conversationIDs
 	if len(conversationIDs) == 0 {
 		return stats, nil
 	}
+	var aggregate struct {
+		TotalMessages  int64
+		FailedMessages int64
+	}
 	if err := r.db.Model(&domain.Message{}).
 		Select("COUNT(*) as total_messages, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_messages").
 		Where("account_id = ? AND conversation_id IN ? AND created_at >= ?", accountID, conversationIDs, since).
-		Scan(&stats).Error; err != nil {
+		Scan(&aggregate).Error; err != nil {
 		return stats, err
 	}
+	stats.TotalMessages = aggregate.TotalMessages
+	stats.FailedMessages = aggregate.FailedMessages
 	if err := r.db.Model(&domain.Message{}).
 		Where("account_id = ? AND conversation_id IN ? AND message_type = ?", accountID, conversationIDs, domain.MessageTypeOutgoing).
 		Order("created_at DESC").Limit(5).Pluck("status", &stats.RecentOutgoingStatuses).Error; err != nil {

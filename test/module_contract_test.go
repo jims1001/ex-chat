@@ -405,6 +405,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/channel_auth_ent_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "Model(&domain.AccountBilling", "Create(&domain.AccountBilling", "domain.Onboarding", "domain.SubscriptionPlan"},
 		"../internal/repository/channel_auth_bil_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.Onboarding", "domain.BrandedEmailLayout"},
 		"../internal/repository/channel_auth_ten_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.BrandedEmailLayout"},
+		"../internal/service/automation_service.go":                  {"Model(&domain.AccountUser", "HasTable(&domain.AccountUser", "var agent domain.User", "var team domain.Team", "s.db.Where(\"id = ?\", uid)", "s.db.Where(\"account_id = ? AND id = ?\", conv.AccountID, tid)"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

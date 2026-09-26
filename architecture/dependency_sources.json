@@ -93,6 +93,7 @@
     {"name":"AUD","synchronous":[],"events":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC","API","RTM"],"shared":[],"startup":[]}
   ],
   "observedCode": [
+    {"consumer":"AUT","provider":"TEN","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"AccountRepository"},
     {"consumer":"AUT","provider":"CUS","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"LabelRepository"},
     {"consumer":"AUT","provider":"CON","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"ConversationRepository"},
     {"consumer":"AUT","provider":"MSG","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"MessageRepository"},
