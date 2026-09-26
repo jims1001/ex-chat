@@ -34,12 +34,18 @@ type QAAppealFilter struct {
 
 // QARepository provides database operations for QA scorecards, sampling, tasks and appeals
 type QARepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	tickets       *TicketRepository
+	conversations *ConversationRepository
 }
 
 // NewQARepository creates a new QARepository instance
 func NewQARepository(db *gorm.DB) *QARepository {
-	return &QARepository{db: db}
+	return NewQARepositoryWithOwnerPorts(db, NewTicketRepository(db), NewConversationRepository(db))
+}
+
+func NewQARepositoryWithOwnerPorts(db *gorm.DB, tickets *TicketRepository, conversations *ConversationRepository) *QARepository {
+	return &QARepository{db: db, tickets: tickets, conversations: conversations}
 }
 
 // EnsureDefaultScorecard ensures at least one default QA scorecard exists for the account
@@ -267,10 +273,13 @@ func (r *QARepository) GenerateTasksFromSampling(accountID, ruleID uint) ([]doma
 	dueAt := now.Add(24 * time.Hour)
 
 	if rule.TargetType == "ticket" {
-		var tickets []domain.Ticket
-		r.db.Where("account_id = ? AND status IN ('resolved', 'closed')", accountID).
-			Order("updated_at DESC").Limit(5).Find(&tickets)
-
+		if r.tickets == nil {
+			return nil, gorm.ErrInvalidData
+		}
+		tickets, err := r.tickets.ListQASamplingTargets(accountID, 5)
+		if err != nil {
+			return nil, err
+		}
 		for _, t := range tickets {
 			var count int64
 			r.db.Model(&domain.QATask{}).Where("account_id = ? AND target_type = 'ticket' AND target_id = ?", accountID, t.ID).Count(&count)
@@ -282,7 +291,7 @@ func (r *QARepository) GenerateTasksFromSampling(accountID, ruleID uint) ([]doma
 				AccountID:      accountID,
 				TargetType:     "ticket",
 				TargetID:       t.ID,
-				TargetRef:      fmt.Sprintf("工单 %s", t.TicketNumber),
+				TargetRef:      t.Reference,
 				ScorecardID:    scorecard.ID,
 				ScorecardName:  scorecard.Name,
 				InspectorID:    rule.AssignedInspectorID,
@@ -297,10 +306,13 @@ func (r *QARepository) GenerateTasksFromSampling(accountID, ruleID uint) ([]doma
 			}
 		}
 	} else {
-		var convs []domain.Conversation
-		r.db.Where("account_id = ?", accountID).
-			Order("updated_at DESC").Limit(5).Find(&convs)
-
+		if r.conversations == nil {
+			return nil, gorm.ErrInvalidData
+		}
+		convs, err := r.conversations.ListQASamplingTargets(accountID, 5)
+		if err != nil {
+			return nil, err
+		}
 		for _, c := range convs {
 			var count int64
 			r.db.Model(&domain.QATask{}).Where("account_id = ? AND target_type = 'conversation' AND target_id = ?", accountID, c.ID).Count(&count)
@@ -308,20 +320,15 @@ func (r *QARepository) GenerateTasksFromSampling(accountID, ruleID uint) ([]doma
 				continue
 			}
 
-			var agentID *uint
-			if c.AssigneeID != nil {
-				agentID = c.AssigneeID
-			}
-
 			task := domain.QATask{
 				AccountID:      accountID,
 				TargetType:     "conversation",
 				TargetID:       c.ID,
-				TargetRef:      fmt.Sprintf("会话 #%d", c.ID),
+				TargetRef:      c.Reference,
 				ScorecardID:    scorecard.ID,
 				ScorecardName:  scorecard.Name,
 				InspectorID:    rule.AssignedInspectorID,
-				AgentID:        agentID,
+				AgentID:        c.AssigneeID,
 				SamplingRuleID: &rule.ID,
 				DueAt:          &dueAt,
 				Status:         "pending",

@@ -4386,6 +4386,26 @@
       "use": "read",
       "contract": "msg.message.get.v1",
       "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "TKT",
+      "file": "internal/repository/qa_repository.go",
+      "symbol": "TicketRepository",
+      "method": "ListQASamplingTargets",
+      "use": "read",
+      "contract": "tkt.ticket.get.v1",
+      "replicaEvent": "tkt.ticket_status.changed.v1"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "CON",
+      "file": "internal/repository/qa_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ListQASamplingTargets",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     }
   ]
 }

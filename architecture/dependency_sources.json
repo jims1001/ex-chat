@@ -58,7 +58,8 @@
     {"consumer":"QLT","file":"internal/handler/csat_handler.go"},
     {"consumer":"OPS","file":"internal/repository/macro_repository.go"},
     {"consumer":"EXT","file":"internal/repository/platform_repository.go"},
-    {"consumer":"API","file":"internal/repository/public_repository.go"}
+    {"consumer":"API","file":"internal/repository/public_repository.go"},
+    {"consumer":"QLT","file":"internal/repository/qa_repository.go"}
   ],
   "modules": [
     {"name":"IAM","synchronous":[],"events":[],"shared":[],"startup":[]},
@@ -72,7 +73,7 @@
     {"name":"MSG","synchronous":["TEN","CHN","CON","MED"],"events":[],"shared":["CON"],"startup":[]},
     {"name":"RTE","synchronous":["TEN","CHN","CON","MSG"],"events":["MSG"],"shared":["CON"],"startup":[]},
     {"name":"TKT","synchronous":["TEN","CUS","CON"],"events":["MSG"],"shared":[],"startup":[]},
-    {"name":"QLT","synchronous":["TEN","CHN","CUS","CON","MSG","RTE"],"events":[],"shared":[],"startup":[]},
+    {"name":"QLT","synchronous":["TEN","CHN","CUS","CON","MSG","RTE","TKT"],"events":[],"shared":[],"startup":[]},
     {"name":"KB","synchronous":["TEN","MED"],"events":[],"shared":[],"startup":[]},
     {"name":"BIL","synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":[]},
     {"name":"EXT","synchronous":["IAM","TEN","ENT","CHN"],"events":["CON","MSG"],"shared":[],"startup":[]},
@@ -211,6 +212,8 @@
     {"consumer":"API","provider":"CHN","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"InboxRepository"},
     {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"ContactRepository"},
     {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"MessageRepository"}
+    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"MessageRepository"},
+    {"consumer":"QLT","provider":"TKT","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"TicketRepository"},
+    {"consumer":"QLT","provider":"CON","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"ConversationRepository"}
   ]
 }

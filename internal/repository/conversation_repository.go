@@ -535,6 +535,21 @@ func (r *ConversationRepository) ListCaptainConversations(accountID uint, inboxI
 	return conversations, total, nil
 }
 
+func (r *ConversationRepository) ListQASamplingTargets(accountID uint, limit int) ([]QASamplingTarget, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 5
+	}
+	var conversations []domain.Conversation
+	if err := r.db.Where("account_id = ?", accountID).Order("updated_at DESC").Limit(limit).Find(&conversations).Error; err != nil {
+		return nil, err
+	}
+	targets := make([]QASamplingTarget, 0, len(conversations))
+	for _, conversation := range conversations {
+		targets = append(targets, QASamplingTarget{ID: conversation.ID, Reference: fmt.Sprintf("会话 #%d", conversation.ID), AssigneeID: conversation.AssigneeID})
+	}
+	return targets, nil
+}
+
 func (r *ConversationRepository) Update(c *domain.Conversation) error {
 	return r.db.Save(c).Error
 }

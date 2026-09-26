@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("OPS_macros_use_CON_TEN_CUS_MSG_owner_commands", func(t *testing.T) { testMacroRepositoryOwnerBoundary(t, openStore) })
 	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
+	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -763,6 +765,52 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("CHN created foreign tables")
 		}
 	})
+}
+
+func testQARepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	qltDB, tktDB, conDB := openStore("QLT"), openStore("TKT"), openStore("CON")
+	agentID := uint(27)
+	ticket := domain.Ticket{AccountID: 81, TicketNumber: "TK-QA-81", Title: "owner boundary", Status: "resolved", AssigneeID: &agentID}
+	if err := tktDB.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 81, InboxID: 3, ContactID: 4, DisplayID: 5, Status: domain.ConversationStatusResolved, AssigneeID: &agentID}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	scorecard := domain.QAScorecard{AccountID: 81, Name: "owner scorecard", TotalScore: 100, PassingScore: 80, Status: "active"}
+	if err := qltDB.Create(&scorecard).Error; err != nil {
+		t.Fatal(err)
+	}
+	ticketRule := domain.QASamplingRule{AccountID: 81, Name: "ticket sampling", TargetType: "ticket", ScorecardID: scorecard.ID, Status: "active"}
+	conversationRule := domain.QASamplingRule{AccountID: 81, Name: "conversation sampling", TargetType: "conversation", ScorecardID: scorecard.ID, Status: "active"}
+	if err := qltDB.Create(&ticketRule).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := qltDB.Create(&conversationRule).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	repo := repository.NewQARepositoryWithOwnerPorts(qltDB, repository.NewTicketRepository(tktDB), repository.NewConversationRepository(conDB))
+	ticketTasks, err := repo.GenerateTasksFromSampling(81, ticketRule.ID)
+	if err != nil || len(ticketTasks) != 1 || ticketTasks[0].TargetID != ticket.ID || ticketTasks[0].TargetRef != "工单 TK-QA-81" || ticketTasks[0].AgentID == nil || *ticketTasks[0].AgentID != agentID {
+		t.Fatalf("TKT sampling boundary failed: tasks=%+v err=%v", ticketTasks, err)
+	}
+	conversationTasks, err := repo.GenerateTasksFromSampling(81, conversationRule.ID)
+	if err != nil || len(conversationTasks) != 1 || conversationTasks[0].TargetID != conversation.ID || conversationTasks[0].TargetRef != fmt.Sprintf("会话 #%d", conversation.ID) || conversationTasks[0].AgentID == nil || *conversationTasks[0].AgentID != agentID {
+		t.Fatalf("CON sampling boundary failed: tasks=%+v err=%v", conversationTasks, err)
+	}
+	var taskCount int64
+	if err := qltDB.Model(&domain.QATask{}).Where("account_id = ?", 81).Count(&taskCount).Error; err != nil || taskCount != 2 {
+		t.Fatalf("QLT task ownership failed: count=%d err=%v", taskCount, err)
+	}
+	if qltDB.Migrator().HasTable(&domain.Ticket{}) || qltDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("QLT store contains TKT/CON authority tables")
+	}
+	if tktDB.Migrator().HasTable(&domain.QATask{}) || conDB.Migrator().HasTable(&domain.QATask{}) {
+		t.Fatal("TKT/CON store contains QLT authority table")
+	}
 }
 
 func testMacroRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {

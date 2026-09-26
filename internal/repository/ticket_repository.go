@@ -32,6 +32,27 @@ type TicketRepository struct {
 	db *gorm.DB
 }
 
+type QASamplingTarget struct {
+	ID         uint
+	Reference  string
+	AssigneeID *uint
+}
+
+func (r *TicketRepository) ListQASamplingTargets(accountID uint, limit int) ([]QASamplingTarget, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 5
+	}
+	var tickets []domain.Ticket
+	if err := r.db.Where("account_id = ? AND status IN ?", accountID, []string{"resolved", "closed"}).Order("updated_at DESC").Limit(limit).Find(&tickets).Error; err != nil {
+		return nil, err
+	}
+	targets := make([]QASamplingTarget, 0, len(tickets))
+	for _, ticket := range tickets {
+		targets = append(targets, QASamplingTarget{ID: ticket.ID, Reference: fmt.Sprintf("工单 %s", ticket.TicketNumber), AssigneeID: ticket.AssigneeID})
+	}
+	return targets, nil
+}
+
 func (r *TicketRepository) ValidateReferences(accountID uint, assigneeID, contactID, conversationID, slaPolicyID *uint) error {
 	checks := []struct {
 		id    *uint
