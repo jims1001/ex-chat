@@ -12,39 +12,56 @@ import (
 )
 
 type CaptainRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	inboxes       *InboxRepository
+	conversations *ConversationRepository
+	messages      *MessageRepository
 }
 
 func NewCaptainRepository(db *gorm.DB) *CaptainRepository {
-	return &CaptainRepository{db: db}
+	return NewCaptainRepositoryWithOwnerPorts(db, NewInboxRepository(db), NewConversationRepository(db), NewMessageRepository(db))
+}
+
+func NewCaptainRepositoryWithOwnerPorts(db *gorm.DB, inboxes *InboxRepository, conversations *ConversationRepository, messages *MessageRepository) *CaptainRepository {
+	return &CaptainRepository{db: db, inboxes: inboxes, conversations: conversations, messages: messages}
 }
 
 // ----------------- Captain Assistants -----------------
 
 func (r *CaptainRepository) FindByID(accountID, id uint) (*domain.CaptainAssistant, error) {
 	var assistant domain.CaptainAssistant
-	err := r.db.Preload("Inboxes").Where("account_id = ? AND id = ?", accountID, id).First(&assistant).Error
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&assistant).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &assistant, nil
+	assistant.Inboxes, err = r.ListBoundInboxes(accountID, id)
+	return &assistant, err
 }
 
 func (r *CaptainRepository) ListByAccount(accountID uint) ([]domain.CaptainAssistant, error) {
 	var assistants []domain.CaptainAssistant
-	err := r.db.Preload("Inboxes").Where("account_id = ?", accountID).Order("id DESC").Find(&assistants).Error
+	err := r.db.Where("account_id = ?", accountID).Order("id DESC").Find(&assistants).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range assistants {
+		assistants[i].Inboxes, err = r.ListBoundInboxes(accountID, assistants[i].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return assistants, err
 }
 
 func (r *CaptainRepository) Create(assistant *domain.CaptainAssistant) error {
-	return r.db.Create(assistant).Error
+	return r.db.Omit("Inboxes").Create(assistant).Error
 }
 
 func (r *CaptainRepository) Update(assistant *domain.CaptainAssistant) error {
-	return r.db.Save(assistant).Error
+	return r.db.Omit("Inboxes").Save(assistant).Error
 }
 
 func (r *CaptainRepository) Delete(accountID, id uint) error {
@@ -65,25 +82,32 @@ func (r *CaptainRepository) Delete(accountID, id uint) error {
 // ----------------- Inbox Bindings -----------------
 
 func (r *CaptainRepository) ListBoundInboxes(accountID, assistantID uint) ([]domain.Inbox, error) {
-	var inboxes []domain.Inbox
-	err := r.db.Table("inboxes").
-		Joins("INNER JOIN captain_inboxes ON captain_inboxes.inbox_id = inboxes.id").
-		Where("captain_inboxes.account_id = ? AND captain_inboxes.captain_assistant_id = ?", accountID, assistantID).
-		Find(&inboxes).Error
-	return inboxes, err
+	ids, err := r.GetBoundInboxIDs(accountID, assistantID)
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	if r.inboxes == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	return r.inboxes.FindByIDs(accountID, ids)
 }
 
 func (r *CaptainRepository) BindInbox(accountID, assistantID, inboxID uint) (*domain.CaptainInbox, error) {
-	// Verify inbox belongs to this account
-	var inbox domain.Inbox
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, inboxID).First(&inbox).Error; err != nil {
-		return nil, fmt.Errorf("inbox not found: %w", err)
+	if r.inboxes == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	inbox, err := r.inboxes.FindSummaryByID(accountID, inboxID)
+	if err != nil {
+		return nil, err
+	}
+	if inbox == nil {
+		return nil, errors.New("inbox not found")
 	}
 
 	var binding domain.CaptainInbox
-	err := r.db.Where("account_id = ? AND captain_assistant_id = ? AND inbox_id = ?", accountID, assistantID, inboxID).First(&binding).Error
+	err = r.db.Where("account_id = ? AND captain_assistant_id = ? AND inbox_id = ?", accountID, assistantID, inboxID).First(&binding).Error
 	if err == nil {
-		binding.Inbox = &inbox
+		binding.Inbox = inbox
 		return &binding, nil
 	}
 
@@ -95,7 +119,7 @@ func (r *CaptainRepository) BindInbox(accountID, assistantID, inboxID uint) (*do
 	if err := r.db.Create(&binding).Error; err != nil {
 		return nil, err
 	}
-	binding.Inbox = &inbox
+	binding.Inbox = inbox
 	return &binding, nil
 }
 
@@ -319,27 +343,20 @@ func parseDateRange(timeRange string) (time.Time, time.Time, time.Time) {
 	return currentStart, now, prevStart
 }
 
-func (r *CaptainRepository) getHandledConversationQuery(accountID, assistantID uint, start, end time.Time) *gorm.DB {
-	inboxIDs, _ := r.GetBoundInboxIDs(accountID, assistantID)
-
-	q := r.db.Model(&domain.Conversation{}).
-		Where("conversations.account_id = ? AND conversations.created_at >= ? AND conversations.created_at <= ?", accountID, start, end)
-
-	if len(inboxIDs) > 0 {
-		q = q.Where("conversations.inbox_id IN (?) OR conversations.id IN (?)",
-			inboxIDs,
-			r.db.Model(&domain.Message{}).
-				Select("conversation_id").
-				Where("account_id = ? AND (sender_type = 'CaptainAssistant' OR sender_type = 'Captain::Assistant') AND sender_id = ?", accountID, assistantID),
-		)
-	} else {
-		q = q.Where("conversations.id IN (?)",
-			r.db.Model(&domain.Message{}).
-				Select("conversation_id").
-				Where("account_id = ? AND (sender_type = 'CaptainAssistant' OR sender_type = 'Captain::Assistant') AND sender_id = ?", accountID, assistantID),
-		)
+func (r *CaptainRepository) captainWindow(accountID, assistantID uint, start, end time.Time) ([]uint, []uint, int64, error) {
+	if r.conversations == nil || r.messages == nil {
+		return nil, nil, 0, gorm.ErrInvalidData
 	}
-	return q
+	inboxIDs, err := r.GetBoundInboxIDs(accountID, assistantID)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	conversationIDs, err := r.messages.FindCaptainConversationIDs(accountID, assistantID, start, end)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	replies, err := r.messages.CountCaptainReplies(accountID, assistantID, start, end)
+	return inboxIDs, conversationIDs, replies, err
 }
 
 func (r *CaptainRepository) GetStats(accountID, assistantID uint, timeRange string, tzOffset int) (*AssistantStatsResult, error) {
@@ -347,37 +364,24 @@ func (r *CaptainRepository) GetStats(accountID, assistantID uint, timeRange stri
 	prevEnd := curStart
 
 	// 1. Current Window
-	var curHandled int64
-	_ = r.getHandledConversationQuery(accountID, assistantID, curStart, curEnd).Count(&curHandled)
-
-	var curResolved int64
-	_ = r.getHandledConversationQuery(accountID, assistantID, curStart, curEnd).Where("status = ?", "resolved").Count(&curResolved)
-
-	var curHandoff int64
-	_ = r.getHandledConversationQuery(accountID, assistantID, curStart, curEnd).Where("assignee_id IS NOT NULL AND assignee_id > 0").Count(&curHandoff)
-
-	// Assistant public reply count
-	var curAssistantReplies int64
-	_ = r.db.Model(&domain.Message{}).
-		Where("account_id = ? AND (sender_type = 'CaptainAssistant' OR sender_type = 'Captain::Assistant') AND sender_id = ? AND message_type = ? AND created_at >= ? AND created_at <= ?",
-			accountID, assistantID, domain.MessageTypeOutgoing, curStart, curEnd).
-		Count(&curAssistantReplies)
+	curInboxIDs, curConversationIDs, curAssistantReplies, err := r.captainWindow(accountID, assistantID, curStart, curEnd)
+	if err != nil {
+		return nil, err
+	}
+	curHandled, curResolved, curHandoff, err := r.conversations.GetCaptainStats(accountID, curInboxIDs, curConversationIDs, curStart, curEnd)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2. Previous Window
-	var prevHandled int64
-	_ = r.getHandledConversationQuery(accountID, assistantID, prevStart, prevEnd).Count(&prevHandled)
-
-	var prevResolved int64
-	_ = r.getHandledConversationQuery(accountID, assistantID, prevStart, prevEnd).Where("status = ?", "resolved").Count(&prevResolved)
-
-	var prevHandoff int64
-	_ = r.getHandledConversationQuery(accountID, assistantID, prevStart, prevEnd).Where("assignee_id IS NOT NULL AND assignee_id > 0").Count(&prevHandoff)
-
-	var prevAssistantReplies int64
-	_ = r.db.Model(&domain.Message{}).
-		Where("account_id = ? AND (sender_type = 'CaptainAssistant' OR sender_type = 'Captain::Assistant') AND sender_id = ? AND message_type = ? AND created_at >= ? AND created_at <= ?",
-			accountID, assistantID, domain.MessageTypeOutgoing, prevStart, prevEnd).
-		Count(&prevAssistantReplies)
+	prevInboxIDs, prevConversationIDs, prevAssistantReplies, err := r.captainWindow(accountID, assistantID, prevStart, prevEnd)
+	if err != nil {
+		return nil, err
+	}
+	prevHandled, prevResolved, prevHandoff, err := r.conversations.GetCaptainStats(accountID, prevInboxIDs, prevConversationIDs, prevStart, prevEnd)
+	if err != nil {
+		return nil, err
+	}
 
 	// Calculate rates
 	curAutoResRate := 0.0
@@ -487,30 +491,16 @@ func (r *CaptainRepository) GetDrilldown(accountID, assistantID uint, metric, ti
 	}
 
 	curStart, curEnd, _ := parseDateRange(timeRange)
-	baseQuery := r.getHandledConversationQuery(accountID, assistantID, curStart, curEnd)
-
-	switch metric {
-	case "conversations_handled":
-		// all handled
-	case "auto_resolution_rate":
-		baseQuery = baseQuery.Where("status = ?", "resolved")
-	case "handoff_rate":
-		baseQuery = baseQuery.Where("assignee_id IS NOT NULL AND assignee_id > 0")
-	case "reopen_rate":
-		baseQuery = baseQuery.Where("status = ?", "open")
+	if r.conversations == nil || r.messages == nil {
+		return nil, 0, gorm.ErrInvalidData
 	}
-
-	var total int64
-	if err := baseQuery.Count(&total).Error; err != nil {
+	inboxIDs, err := r.GetBoundInboxIDs(accountID, assistantID)
+	if err != nil {
 		return nil, 0, err
 	}
-
-	var convs []domain.Conversation
-	offset := (page - 1) * perPage
-	err := baseQuery.Preload("Contact").Preload("Inbox").
-		Order("conversations.id DESC").
-		Offset(offset).Limit(perPage).
-		Find(&convs).Error
-
-	return convs, total, err
+	conversationIDs, err := r.messages.FindCaptainConversationIDs(accountID, assistantID, curStart, curEnd)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.conversations.ListCaptainConversations(accountID, inboxIDs, conversationIDs, curStart, curEnd, metric, page, perPage)
 }

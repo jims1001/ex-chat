@@ -328,6 +328,61 @@ func (r *ConversationRepository) List(accountID uint, status, priority string, a
 	return conversations, total, nil
 }
 
+func (r *ConversationRepository) captainQuery(accountID uint, inboxIDs, messageConversationIDs []uint, start, end time.Time) *gorm.DB {
+	q := r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND created_at >= ? AND created_at <= ?", accountID, start, end)
+	if len(inboxIDs) > 0 && len(messageConversationIDs) > 0 {
+		return q.Where("inbox_id IN ? OR id IN ?", inboxIDs, messageConversationIDs)
+	}
+	if len(inboxIDs) > 0 {
+		return q.Where("inbox_id IN ?", inboxIDs)
+	}
+	if len(messageConversationIDs) > 0 {
+		return q.Where("id IN ?", messageConversationIDs)
+	}
+	return q.Where("1 = 0")
+}
+
+func (r *ConversationRepository) GetCaptainStats(accountID uint, inboxIDs, messageConversationIDs []uint, start, end time.Time) (int64, int64, int64, error) {
+	var handled, resolved, handoff int64
+	if err := r.captainQuery(accountID, inboxIDs, messageConversationIDs, start, end).Count(&handled).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	if err := r.captainQuery(accountID, inboxIDs, messageConversationIDs, start, end).Where("status = ?", domain.ConversationStatusResolved).Count(&resolved).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	if err := r.captainQuery(accountID, inboxIDs, messageConversationIDs, start, end).Where("assignee_id IS NOT NULL AND assignee_id > 0").Count(&handoff).Error; err != nil {
+		return 0, 0, 0, err
+	}
+	return handled, resolved, handoff, nil
+}
+
+func (r *ConversationRepository) ListCaptainConversations(accountID uint, inboxIDs, messageConversationIDs []uint, start, end time.Time, metric string, page, perPage int) ([]domain.Conversation, int64, error) {
+	q := r.captainQuery(accountID, inboxIDs, messageConversationIDs, start, end)
+	switch metric {
+	case "auto_resolution_rate":
+		q = q.Where("status = ?", domain.ConversationStatusResolved)
+	case "handoff_rate":
+		q = q.Where("assignee_id IS NOT NULL AND assignee_id > 0")
+	case "reopen_rate":
+		q = q.Where("status = ?", domain.ConversationStatusOpen)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var conversations []domain.Conversation
+	if err := q.Order("id DESC").Offset((page - 1) * perPage).Limit(perPage).Find(&conversations).Error; err != nil {
+		return nil, 0, err
+	}
+	for i := range conversations {
+		if err := r.hydrateConversation(accountID, &conversations[i]); err != nil {
+			return nil, 0, err
+		}
+	}
+	return conversations, total, nil
+}
+
 func (r *ConversationRepository) Update(c *domain.Conversation) error {
 	return r.db.Save(c).Error
 }

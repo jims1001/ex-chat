@@ -553,6 +553,66 @@
       "replicaEvent": "aic.index.changed.v1"
     },
     {
+      "consumer": "AIC",
+      "provider": "CHN",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CHN",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CON",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "GetCaptainStats",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CON",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ListCaptainConversations",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "MessageRepository",
+      "method": "CountCaptainReplies",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "MessageRepository",
+      "method": "FindCaptainConversationIDs",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.changed.v1"
+    },
+    {
       "consumer": "API",
       "provider": "AUT",
       "file": "internal/handler/conversation_handler.go",

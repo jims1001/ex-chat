@@ -303,6 +303,22 @@ func (r *MessageRepository) ListByConversation(accountID, conversationID uint, i
 	return messages, total, err
 }
 
+func (r *MessageRepository) FindCaptainConversationIDs(accountID, assistantID uint, start, end time.Time) ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND (sender_type = 'CaptainAssistant' OR sender_type = 'Captain::Assistant') AND sender_id = ? AND created_at >= ? AND created_at <= ?", accountID, assistantID, start, end).
+		Distinct().Pluck("conversation_id", &ids).Error
+	return ids, err
+}
+
+func (r *MessageRepository) CountCaptainReplies(accountID, assistantID uint, start, end time.Time) (int64, error) {
+	var count int64
+	err := r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND (sender_type = 'CaptainAssistant' OR sender_type = 'Captain::Assistant') AND sender_id = ? AND message_type = ? AND created_at >= ? AND created_at <= ?", accountID, assistantID, domain.MessageTypeOutgoing, start, end).
+		Count(&count).Error
+	return count, err
+}
+
 func (r *MessageRepository) FindByID(accountID, id uint) (*domain.Message, error) {
 	var msg domain.Message
 	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&msg).Error

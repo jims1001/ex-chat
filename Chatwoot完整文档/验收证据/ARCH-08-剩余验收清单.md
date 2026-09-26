@@ -1,6 +1,6 @@
 # ARCH-08 剩余验收清单
 
-基线：E-ARCH-08-v19。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
+基线：E-ARCH-08-v20。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
 
 ## 必须完成的工作
 
@@ -63,4 +63,5 @@
 - 已完成并验证：RoutingService 休眠扫描和条件恢复由 CON 所有者执行，重复调度不重复返回（E-ARCH-08-v17）。
 - 已完成并验证：AgentCapacityPolicyRepository 只访问 RTE 权威数据，TEN 成员与 CHN 收件箱由 handler 通过所有者合同组合（E-ARCH-08-v18）。
 - 已完成并验证：AppliedSLARepository 只访问 RPT 权威数据，会话筛选、详情组合和 SLA 投影重置通过 CON 所有者合同完成（E-ARCH-08-v19）。
-- 下一项：AIC CaptainRepository 的 CHN 收件箱及 CON/MSG 会话消息访问边界。
+- 已完成并验证：CaptainRepository 只访问 AIC 权威数据，收件箱通过 CHN、会话统计与下钻通过 CON、助手消息统计通过 MSG 所有者合同完成（E-ARCH-08-v20）。
+- 下一项：TEN AccountRepository 的 IAM 用户访问边界。

@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v19 records RPT Applied SLA composition through CON.
-	const approvedCollaborationSHA = "a2fb93e94932f2c37d4bf292b76f0bd255c2f07abad6700238ddd455e094b56b"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v20 records AIC Captain composition through CHN/CON/MSG.
+	const approvedCollaborationSHA = "233a5d57a5320b813dbb81aba3362f68990935e076da47b6b13e6eb2bc5206cb"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -310,7 +310,7 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 		t.Fatal("observed source keys and resolved contract keys differ")
 	}
 	sourceMethodKeys := map[string]bool{}
-	fieldPattern := regexp.MustCompile(`(?m)^\s*([a-zA-Z]\w*)\s+\*?(?:repository|service)\.([A-Z]\w*(?:Repository|Service))\b`)
+	fieldPattern := regexp.MustCompile(`(?m)^\s*([a-zA-Z]\w*)\s+\*?(?:(?:repository|service)\.)?([A-Z]\w*(?:Repository|Service))\b`)
 	for _, scope := range sources.ScanScopes {
 		code, err := os.ReadFile("../" + scope.File)
 		if err != nil {
@@ -382,6 +382,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/csat_extension_repository.go":        {"domain.Conversation", "domain.Message", "domain.Inbox", "domain.Contact", "domain.ContactInbox", "domain.AccountUser"},
 		"../internal/repository/inbox_repository.go":                 {"domain.AssignmentPolicy", "domain.Conversation"},
 		"../internal/repository/applied_sla_repository.go":           {"domain.Conversation", "Preload(\"Conversation", "JOIN conversations", "JOIN conversation_labels", "JOIN labels"},
+		"../internal/repository/captain_repository.go":               {"Model(&domain.Conversation", "Model(&domain.Message", "Table(\"inboxes\")", "Preload(\"Inboxes\")"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {
