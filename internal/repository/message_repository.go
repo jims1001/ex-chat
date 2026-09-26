@@ -119,6 +119,10 @@ func (r *MessageRepository) ConversationContentExists(accountID, conversationID 
 	return count > 0, err
 }
 
+func (r *MessageRepository) ReassignContactSender(accountID, fromContactID, toContactID uint) error {
+	return r.db.Model(&domain.Message{}).Where("account_id = ? AND LOWER(sender_type) = ? AND sender_id = ?", accountID, "contact", fromContactID).Update("sender_id", toContactID).Error
+}
+
 func (r *MessageRepository) CountActivityByConversationIDs(accountID uint, conversationIDs []uint) (int64, int64, error) {
 	if len(conversationIDs) == 0 {
 		return 0, 0, nil

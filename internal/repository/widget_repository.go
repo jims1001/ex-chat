@@ -21,6 +21,10 @@ func NewWidgetRepository(db *gorm.DB) *WidgetRepository {
 	return &WidgetRepository{db: db}
 }
 
+func (r *WidgetRepository) ReassignContact(ctx context.Context, accountID, fromContactID, toContactID uint) error {
+	return r.db.WithContext(ctx).Model(&domain.WidgetEvent{}).Where("account_id = ? AND contact_id = ?", accountID, fromContactID).Update("contact_id", toContactID).Error
+}
+
 // GetInboxByWebsiteToken retrieves the inbox associated with a website token
 func (r *WidgetRepository) GetInboxByWebsiteToken(ctx context.Context, token string) (*domain.Inbox, error) {
 	if strings.TrimSpace(token) == "" {

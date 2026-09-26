@@ -17,6 +17,10 @@ func NewCampaignRepository(db *gorm.DB) *CampaignRepository {
 	return &CampaignRepository{db: db}
 }
 
+func (r *CampaignRepository) ReassignContact(ctx context.Context, accountID, fromContactID, toContactID uint) error {
+	return r.db.WithContext(ctx).Model(&domain.CampaignDelivery{}).Where("account_id = ? AND contact_id = ?", accountID, fromContactID).Update("contact_id", toContactID).Error
+}
+
 // Create stores a new campaign
 func (r *CampaignRepository) Create(ctx context.Context, camp *domain.Campaign) error {
 	return r.db.WithContext(ctx).Create(camp).Error

@@ -351,6 +351,29 @@ func (r *ConversationRepository) FindIDsByContactIDs(accountID uint, contactIDs 
 	return ids, err
 }
 
+func (r *ConversationRepository) ActiveContactIDs(accountID uint) ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&domain.Conversation{}).Where("account_id = ? AND status <> ? AND contact_id > 0", accountID, domain.ConversationStatusResolved).Distinct("contact_id").Pluck("contact_id", &ids).Error
+	return ids, err
+}
+
+func (r *ConversationRepository) DetachContactIfInactive(accountID, contactID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var active int64
+		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND contact_id = ? AND status IN ?", accountID, contactID, []string{domain.ConversationStatusOpen, domain.ConversationStatusPending}).Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrContactHasActiveConversations
+		}
+		return tx.Model(&domain.Conversation{}).Where("account_id = ? AND contact_id = ?", accountID, contactID).Update("contact_id", 0).Error
+	})
+}
+
+func (r *ConversationRepository) ReassignContact(accountID, fromContactID, toContactID uint) error {
+	return r.db.Model(&domain.Conversation{}).Where("account_id = ? AND contact_id = ?", accountID, fromContactID).Update("contact_id", toContactID).Error
+}
+
 func (r *ConversationRepository) ListByContactIDs(accountID uint, contactIDs []uint, status string, inboxID, contactID *uint, page, pageSize int) ([]domain.Conversation, int64, error) {
 	query := r.contactIDsQuery(accountID, contactIDs)
 	if status != "" {

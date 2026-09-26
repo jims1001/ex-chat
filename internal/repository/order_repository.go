@@ -23,6 +23,10 @@ func NewOrderRepositoryWithConversationPort(db *gorm.DB, conversations orderConv
 	return &OrderRepository{db: db, conversations: conversations}
 }
 
+func (r *OrderRepository) ReassignContact(accountID, fromContactID, toContactID uint) error {
+	return r.db.Model(&domain.Order{}).Where("account_id = ? AND contact_id = ?", accountID, fromContactID).Update("contact_id", toContactID).Error
+}
+
 func (r *OrderRepository) Update(accountID uint, order *domain.Order) error {
 	if accountID == 0 || order.ID == 0 || order.AccountID != accountID {
 		return gorm.ErrRecordNotFound

@@ -1025,6 +1025,15 @@ func (r *TicketRepository) ListByContact(accountID, contactID uint) ([]domain.Ti
 	return tickets, nil
 }
 
+func (r *TicketRepository) ReassignContact(accountID, fromContactID, toContactID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.Ticket{}).Where("account_id = ? AND contact_id = ?", accountID, fromContactID).Update("contact_id", toContactID).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.TicketComment{}).Where("account_id = ? AND contact_id = ?", accountID, fromContactID).Update("contact_id", toContactID).Error
+	})
+}
+
 // Search queries tickets by text across ticket_number, title, description, and contact info
 func (r *TicketRepository) Search(accountID uint, queryText string, limit int) ([]domain.Ticket, error) {
 	if limit <= 0 || limit > 100 {

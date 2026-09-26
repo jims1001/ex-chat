@@ -1,21 +1,40 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
 	"gorm.io/gorm"
 )
 
 type ContactRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	conversations *ConversationRepository
+	messages      *MessageRepository
+	tickets       *TicketRepository
+	orders        *OrderRepository
+	campaigns     *CampaignRepository
+	projections   contactMergeProjectionPort
+}
+
+type contactMergeProjectionPort interface {
+	ReassignContact(accountID, fromContactID, toContactID uint) error
 }
 
 func NewContactRepository(db *gorm.DB) *ContactRepository {
-	return &ContactRepository{db: db}
+	r := NewContactRepositoryWithOwnerPorts(db, &ConversationRepository{db: db}, &MessageRepository{db: db}, NewTicketRepository(db), &OrderRepository{db: db}, NewCampaignRepository(db))
+	r.projections = newCombinedContactMergeProjection(db)
+	return r
+}
+
+func NewContactRepositoryWithOwnerPorts(db *gorm.DB, conversations *ConversationRepository, messages *MessageRepository, tickets *TicketRepository, orders *OrderRepository, campaigns *CampaignRepository) *ContactRepository {
+	return &ContactRepository{db: db, conversations: conversations, messages: messages, tickets: tickets, orders: orders, campaigns: campaigns}
 }
 
 func (r *ContactRepository) Create(contact *domain.Contact) error {
@@ -136,26 +155,14 @@ func (r *ContactRepository) DeleteNote(accountID, contactID, noteID uint) error 
 var ErrContactHasActiveConversations = errors.New("cannot delete contact with active conversations")
 
 func (r *ContactRepository) Delete(accountID, id uint) error {
+	if r.conversations == nil {
+		return gorm.ErrInvalidData
+	}
+	if err := r.conversations.DetachContactIfInactive(accountID, id); err != nil {
+		return err
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		// 1. Check if contact has active (open or pending) conversations
-		var activeCount int64
-		if err := tx.Model(&domain.Conversation{}).
-			Where("account_id = ? AND contact_id = ? AND status IN ('open', 'pending')", accountID, id).
-			Count(&activeCount).Error; err != nil {
-			return err
-		}
-		if activeCount > 0 {
-			return ErrContactHasActiveConversations
-		}
-
-		// 2. Disassociate historical resolved/snoozed/bot conversations
-		if err := tx.Model(&domain.Conversation{}).
-			Where("account_id = ? AND contact_id = ?", accountID, id).
-			Update("contact_id", 0).Error; err != nil {
-			return err
-		}
-
-		// 3. Cascade clean relations
+		// CUS-owned relations are removed only after CON accepts the detach command.
 		_ = tx.Where("contact_id = ?", id).Delete(&domain.ContactInbox{}).Error
 		_ = tx.Where("contact_id = ?", id).Delete(&domain.ContactLabel{}).Error
 		_ = tx.Where("account_id = ? AND contact_id = ?", accountID, id).Delete(&domain.ContactNote{}).Error
@@ -202,6 +209,36 @@ func (r *ContactRepository) FindContactBySourceID(inboxID uint, sourceID string)
 }
 
 func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) error {
+	if baseID == mergeeID {
+		return gorm.ErrInvalidData
+	}
+	var exists int64
+	if err := r.db.Model(&domain.Contact{}).Where("account_id = ? AND id IN ?", accountID, []uint{baseID, mergeeID}).Count(&exists).Error; err != nil {
+		return err
+	}
+	if exists != 2 {
+		return gorm.ErrRecordNotFound
+	}
+	if r.conversations == nil || r.messages == nil || r.tickets == nil || r.orders == nil || r.campaigns == nil {
+		return gorm.ErrInvalidData
+	}
+	commands := []func() error{
+		func() error { return r.conversations.ReassignContact(accountID, mergeeID, baseID) },
+		func() error { return r.messages.ReassignContactSender(accountID, mergeeID, baseID) },
+		func() error { return r.tickets.ReassignContact(accountID, mergeeID, baseID) },
+		func() error { return r.orders.ReassignContact(accountID, mergeeID, baseID) },
+		func() error { return r.campaigns.ReassignContact(context.Background(), accountID, mergeeID, baseID) },
+	}
+	for _, command := range commands {
+		if err := command(); err != nil {
+			return err
+		}
+	}
+	if r.projections != nil {
+		if err := r.projections.ReassignContact(accountID, mergeeID, baseID); err != nil {
+			return err
+		}
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		// 0. Fetch base and mergee contacts
 		var baseContact domain.Contact
@@ -299,28 +336,14 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 			}
 		}
 
-		// 3. Update Conversations
-		if err := tx.Model(&domain.Conversation{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 4. Migrate Contact Notes from mergee to base contact
+		// Migrate CUS-owned contact notes.
 		if err := tx.Model(&domain.ContactNote{}).
 			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
 			Update("contact_id", baseID).Error; err != nil {
 			return err
 		}
 
-		// 5. Migrate Message sender ownership for incoming messages from mergee contact
-		if err := tx.Model(&domain.Message{}).
-			Where("account_id = ? AND LOWER(sender_type) = ? AND sender_id = ?", accountID, "contact", mergeeID).
-			Update("sender_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 6. Migrate ContactLabels from mergee to base contact
+		// Migrate CUS-owned contact labels.
 		var mergeeLabels []domain.ContactLabel
 		if err := tx.Where("contact_id = ?", mergeeID).Find(&mergeeLabels).Error; err == nil {
 			for _, ml := range mergeeLabels {
@@ -332,53 +355,19 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 			_ = tx.Where("contact_id = ?", mergeeID).Delete(&domain.ContactLabel{}).Error
 		}
 
-		// 7. Migrate Tickets & TicketComments
-		if err := tx.Model(&domain.Ticket{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&domain.TicketComment{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 8. Migrate Orders
-		if err := tx.Model(&domain.Order{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 9. Migrate CampaignDeliveries
-		if err := tx.Model(&domain.CampaignDelivery{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 10. Migrate Calls
-		if err := tx.Model(&domain.Call{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 11. Migrate WidgetEvents
-		if err := tx.Model(&domain.WidgetEvent{}).
-			Where("account_id = ? AND contact_id = ?", accountID, mergeeID).
-			Update("contact_id", baseID).Error; err != nil {
-			return err
-		}
-
-		// 12. Delete mergee Contact
+		// Delete mergee only after every owner command succeeded.
 		if err := tx.Where("account_id = ? AND id = ?", accountID, mergeeID).
 			Delete(&domain.Contact{}).Error; err != nil {
 			return err
 		}
-
-		return nil
+		changeID := foundation.GenerateUUID()
+		return NewJournalRepository(tx).RecordLocalChange(tx, &domain.LocalChangeJournal{
+			ChangeID: changeID, SourceModule: "CUS", AccountID: accountID,
+			ObjectType: "Contact", ObjectID: baseID, Action: "merge",
+			ChangedFields: fmt.Sprintf("merged_contact_id:%d", mergeeID), ActorType: "system",
+			SourceType: "cus.contact.merged.v1", CommandID: changeID, CorrelationID: changeID,
+			Status: "pending", OccurredAt: time.Now().UTC(),
+		})
 	})
 }
 
@@ -387,12 +376,16 @@ func (r *ContactRepository) ListActive(accountID uint, page, pageSize int, searc
 	var contacts []domain.Contact
 	var total int64
 
-	subQuery := r.db.Model(&domain.Conversation{}).
-		Select("DISTINCT contact_id").
-		Where("account_id = ? AND status != ?", accountID, "resolved")
+	if r.conversations == nil {
+		return nil, 0, gorm.ErrInvalidData
+	}
+	activeIDs, err := r.conversations.ActiveContactIDs(accountID)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	query := r.db.Model(&domain.Contact{}).
-		Where("account_id = ? AND id IN (?)", accountID, subQuery)
+		Where("account_id = ? AND id IN (?)", accountID, activeIDs)
 
 	if search != "" {
 		s := "%" + strings.ToLower(search) + "%"
@@ -404,7 +397,7 @@ func (r *ContactRepository) ListActive(accountID uint, page, pageSize int, searc
 	}
 
 	offset := (page - 1) * pageSize
-	err := query.Preload("Company").Preload("Labels").
+	err = query.Preload("Company").Preload("Labels").
 		Offset(offset).Limit(pageSize).
 		Order("id DESC").
 		Find(&contacts).Error

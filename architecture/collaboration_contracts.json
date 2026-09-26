@@ -3899,6 +3899,27 @@
     },
     {
       "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_extension_repository.go", "symbol": "MessageRepository", "method": "CountActivityByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_repository.go", "symbol": "ConversationRepository", "method": "ActiveContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_repository.go", "symbol": "ConversationRepository", "method": "DetachContactIfInactive", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_repository.go", "symbol": "ConversationRepository", "method": "ReassignContact", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_repository.go", "symbol": "MessageRepository", "method": "ReassignContactSender", "use": "write", "contract": "msg.message.update.v1", "replicaEvent": "msg.message.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "TKT", "file": "internal/repository/contact_repository.go", "symbol": "TicketRepository", "method": "ReassignContact", "use": "write", "contract": "tkt.status.change.v1", "replicaEvent": "tkt.ticket_status.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "BIL", "file": "internal/repository/contact_repository.go", "symbol": "OrderRepository", "method": "ReassignContact", "use": "write", "contract": "bil.order.update.v1", "replicaEvent": "bil.order.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "OPS", "file": "internal/repository/contact_repository.go", "symbol": "CampaignRepository", "method": "ReassignContact", "use": "write", "contract": "ops.campaign.trigger.v1", "replicaEvent": "ops.recipient.ready.v1"
     }
   ]
 }

@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -87,6 +88,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_extensions_use_CHN_CON_MSG_owner_queries", func(t *testing.T) { testContactExtensionOwnerBoundary(t, openStore) })
+	t.Run("ORC_contact_lifecycle_uses_all_owner_commands", func(t *testing.T) { testContactRepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -882,5 +884,93 @@ func testContactExtensionOwnerBoundary(t *testing.T, openStore func(string) *gor
 	}
 	if cusDB.Migrator().HasTable(&domain.Inbox{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Message{}) || cusDB.Migrator().HasTable(&domain.Attachment{}) {
 		t.Fatal("CUS store contains CHN/CON/MSG authority tables")
+	}
+}
+
+func testContactRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, conDB, msgDB := openStore("CUS"), openStore("CON"), openStore("MSG")
+	tktDB, bilDB, opsDB, rtmDB, apiDB := openStore("TKT"), openStore("BIL"), openStore("OPS"), openStore("RTM"), openStore("API")
+	base, mergee := domain.Contact{AccountID: 1, Name: "Base"}, domain.Contact{AccountID: 1, Name: "Mergee"}
+	if err := cusDB.Create(&base).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&mergee).Error; err != nil {
+		t.Fatal(err)
+	}
+	conv := domain.Conversation{AccountID: 1, ContactID: mergee.ID, Status: domain.ConversationStatusResolved}
+	if err := conDB.Create(&conv).Error; err != nil {
+		t.Fatal(err)
+	}
+	msg := domain.Message{AccountID: 1, ConversationID: conv.ID, SenderType: "contact", SenderID: mergee.ID, Content: "merge"}
+	if err := msgDB.Create(&msg).Error; err != nil {
+		t.Fatal(err)
+	}
+	ticketContact := mergee.ID
+	ticket := domain.Ticket{AccountID: 1, TicketNumber: "T-MERGE", Title: "merge", ContactID: &ticketContact}
+	if err := tktDB.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	comment := domain.TicketComment{AccountID: 1, TicketID: ticket.ID, ContactID: &ticketContact, Content: "merge"}
+	if err := tktDB.Create(&comment).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := domain.Order{AccountID: 1, OrderID: "O-MERGE", ContactID: &ticketContact}
+	if err := bilDB.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	delivery := domain.CampaignDelivery{AccountID: 1, CampaignID: 1, ContactID: mergee.ID}
+	if err := opsDB.Create(&delivery).Error; err != nil {
+		t.Fatal(err)
+	}
+	call := domain.Call{AccountID: 1, ContactID: mergee.ID, InboxID: 1}
+	if err := rtmDB.Create(&call).Error; err != nil {
+		t.Fatal(err)
+	}
+	eventContact := mergee.ID
+	event := domain.WidgetEvent{AccountID: 1, InboxID: 1, ContactID: &eventContact, Name: "merge"}
+	if err := apiDB.Create(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	convRepo := repository.NewConversationRepository(conDB)
+	repo := repository.NewContactRepositoryWithOwnerPorts(cusDB, convRepo, repository.NewMessageRepositoryWithConversationPort(msgDB, nil), repository.NewTicketRepository(tktDB), repository.NewOrderRepositoryWithConversationPort(bilDB, nil), repository.NewCampaignRepository(opsDB))
+	if err := repo.MergeContacts(1, base.ID, mergee.ID); err != nil {
+		t.Fatal(err)
+	}
+	// RTM consumes cus.contact.merged.v1 because a synchronous ORC -> RTM edge would create a dependency cycle.
+	if err := repository.NewCallRepository(rtmDB).ReassignContact(1, mergee.ID, base.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.NewWidgetRepository(apiDB).ReassignContact(context.Background(), 1, mergee.ID, base.ID); err != nil {
+		t.Fatal(err)
+	}
+	for name, check := range map[string]func() error{
+		"CON": func() error {
+			return conDB.Where("id = ? AND contact_id = ?", conv.ID, base.ID).First(&domain.Conversation{}).Error
+		},
+		"MSG": func() error {
+			return msgDB.Where("id = ? AND sender_id = ?", msg.ID, base.ID).First(&domain.Message{}).Error
+		},
+		"TKT": func() error {
+			return tktDB.Where("id = ? AND contact_id = ?", ticket.ID, base.ID).First(&domain.Ticket{}).Error
+		},
+		"BIL": func() error {
+			return bilDB.Where("id = ? AND contact_id = ?", order.ID, base.ID).First(&domain.Order{}).Error
+		},
+		"OPS": func() error {
+			return opsDB.Where("id = ? AND contact_id = ?", delivery.ID, base.ID).First(&domain.CampaignDelivery{}).Error
+		},
+		"RTM": func() error {
+			return rtmDB.Where("id = ? AND contact_id = ?", call.ID, base.ID).First(&domain.Call{}).Error
+		},
+		"API": func() error {
+			return apiDB.Where("id = ? AND contact_id = ?", event.ID, base.ID).First(&domain.WidgetEvent{}).Error
+		},
+	} {
+		if err := check(); err != nil {
+			t.Fatalf("%s contact reference was not reassigned: %v", name, err)
+		}
+	}
+	if cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Message{}) || cusDB.Migrator().HasTable(&domain.Ticket{}) || cusDB.Migrator().HasTable(&domain.Order{}) || cusDB.Migrator().HasTable(&domain.Call{}) || cusDB.Migrator().HasTable(&domain.WidgetEvent{}) {
+		t.Fatal("CUS contains a foreign owner table")
 	}
 }

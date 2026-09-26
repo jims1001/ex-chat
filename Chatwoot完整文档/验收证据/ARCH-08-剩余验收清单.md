@@ -1,6 +1,6 @@
 # ARCH-08 剩余验收清单
 
-基线：E-ARCH-08-v23。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
+基线：E-ARCH-08-v24。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
 
 ## 必须完成的工作
 
@@ -67,4 +67,5 @@
 - 已完成并验证：AccountRepository 新增成员前通过 IAM 校验用户，成员详情通过 IAM 批量组合，TEN 不保存或更新用户身份数据（E-ARCH-08-v21）。
 - 已完成并验证：CompanyExtensionRepository 在 ORC 组合 IAM 备注作者、CON 会话与统计、MSG 消息和附件，CUS 仅确定公司及联系人范围（E-ARCH-08-v22）。
 - 已完成并验证：ContactExtensionRepository 在 ORC 组合 CHN 收件箱、CON 会话及 MSG 消息附件，CUS 只保存联系人和 ContactInbox 关系（E-ARCH-08-v23）。
-- 下一项：ContactRepository 的 CON/MSG/TKT/BIL/OPS/RTM/API 跨所有者访问边界。
+- 已完成并验证：ContactRepository 的删除、活跃列表和合并通过 CON/MSG/TKT/BIL/OPS 所有者命令组合，RTM/API 通过联系人合并事件迁移引用（E-ARCH-08-v24）。
+- 下一项：LabelRepository 的 CON ConversationLabel 访问边界。
