@@ -29,7 +29,11 @@ type TicketFilter struct {
 
 // TicketRepository handles database operations for tickets, comments and activities
 type TicketRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	accounts      *AccountRepository
+	users         *UserRepository
+	contacts      *ContactRepository
+	conversations *ConversationRepository
 }
 
 type QASamplingTarget struct {
@@ -54,34 +58,122 @@ func (r *TicketRepository) ListQASamplingTargets(accountID uint, limit int) ([]Q
 }
 
 func (r *TicketRepository) ValidateReferences(accountID uint, assigneeID, contactID, conversationID, slaPolicyID *uint) error {
-	checks := []struct {
-		id    *uint
-		model any
-		where string
-	}{
-		{assigneeID, &domain.AccountUser{}, "account_id = ? AND user_id = ?"},
-		{contactID, &domain.Contact{}, "account_id = ? AND id = ?"},
-		{conversationID, &domain.Conversation{}, "account_id = ? AND id = ?"},
-		{slaPolicyID, &domain.SLAPolicy{}, "account_id = ? AND id = ?"},
-	}
-	for _, check := range checks {
-		if check.id == nil || *check.id == 0 {
-			continue
+	if assigneeID != nil && *assigneeID > 0 {
+		if r.accounts == nil {
+			return gorm.ErrInvalidData
 		}
-		var count int64
-		if err := r.db.Model(check.model).Where(check.where, accountID, *check.id).Count(&count).Error; err != nil {
+		member, err := r.accounts.GetMembership(accountID, *assigneeID)
+		if err != nil || member == nil {
+			return fmt.Errorf("referenced resource %d does not belong to account", *assigneeID)
+		}
+	}
+	if contactID != nil && *contactID > 0 {
+		if r.contacts == nil {
+			return gorm.ErrInvalidData
+		}
+		exists, err := r.contacts.Exists(accountID, *contactID)
+		if err != nil {
 			return err
 		}
-		if count == 0 {
-			return fmt.Errorf("referenced resource %d does not belong to account", *check.id)
+		if !exists {
+			return fmt.Errorf("referenced resource %d does not belong to account", *contactID)
 		}
 	}
+	if conversationID != nil && *conversationID > 0 {
+		if r.conversations == nil {
+			return gorm.ErrInvalidData
+		}
+		if _, err := r.conversations.FindSummaryByID(accountID, *conversationID); err != nil {
+			return fmt.Errorf("referenced resource %d does not belong to account", *conversationID)
+		}
+	}
+	// SLA policies are owned by the higher-layer RPT module. API validates the
+	// opaque reference before sending the TKT command, avoiding TKT -> RPT.
 	return nil
 }
 
 // NewTicketRepository creates a new instance of TicketRepository
 func NewTicketRepository(db *gorm.DB) *TicketRepository {
-	return &TicketRepository{db: db}
+	return NewTicketRepositoryWithOwnerPorts(db, &AccountRepository{db: db}, &UserRepository{db: db}, &ContactRepository{db: db}, &ConversationRepository{db: db})
+}
+
+func NewTicketRepositoryWithOwnerPorts(db *gorm.DB, accounts *AccountRepository, users *UserRepository, contacts *ContactRepository, conversations *ConversationRepository) *TicketRepository {
+	return &TicketRepository{db: db, accounts: accounts, users: users, contacts: contacts, conversations: conversations}
+}
+
+func (r *TicketRepository) hydrateTicket(accountID uint, ticket *domain.Ticket) error {
+	if ticket.AssigneeID != nil && r.users != nil {
+		user, err := r.users.FindByID(*ticket.AssigneeID)
+		if err != nil {
+			return err
+		}
+		ticket.Assignee = user
+	}
+	if ticket.CreatorID != nil && r.users != nil {
+		user, err := r.users.FindByID(*ticket.CreatorID)
+		if err != nil {
+			return err
+		}
+		ticket.Creator = user
+	}
+	if ticket.ContactID != nil && r.contacts != nil {
+		contact, err := r.contacts.FindByID(accountID, *ticket.ContactID)
+		if err != nil {
+			return err
+		}
+		ticket.Contact = contact
+	}
+	if ticket.ConversationID != nil && r.conversations != nil {
+		conversation, err := r.conversations.FindSummaryByID(accountID, *ticket.ConversationID)
+		if err != nil {
+			return err
+		}
+		ticket.Conversation = conversation
+	}
+	for i := range ticket.Comments {
+		if ticket.Comments[i].UserID != nil && r.users != nil {
+			user, err := r.users.FindByID(*ticket.Comments[i].UserID)
+			if err != nil {
+				return err
+			}
+			ticket.Comments[i].User = user
+		}
+		if ticket.Comments[i].ContactID != nil && r.contacts != nil {
+			contact, err := r.contacts.FindByID(accountID, *ticket.Comments[i].ContactID)
+			if err != nil {
+				return err
+			}
+			ticket.Comments[i].Contact = contact
+		}
+	}
+	for i := range ticket.Activities {
+		if ticket.Activities[i].UserID != nil && r.users != nil {
+			user, err := r.users.FindByID(*ticket.Activities[i].UserID)
+			if err != nil {
+				return err
+			}
+			ticket.Activities[i].User = user
+		}
+	}
+	for i := range ticket.StatusHistories {
+		if ticket.StatusHistories[i].UserID != nil && r.users != nil {
+			user, err := r.users.FindByID(*ticket.StatusHistories[i].UserID)
+			if err != nil {
+				return err
+			}
+			ticket.StatusHistories[i].User = user
+		}
+	}
+	return nil
+}
+
+func (r *TicketRepository) hydrateTickets(accountID uint, tickets []domain.Ticket) error {
+	for i := range tickets {
+		if err := r.hydrateTicket(accountID, &tickets[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // List queries tickets matching the filter criteria with pagination and SLA status refresh
@@ -165,10 +257,7 @@ func (r *TicketRepository) List(accountID uint, filter TicketFilter) ([]domain.T
 	offset := (page - 1) * limit
 
 	var tickets []domain.Ticket
-	if err := query.Preload("Assignee").
-		Preload("Contact").
-		Preload("Creator").
-		Order("created_at DESC").
+	if err := query.Order("created_at DESC").
 		Offset(offset).
 		Limit(limit).
 		Find(&tickets).Error; err != nil {
@@ -192,6 +281,9 @@ func (r *TicketRepository) List(accountID uint, filter TicketFilter) ([]domain.T
 			}
 		}
 	}
+	if err := r.hydrateTickets(accountID, tickets); err != nil {
+		return nil, 0, err
+	}
 
 	return tickets, total, nil
 }
@@ -200,23 +292,16 @@ func (r *TicketRepository) List(accountID uint, filter TicketFilter) ([]domain.T
 func (r *TicketRepository) FindByID(accountID, id uint) (*domain.Ticket, error) {
 	var ticket domain.Ticket
 	if err := r.db.Where("account_id = ? AND id = ?", accountID, id).
-		Preload("Assignee").
-		Preload("Contact").
-		Preload("Creator").
-		Preload("Conversation").
-		Preload("Comments", func(db *gorm.DB) *gorm.DB {
-			return db.Preload("User").Preload("Contact").Order("created_at ASC")
-		}).
-		Preload("Activities", func(db *gorm.DB) *gorm.DB {
-			return db.Preload("User").Order("created_at ASC")
-		}).
-		Preload("StatusHistories", func(db *gorm.DB) *gorm.DB {
-			return db.Preload("User").Order("created_at ASC")
-		}).
+		Preload("Comments", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("StatusHistories", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
 		Preload("Attachments", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
 		First(&ticket).Error; err != nil {
+		return nil, err
+	}
+	if err := r.hydrateTicket(accountID, &ticket); err != nil {
 		return nil, err
 	}
 	return &ticket, nil
@@ -226,23 +311,16 @@ func (r *TicketRepository) FindByID(accountID, id uint) (*domain.Ticket, error) 
 func (r *TicketRepository) FindByTicketNumber(accountID uint, ticketNumber string) (*domain.Ticket, error) {
 	var ticket domain.Ticket
 	if err := r.db.Where("account_id = ? AND ticket_number = ?", accountID, ticketNumber).
-		Preload("Assignee").
-		Preload("Contact").
-		Preload("Creator").
-		Preload("Conversation").
-		Preload("Comments", func(db *gorm.DB) *gorm.DB {
-			return db.Preload("User").Preload("Contact").Order("created_at ASC")
-		}).
-		Preload("Activities", func(db *gorm.DB) *gorm.DB {
-			return db.Preload("User").Order("created_at ASC")
-		}).
-		Preload("StatusHistories", func(db *gorm.DB) *gorm.DB {
-			return db.Preload("User").Order("created_at ASC")
-		}).
+		Preload("Comments", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
+		Preload("StatusHistories", func(db *gorm.DB) *gorm.DB { return db.Order("created_at ASC") }).
 		Preload("Attachments", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
 		First(&ticket).Error; err != nil {
+		return nil, err
+	}
+	if err := r.hydrateTicket(accountID, &ticket); err != nil {
 		return nil, err
 	}
 	return &ticket, nil
@@ -552,11 +630,25 @@ func (r *TicketRepository) AddComment(comment *domain.TicketComment) error {
 func (r *TicketRepository) ListComments(accountID, ticketID uint) ([]domain.TicketComment, error) {
 	var comments []domain.TicketComment
 	if err := r.db.Where("account_id = ? AND ticket_id = ?", accountID, ticketID).
-		Preload("User").
-		Preload("Contact").
 		Order("created_at ASC").
 		Find(&comments).Error; err != nil {
 		return nil, err
+	}
+	for i := range comments {
+		if comments[i].UserID != nil && r.users != nil {
+			user, err := r.users.FindByID(*comments[i].UserID)
+			if err != nil {
+				return nil, err
+			}
+			comments[i].User = user
+		}
+		if comments[i].ContactID != nil && r.contacts != nil {
+			contact, err := r.contacts.FindByID(accountID, *comments[i].ContactID)
+			if err != nil {
+				return nil, err
+			}
+			comments[i].Contact = contact
+		}
 	}
 	return comments, nil
 }
@@ -576,10 +668,18 @@ func (r *TicketRepository) AddActivity(activity *domain.TicketActivity) error {
 func (r *TicketRepository) ListActivities(accountID, ticketID uint) ([]domain.TicketActivity, error) {
 	var activities []domain.TicketActivity
 	if err := r.db.Where("account_id = ? AND ticket_id = ?", accountID, ticketID).
-		Preload("User").
 		Order("created_at ASC").
 		Find(&activities).Error; err != nil {
 		return nil, err
+	}
+	for i := range activities {
+		if activities[i].UserID != nil && r.users != nil {
+			user, err := r.users.FindByID(*activities[i].UserID)
+			if err != nil {
+				return nil, err
+			}
+			activities[i].User = user
+		}
 	}
 	return activities, nil
 }
@@ -883,10 +983,18 @@ func (r *TicketRepository) BatchRemind(accountID uint, ticketIDs []uint, userID 
 func (r *TicketRepository) ListStatusHistory(accountID, ticketID uint) ([]domain.TicketStatusHistory, error) {
 	var histories []domain.TicketStatusHistory
 	if err := r.db.Where("account_id = ? AND ticket_id = ?", accountID, ticketID).
-		Preload("User").
 		Order("created_at ASC").
 		Find(&histories).Error; err != nil {
 		return nil, err
+	}
+	for i := range histories {
+		if histories[i].UserID != nil && r.users != nil {
+			user, err := r.users.FindByID(*histories[i].UserID)
+			if err != nil {
+				return nil, err
+			}
+			histories[i].User = user
+		}
 	}
 	return histories, nil
 }
@@ -1019,12 +1127,12 @@ func (r *TicketRepository) DeleteAttachment(accountID, ticketID, attachmentID ui
 func (r *TicketRepository) ListByConversation(accountID, conversationID uint) ([]domain.Ticket, error) {
 	var tickets []domain.Ticket
 	if err := r.db.Where("account_id = ? AND conversation_id = ?", accountID, conversationID).
-		Preload("Assignee").
-		Preload("Contact").
-		Preload("Creator").
 		Preload("Attachments").
 		Order("created_at DESC").
 		Find(&tickets).Error; err != nil {
+		return nil, err
+	}
+	if err := r.hydrateTickets(accountID, tickets); err != nil {
 		return nil, err
 	}
 	return tickets, nil
@@ -1034,13 +1142,12 @@ func (r *TicketRepository) ListByConversation(accountID, conversationID uint) ([
 func (r *TicketRepository) ListByContact(accountID, contactID uint) ([]domain.Ticket, error) {
 	var tickets []domain.Ticket
 	if err := r.db.Where("account_id = ? AND contact_id = ?", accountID, contactID).
-		Preload("Assignee").
-		Preload("Contact").
-		Preload("Creator").
-		Preload("Conversation").
 		Preload("Attachments").
 		Order("created_at DESC").
 		Find(&tickets).Error; err != nil {
+		return nil, err
+	}
+	if err := r.hydrateTickets(accountID, tickets); err != nil {
 		return nil, err
 	}
 	return tickets, nil
@@ -1064,14 +1171,13 @@ func (r *TicketRepository) Search(accountID uint, queryText string, limit int) (
 	var tickets []domain.Ticket
 	if err := r.db.Where("account_id = ?", accountID).
 		Where("ticket_number LIKE ? OR title LIKE ? OR description LIKE ? OR custom_attributes LIKE ?", q, q, q, q).
-		Preload("Assignee").
-		Preload("Contact").
-		Preload("Creator").
-		Preload("Conversation").
 		Preload("Attachments").
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&tickets).Error; err != nil {
+		return nil, err
+	}
+	if err := r.hydrateTickets(accountID, tickets); err != nil {
 		return nil, err
 	}
 	return tickets, nil
@@ -1146,17 +1252,18 @@ func (r *TicketRepository) AddWatcher(accountID, ticketID, userID uint) error {
 	if accountID == 0 || ticketID == 0 || userID == 0 {
 		return errors.New("account_id, ticket_id and user_id are required")
 	}
-	var ticketCount, memberCount int64
+	var ticketCount int64
 	if err := r.db.Model(&domain.Ticket{}).Where("account_id = ? AND id = ?", accountID, ticketID).Count(&ticketCount).Error; err != nil {
 		return err
 	}
 	if ticketCount == 0 {
 		return gorm.ErrRecordNotFound
 	}
-	if err := r.db.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", accountID, userID).Count(&memberCount).Error; err != nil {
-		return err
+	if r.accounts == nil {
+		return gorm.ErrInvalidData
 	}
-	if memberCount == 0 {
+	member, err := r.accounts.GetMembership(accountID, userID)
+	if err != nil || member == nil {
 		return errors.New("watcher does not belong to account")
 	}
 	var watcher domain.TicketWatcher
@@ -1176,10 +1283,19 @@ func (r *TicketRepository) RemoveWatcher(accountID, ticketID, userID uint) error
 
 func (r *TicketRepository) ListWatchers(accountID, ticketID uint) ([]domain.TicketWatcher, error) {
 	var watchers []domain.TicketWatcher
-	err := r.db.Where("account_id = ? AND ticket_id = ?", accountID, ticketID).
-		Preload("User").
-		Find(&watchers).Error
-	return watchers, err
+	if err := r.db.Where("account_id = ? AND ticket_id = ?", accountID, ticketID).Find(&watchers).Error; err != nil {
+		return nil, err
+	}
+	for i := range watchers {
+		if r.users != nil {
+			user, err := r.users.FindByID(watchers[i].UserID)
+			if err != nil {
+				return nil, err
+			}
+			watchers[i].User = user
+		}
+	}
+	return watchers, nil
 }
 
 // BulkUpdate updates multiple tickets in a transaction

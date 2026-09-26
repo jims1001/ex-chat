@@ -4596,6 +4596,56 @@
       "use": "write",
       "contract": "msg.message.update.v1",
       "replicaEvent": "msg.message.changed.v1"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "TEN",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "AccountRepository",
+      "method": "GetMembership",
+      "use": "read",
+      "contract": "ten.members.list.v1",
+      "replicaEvent": "ten.membership.changed.v1"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "IAM",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "UserRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "CUS",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "ContactRepository",
+      "method": "Exists",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "CUS",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "ContactRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "CON",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     }
   ]
 }

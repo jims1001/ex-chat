@@ -100,6 +100,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
+	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -889,6 +890,69 @@ func testWidgetRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gor
 	for name, db := range map[string]*gorm.DB{"CHN": chnDB, "CUS": cusDB, "CON": conDB, "OPS": opsDB, "MSG": msgDB} {
 		if db.Migrator().HasTable(&domain.WidgetEvent{}) {
 			t.Fatalf("%s store contains API WidgetEvent table", name)
+		}
+	}
+}
+
+func testTicketRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	tktDB, tenDB, iamDB := openStore("TKT"), openStore("TEN"), openStore("IAM")
+	cusDB, conDB, rptDB := openStore("CUS"), openStore("CON"), openStore("RPT")
+	user := domain.User{Name: "ticket owner", Email: "ticket-owner@example.test"}
+	if err := iamDB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tenDB.Create(&domain.AccountUser{AccountID: 101, UserID: user.ID, Role: domain.RoleAgent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	contact := domain.Contact{AccountID: 101, Name: "ticket contact"}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 101, InboxID: 1, ContactID: contact.ID, DisplayID: 1}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	sla := domain.SLAPolicy{AccountID: 101, Name: "ticket sla"}
+	if err := rptDB.Create(&sla).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewTicketRepositoryWithOwnerPorts(tktDB, repository.NewAccountRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB)), repository.NewUserRepository(iamDB), repository.NewContactRepository(cusDB), repository.NewConversationRepository(conDB))
+	ticket := domain.Ticket{AccountID: 101, Title: "isolated ticket", AssigneeID: &user.ID, CreatorID: &user.ID, ContactID: &contact.ID, ConversationID: &conversation.ID, SLAPolicyID: &sla.ID}
+	if err := repo.Create(&ticket); err != nil {
+		t.Fatalf("owner reference validation failed: %v", err)
+	}
+	if err := repo.AddWatcher(101, ticket.ID, user.ID); err != nil {
+		t.Fatalf("TEN watcher validation failed: %v", err)
+	}
+	loaded, err := repo.FindByID(101, ticket.ID)
+	if err != nil || loaded.Assignee == nil || loaded.Creator == nil || loaded.Contact == nil || loaded.Conversation == nil {
+		t.Fatalf("owner hydration failed: ticket=%+v err=%v", loaded, err)
+	}
+	watchers, err := repo.ListWatchers(101, ticket.ID)
+	if err != nil || len(watchers) != 1 || watchers[0].User == nil || watchers[0].User.ID != user.ID {
+		t.Fatalf("IAM watcher hydration failed: watchers=%+v err=%v", watchers, err)
+	}
+	foreign := uint(999999)
+	if err := repo.ValidateReferences(101, &foreign, nil, nil, nil); err == nil {
+		t.Fatal("foreign TEN member accepted")
+	}
+	if err := repo.ValidateReferences(101, nil, &foreign, nil, nil); err == nil {
+		t.Fatal("foreign CUS contact accepted")
+	}
+	if err := repo.ValidateReferences(101, nil, nil, &foreign, nil); err == nil {
+		t.Fatal("foreign CON conversation accepted")
+	}
+	if err := repo.ValidateReferences(101, nil, nil, nil, &foreign); err != nil {
+		t.Fatalf("TKT attempted to validate opaque RPT reference: %v", err)
+	}
+	for _, model := range []any{&domain.AccountUser{}, &domain.User{}, &domain.Contact{}, &domain.Conversation{}, &domain.SLAPolicy{}} {
+		if tktDB.Migrator().HasTable(model) {
+			t.Fatalf("TKT store contains foreign authority table %T", model)
+		}
+	}
+	for name, db := range map[string]*gorm.DB{"TEN": tenDB, "IAM": iamDB, "CUS": cusDB, "CON": conDB, "RPT": rptDB} {
+		if db.Migrator().HasTable(&domain.Ticket{}) {
+			t.Fatalf("%s store contains TKT authority table", name)
 		}
 	}
 }

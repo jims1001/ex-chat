@@ -60,7 +60,8 @@
     {"consumer":"EXT","file":"internal/repository/platform_repository.go"},
     {"consumer":"API","file":"internal/repository/public_repository.go"},
     {"consumer":"QLT","file":"internal/repository/qa_repository.go"},
-    {"consumer":"API","file":"internal/repository/widget_repository.go"}
+    {"consumer":"API","file":"internal/repository/widget_repository.go"},
+    {"consumer":"TKT","file":"internal/repository/ticket_repository.go"}
   ],
   "modules": [
     {"name":"IAM","synchronous":[],"events":[],"shared":[],"startup":[]},
@@ -73,7 +74,7 @@
     {"name":"CON","synchronous":["TEN","CHN","CUS"],"events":[],"shared":["CHN","CUS"],"startup":[]},
     {"name":"MSG","synchronous":["TEN","CHN","CON","MED"],"events":[],"shared":["CON"],"startup":[]},
     {"name":"RTE","synchronous":["TEN","CHN","CON","MSG"],"events":["MSG"],"shared":["CON"],"startup":[]},
-    {"name":"TKT","synchronous":["TEN","CUS","CON"],"events":["MSG"],"shared":[],"startup":[]},
+    {"name":"TKT","synchronous":["IAM","TEN","CUS","CON"],"events":["MSG"],"shared":[],"startup":[]},
     {"name":"QLT","synchronous":["TEN","CHN","CUS","CON","MSG","RTE","TKT"],"events":[],"shared":[],"startup":[]},
     {"name":"KB","synchronous":["TEN","MED"],"events":[],"shared":[],"startup":[]},
     {"name":"BIL","synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":[]},
@@ -221,6 +222,10 @@
     {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"ConversationRepository"},
     {"consumer":"API","provider":"OPS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"CampaignRepository"},
     {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"LabelRepository"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"MessageRepository"}
+    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"MessageRepository"},
+    {"consumer":"TKT","provider":"TEN","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"AccountRepository"},
+    {"consumer":"TKT","provider":"IAM","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"UserRepository"},
+    {"consumer":"TKT","provider":"CUS","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"ContactRepository"},
+    {"consumer":"TKT","provider":"CON","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"ConversationRepository"}
   ]
 }

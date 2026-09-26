@@ -297,6 +297,7 @@
       "capabilitiesRef": "TKT",
       "startupRequired": [],
       "capabilityDependencies": [
+        "IAM",
         "TEN",
         "CUS",
         "CON"

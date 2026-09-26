@@ -103,8 +103,8 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// E-ARCH-08-v31 registers QLT sampling dependencies on TKT and CON.
-	const approvedManifestSHA256 = "a2fdf14652e5b220890847f6e68a3efce24e6088b77ea7b9b8d92f44d10249a7"
+	// E-ARCH-08-v33 registers TKT owner dependencies for reference validation and hydration.
+	const approvedManifestSHA256 = "abe9b02705121dcbe0f3a7e2541040d485b6e61cf687e733717e3d33159f1226"
 	if actual := fmt.Sprintf("%x", sha256.Sum256(raw)); actual != approvedManifestSHA256 {
 		t.Fatalf("dependency manifest changed (%s); reopen ARCH-03 and approve a new fingerprint", actual)
 	}
