@@ -11,14 +11,14 @@ import (
 
 type AccountRepository struct {
 	db    *gorm.DB
-	users teamUserPort
+	users *UserRepository
 }
 
 func NewAccountRepository(db *gorm.DB) *AccountRepository {
 	return NewAccountRepositoryWithUserPort(db, NewUserRepository(db))
 }
 
-func NewAccountRepositoryWithUserPort(db *gorm.DB, users teamUserPort) *AccountRepository {
+func NewAccountRepositoryWithUserPort(db *gorm.DB, users *UserRepository) *AccountRepository {
 	return &AccountRepository{db: db, users: users}
 }
 
@@ -47,6 +47,16 @@ func (r *AccountRepository) AddMember(accountID, userID uint, role string) error
 }
 
 func (r *AccountRepository) AddMemberWithRole(accountID, userID uint, role string, customRoleID *uint) error {
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	user, err := r.users.FindByID(userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return gorm.ErrRecordNotFound
+	}
 	member := domain.AccountUser{
 		AccountID:    accountID,
 		UserID:       userID,

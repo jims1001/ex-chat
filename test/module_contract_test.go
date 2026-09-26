@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v20 records AIC Captain composition through CHN/CON/MSG.
-	const approvedCollaborationSHA = "233a5d57a5320b813dbb81aba3362f68990935e076da47b6b13e6eb2bc5206cb"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v21 records TEN account membership composition through IAM.
+	const approvedCollaborationSHA = "597d0d11778be009410b21739c1d0ea53d38283067681af089252c0afc4e7f23"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -383,6 +383,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/inbox_repository.go":                 {"domain.AssignmentPolicy", "domain.Conversation"},
 		"../internal/repository/applied_sla_repository.go":           {"domain.Conversation", "Preload(\"Conversation", "JOIN conversations", "JOIN conversation_labels", "JOIN labels"},
 		"../internal/repository/captain_repository.go":               {"Model(&domain.Conversation", "Model(&domain.Message", "Table(\"inboxes\")", "Preload(\"Inboxes\")"},
+		"../internal/repository/account_repository.go":               {"Model(&domain.User", "Preload(\"User\")", "Create(&domain.User", "Save(&domain.User"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

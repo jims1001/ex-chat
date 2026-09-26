@@ -563,6 +563,26 @@
       "replicaEvent": "chn.inbox.changed.v1"
     },
     {
+      "consumer": "TEN",
+      "provider": "IAM",
+      "file": "internal/repository/account_repository.go",
+      "symbol": "UserRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "TEN",
+      "provider": "IAM",
+      "file": "internal/repository/account_repository.go",
+      "symbol": "UserRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
       "consumer": "AIC",
       "provider": "CHN",
       "file": "internal/repository/captain_repository.go",
