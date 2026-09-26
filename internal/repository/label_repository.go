@@ -10,11 +10,16 @@ import (
 )
 
 type LabelRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	conversations *ConversationRepository
 }
 
 func NewLabelRepository(db *gorm.DB) *LabelRepository {
-	return &LabelRepository{db: db}
+	return NewLabelRepositoryWithConversationPort(db, &ConversationRepository{db: db})
+}
+
+func NewLabelRepositoryWithConversationPort(db *gorm.DB, conversations *ConversationRepository) *LabelRepository {
+	return &LabelRepository{db: db, conversations: conversations}
 }
 
 func (r *LabelRepository) Create(label *domain.Label) error {
@@ -73,31 +78,58 @@ func (r *LabelRepository) Update(label *domain.Label) error {
 }
 
 func (r *LabelRepository) Delete(accountID, id uint) error {
+	label, err := r.FindByID(accountID, id)
+	if err != nil {
+		return err
+	}
+	if label == nil {
+		return gorm.ErrRecordNotFound
+	}
+	if r.conversations == nil {
+		return gorm.ErrInvalidData
+	}
+	if err := r.conversations.DeleteLabelReferences(accountID, id); err != nil {
+		return err
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		_ = tx.Where("label_id = ?", id).Delete(&domain.ConversationLabel{}).Error
-		_ = tx.Where("label_id = ?", id).Delete(&domain.ContactLabel{}).Error
+		if err := tx.Where("label_id = ?", id).Delete(&domain.ContactLabel{}).Error; err != nil {
+			return err
+		}
 		return tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Label{}).Error
 	})
 }
 
-func (r *LabelRepository) AttachToConversation(convID, labelID uint) error {
-	cl := domain.ConversationLabel{
-		ConversationID: convID,
-		LabelID:        labelID,
+func (r *LabelRepository) AttachToConversation(accountID, convID, labelID uint) error {
+	exists, err := r.Exists(accountID, labelID)
+	if err != nil {
+		return err
 	}
-	return r.db.Where(cl).FirstOrCreate(&cl).Error
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	if r.conversations == nil {
+		return gorm.ErrInvalidData
+	}
+	return r.conversations.AttachLabelReference(accountID, convID, labelID)
 }
 
-func (r *LabelRepository) DetachFromConversation(convID, labelID uint) error {
-	return r.db.Where("conversation_id = ? AND label_id = ?", convID, labelID).
-		Delete(&domain.ConversationLabel{}).Error
+func (r *LabelRepository) DetachFromConversation(accountID, convID, labelID uint) error {
+	if r.conversations == nil {
+		return gorm.ErrInvalidData
+	}
+	return r.conversations.DetachLabel(accountID, convID, labelID)
 }
 
-func (r *LabelRepository) GetConversationLabels(convID uint) ([]domain.Label, error) {
+func (r *LabelRepository) GetConversationLabels(accountID, convID uint) ([]domain.Label, error) {
+	if r.conversations == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	labelIDs, err := r.conversations.FindLabelIDs(accountID, convID)
+	if err != nil || len(labelIDs) == 0 {
+		return nil, err
+	}
 	var labels []domain.Label
-	err := r.db.Joins("JOIN conversation_labels ON conversation_labels.label_id = labels.id").
-		Where("conversation_labels.conversation_id = ?", convID).
-		Find(&labels).Error
+	err = r.db.Where("account_id = ? AND id IN ?", accountID, labelIDs).Find(&labels).Error
 	return labels, err
 }
 

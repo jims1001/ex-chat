@@ -808,6 +808,12 @@ func (r *ConversationRepository) AttachLabel(accountID, conversationID, labelID 
 	if !labelExists {
 		return gorm.ErrRecordNotFound
 	}
+	return r.AttachLabelReference(accountID, conversationID, labelID)
+}
+
+// AttachLabelReference writes the CON-owned relationship after the caller has
+// validated the CUS-owned label.
+func (r *ConversationRepository) AttachLabelReference(accountID, conversationID, labelID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var conversationCount int64
 		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Count(&conversationCount).Error; err != nil {
@@ -827,6 +833,30 @@ func (r *ConversationRepository) DetachLabel(accountID, conversationID, labelID 
 	return r.db.Where(
 		"conversation_id IN (?) AND label_id = ?",
 		r.db.Model(&domain.Conversation{}).Select("id").Where("account_id = ? AND id = ?", accountID, conversationID),
+		labelID,
+	).Delete(&domain.ConversationLabel{}).Error
+}
+
+// FindLabelIDs returns CON-owned relationship data for an account-scoped conversation.
+func (r *ConversationRepository) FindLabelIDs(accountID, conversationID uint) ([]uint, error) {
+	var conversationCount int64
+	if err := r.db.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Count(&conversationCount).Error; err != nil {
+		return nil, err
+	}
+	if conversationCount != 1 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var labelIDs []uint
+	err := r.db.Model(&domain.ConversationLabel{}).Where("conversation_id = ?", conversationID).Pluck("label_id", &labelIDs).Error
+	return labelIDs, err
+}
+
+// DeleteLabelReferences removes only relations attached to conversations owned
+// by the supplied account, leaving other tenants untouched.
+func (r *ConversationRepository) DeleteLabelReferences(accountID, labelID uint) error {
+	return r.db.Where(
+		"conversation_id IN (?) AND label_id = ?",
+		r.db.Model(&domain.Conversation{}).Select("id").Where("account_id = ?", accountID),
 		labelID,
 	).Delete(&domain.ConversationLabel{}).Error
 }

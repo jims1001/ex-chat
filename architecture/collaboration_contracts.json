@@ -3920,6 +3920,18 @@
     },
     {
       "consumer": "ORC", "provider": "OPS", "file": "internal/repository/contact_repository.go", "symbol": "CampaignRepository", "method": "ReassignContact", "use": "write", "contract": "ops.campaign.trigger.v1", "replicaEvent": "ops.recipient.ready.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "AttachLabelReference", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "DeleteLabelReferences", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "DetachLabel", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "FindLabelIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
     }
   ]
 }

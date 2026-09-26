@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v24 records contact lifecycle composition through owner commands.
-	const approvedCollaborationSHA = "68ed81f484d226222395428b1d048c82b99a81d2d8f1f62a46fad3c00675d0df"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v25 records label relation composition through CON commands and queries.
+	const approvedCollaborationSHA = "a4b44b7afd3e9f101899607c0f66ea984e87ba0f63c9e2a7f3b90d0464a016bf"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -387,6 +387,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/company_extension_repository.go":     {"Model(&domain.Conversation", "Model(&domain.User", "Preload(\"User\")", "JOIN conversations", "JOIN messages", "Table(\"attachments\")", "Table(\"messages\")"},
 		"../internal/repository/contact_extension_repository.go":     {"Model(&domain.Conversation", "Preload(\"Inbox\")", "JOIN inboxes", "JOIN conversations", "JOIN messages", "Table(\"attachments\")", "Table(\"messages\")"},
 		"../internal/repository/contact_repository.go":               {"Model(&domain.Conversation", "Model(&domain.Message", "Model(&domain.Ticket", "Model(&domain.TicketComment", "Model(&domain.Order", "Model(&domain.CampaignDelivery", "Model(&domain.Call", "Model(&domain.WidgetEvent"},
+		"../internal/repository/label_repository.go":                 {"domain.ConversationLabel", "JOIN conversation_labels", "Table(\"conversation_labels\")"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

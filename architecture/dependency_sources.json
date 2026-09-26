@@ -53,6 +53,7 @@
     {"consumer":"ORC","file":"internal/repository/company_extension_repository.go"},
     {"consumer":"ORC","file":"internal/repository/contact_extension_repository.go"},
     {"consumer":"ORC","file":"internal/repository/contact_repository.go"},
+    {"consumer":"ORC","file":"internal/repository/label_repository.go"},
     {"consumer":"RPT","file":"internal/handler/applied_sla_handler.go"},
     {"consumer":"QLT","file":"internal/handler/csat_handler.go"}
   ],
@@ -146,6 +147,7 @@
     {"consumer":"ORC","provider":"TKT","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"TicketRepository"},
     {"consumer":"ORC","provider":"BIL","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"OrderRepository"},
     {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"CampaignRepository"},
+    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/repository/label_repository.go","symbol":"ConversationRepository"},
     {"consumer":"CUS","provider":"CHN","kind":"synchronous","file":"internal/handler/contact_handler.go","symbol":"InboxRepository"},
     {"consumer":"EXT","provider":"IAM","kind":"synchronous","file":"internal/handler/platform_handler.go","symbol":"UserRepository"},
     {"consumer":"OPS","provider":"AUT","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"AutomationService"},

@@ -109,11 +109,11 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 			Status:    domain.ConversationStatusOpen,
 		}
 		_ = convRepo.Create(&conv)
-		_ = labelRepo.AttachToConversation(conv.ID, lblVip.ID)
-		_ = labelRepo.AttachToConversation(conv.ID, lblSupport.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblVip.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblSupport.ID)
 
 		// Before trigger: 2 labels
-		labelsBefore, _ := labelRepo.GetConversationLabels(conv.ID)
+		labelsBefore, _ := labelRepo.GetConversationLabels(account.ID, conv.ID)
 		if len(labelsBefore) != 2 {
 			t.Fatalf("expected 2 labels before, got %d", len(labelsBefore))
 		}
@@ -122,7 +122,7 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 		autoService.HandleConversationUpdated(&conv)
 
 		// After trigger: only "support" should remain
-		labelsAfter, _ := labelRepo.GetConversationLabels(conv.ID)
+		labelsAfter, _ := labelRepo.GetConversationLabels(account.ID, conv.ID)
 		if len(labelsAfter) != 1 {
 			t.Fatalf("expected 1 label after remove_label, got %d: %+v", len(labelsAfter), labelsAfter)
 		}
@@ -161,9 +161,9 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 			Status:    domain.ConversationStatusOpen,
 		}
 		_ = convRepo.Create(&conv)
-		_ = labelRepo.AttachToConversation(conv.ID, lblVip.ID)
-		_ = labelRepo.AttachToConversation(conv.ID, lblUrgent.ID)
-		_ = labelRepo.AttachToConversation(conv.ID, lblBilling.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblVip.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblUrgent.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblBilling.ID)
 
 		msg := domain.Message{
 			AccountID:      account.ID,
@@ -175,7 +175,7 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 
 		autoService.HandleMessageCreated(&conv, &msg)
 
-		labelsAfter, _ := labelRepo.GetConversationLabels(conv.ID)
+		labelsAfter, _ := labelRepo.GetConversationLabels(account.ID, conv.ID)
 		if len(labelsAfter) != 1 {
 			t.Fatalf("expected 1 label remaining, got %d: %+v", len(labelsAfter), labelsAfter)
 		}
@@ -216,11 +216,11 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 			Status:    domain.ConversationStatusOpen,
 		}
 		_ = convRepo.Create(&conv)
-		_ = labelRepo.AttachToConversation(conv.ID, lblSupport.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblSupport.ID)
 
 		autoService.HandleConversationUpdated(&conv)
 
-		labelsAfter, _ := labelRepo.GetConversationLabels(conv.ID)
+		labelsAfter, _ := labelRepo.GetConversationLabels(account.ID, conv.ID)
 		if len(labelsAfter) != 0 {
 			t.Fatalf("expected 0 labels remaining, got %d", len(labelsAfter))
 		}
@@ -251,9 +251,9 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 			Status:    domain.ConversationStatusOpen,
 		}
 		_ = convRepo.Create(&conv)
-		_ = labelRepo.AttachToConversation(conv.ID, lblVip.ID)
-		_ = labelRepo.AttachToConversation(conv.ID, lblSupport.ID)
-		_ = labelRepo.AttachToConversation(conv.ID, lblBilling.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblVip.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblSupport.ID)
+		_ = labelRepo.AttachToConversation(account.ID, conv.ID, lblBilling.ID)
 
 		res, err := macroRepo.Execute(context.Background(), account.ID, macro.ID, []uint{conv.ID})
 		if err != nil {
@@ -263,7 +263,7 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 			t.Fatalf("expected macro success, got %v", res[conv.ID])
 		}
 
-		labelsAfter, _ := labelRepo.GetConversationLabels(conv.ID)
+		labelsAfter, _ := labelRepo.GetConversationLabels(account.ID, conv.ID)
 		if len(labelsAfter) != 1 {
 			t.Fatalf("expected 1 label after macro remove_label, got %d", len(labelsAfter))
 		}
@@ -283,9 +283,9 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 		_ = convRepo.Create(&c1)
 		_ = convRepo.Create(&c2)
 
-		_ = labelRepo.AttachToConversation(c1.ID, lblVip.ID)
-		_ = labelRepo.AttachToConversation(c1.ID, lblBilling.ID)
-		_ = labelRepo.AttachToConversation(c2.ID, lblVip.ID)
+		_ = labelRepo.AttachToConversation(account.ID, c1.ID, lblVip.ID)
+		_ = labelRepo.AttachToConversation(account.ID, c1.ID, lblBilling.ID)
+		_ = labelRepo.AttachToConversation(account.ID, c2.ID, lblVip.ID)
 
 		gin.SetMode(gin.TestMode)
 		r := gin.New()
@@ -312,12 +312,12 @@ func TestAutomation_RemoveLabel_Action(t *testing.T) {
 			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
 		}
 
-		l1, _ := labelRepo.GetConversationLabels(c1.ID)
+		l1, _ := labelRepo.GetConversationLabels(account.ID, c1.ID)
 		if len(l1) != 1 || l1[0].Title != "billing" {
 			t.Fatalf("expected c1 to have only 'billing', got %+v", l1)
 		}
 
-		l2, _ := labelRepo.GetConversationLabels(c2.ID)
+		l2, _ := labelRepo.GetConversationLabels(account.ID, c2.ID)
 		if len(l2) != 0 {
 			t.Fatalf("expected c2 to have 0 labels, got %+v", l2)
 		}

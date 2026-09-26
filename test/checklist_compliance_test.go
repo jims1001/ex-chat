@@ -1016,7 +1016,7 @@ func TestBusinessScenarioVerifications(t *testing.T) {
 			Status:    domain.ConversationStatusOpen,
 		}
 		_ = convRepo.Create(&convA)
-		_ = labelRepo.AttachToConversation(convA.ID, vipLabel.ID)
+		_ = labelRepo.AttachToConversation(account.ID, convA.ID, vipLabel.ID)
 
 		// Conversation B: Has NORMAL label (no VIP)
 		convB := domain.Conversation{
@@ -1026,7 +1026,7 @@ func TestBusinessScenarioVerifications(t *testing.T) {
 			Status:    domain.ConversationStatusOpen,
 		}
 		_ = convRepo.Create(&convB)
-		_ = labelRepo.AttachToConversation(convB.ID, normalLabel.ID)
+		_ = labelRepo.AttachToConversation(account.ID, convB.ID, normalLabel.ID)
 
 		// Automation rule: Close conversation ONLY IF label is VIP
 		ruleConditions, _ := json.Marshal([]map[string]any{

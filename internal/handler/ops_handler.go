@@ -399,7 +399,7 @@ func (h *OpsHandler) AttachConversationLabels(c *gin.Context) {
 	}
 
 	for _, labelID := range req.LabelIDs {
-		_ = h.labelRepo.AttachToConversation(conv.ID, labelID)
+		_ = h.labelRepo.AttachToConversation(accountID, conv.ID, labelID)
 	}
 
 	logger.WithComponent("label").Info("attached labels to conversation",
@@ -408,7 +408,7 @@ func (h *OpsHandler) AttachConversationLabels(c *gin.Context) {
 		"label_ids", req.LabelIDs,
 	)
 
-	labels, _ := h.labelRepo.GetConversationLabels(conv.ID)
+	labels, _ := h.labelRepo.GetConversationLabels(accountID, conv.ID)
 
 	// Dispatch Automation, Webhook, and WebSocket event
 	if refreshed, err := h.convRepo.FindByID(accountID, conv.ID); err == nil && refreshed != nil {
@@ -453,7 +453,7 @@ func (h *OpsHandler) DetachConversationLabel(c *gin.Context) {
 		return
 	}
 
-	_ = h.labelRepo.DetachFromConversation(conv.ID, uint(labelID))
+	_ = h.labelRepo.DetachFromConversation(accountID, conv.ID, uint(labelID))
 
 	logger.WithComponent("label").Info("detached label from conversation",
 		"account_id", accountID,
@@ -461,7 +461,7 @@ func (h *OpsHandler) DetachConversationLabel(c *gin.Context) {
 		"label_id", labelID,
 	)
 
-	labels, _ := h.labelRepo.GetConversationLabels(conv.ID)
+	labels, _ := h.labelRepo.GetConversationLabels(accountID, conv.ID)
 
 	// Dispatch Automation, Webhook, and WebSocket event
 	if refreshed, err := h.convRepo.FindByID(accountID, conv.ID); err == nil && refreshed != nil {
@@ -485,13 +485,16 @@ func (h *OpsHandler) DetachConversationLabel(c *gin.Context) {
 }
 
 func (h *OpsHandler) GetConversationLabels(c *gin.Context) {
+	rawAccountID, _ := c.Get(middleware.ContextAccountID)
+	accountID := rawAccountID.(uint)
+
 	convID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid conversation ID")
 		return
 	}
 
-	labels, err := h.labelRepo.GetConversationLabels(uint(convID))
+	labels, err := h.labelRepo.GetConversationLabels(accountID, uint(convID))
 	if err != nil {
 		response.InternalError(c, "Failed to get conversation labels")
 		return

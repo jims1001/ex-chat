@@ -89,6 +89,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_extensions_use_CHN_CON_MSG_owner_queries", func(t *testing.T) { testContactExtensionOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_lifecycle_uses_all_owner_commands", func(t *testing.T) { testContactRepositoryOwnerBoundary(t, openStore) })
+	t.Run("ORC_labels_use_CON_conversation_label_owner", func(t *testing.T) { testLabelRepositoryConversationBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -972,5 +973,59 @@ func testContactRepositoryOwnerBoundary(t *testing.T, openStore func(string) *go
 	}
 	if cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Message{}) || cusDB.Migrator().HasTable(&domain.Ticket{}) || cusDB.Migrator().HasTable(&domain.Order{}) || cusDB.Migrator().HasTable(&domain.Call{}) || cusDB.Migrator().HasTable(&domain.WidgetEvent{}) {
 		t.Fatal("CUS contains a foreign owner table")
+	}
+}
+
+func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, conDB := openStore("CUS"), openStore("CON")
+	label := domain.Label{AccountID: 1, Title: "priority", Color: "#f00"}
+	foreignLabel := domain.Label{AccountID: 2, Title: "foreign", Color: "#000"}
+	if err := cusDB.Create(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&foreignLabel).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 1, Status: domain.ConversationStatusOpen}
+	foreignConversation := domain.Conversation{AccountID: 2, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&foreignConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	repo := repository.NewLabelRepositoryWithConversationPort(cusDB, repository.NewConversationRepository(conDB))
+	if err := repo.AttachToConversation(1, conversation.ID, label.ID); err != nil {
+		t.Fatalf("CON relation attach failed: %v", err)
+	}
+	labels, err := repo.GetConversationLabels(1, conversation.ID)
+	if err != nil || len(labels) != 1 || labels[0].ID != label.ID {
+		t.Fatalf("CON/CUS label composition failed: labels=%+v err=%v", labels, err)
+	}
+	if err := repo.AttachToConversation(1, foreignConversation.ID, label.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("cross-account conversation accepted: %v", err)
+	}
+	if err := repo.AttachToConversation(1, conversation.ID, foreignLabel.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("cross-account label accepted: %v", err)
+	}
+	if err := repo.DetachFromConversation(1, conversation.ID, label.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AttachToConversation(1, conversation.ID, label.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Delete(1, label.ID); err != nil {
+		t.Fatalf("owner-coordinated label delete failed: %v", err)
+	}
+	var relationCount int64
+	if err := conDB.Model(&domain.ConversationLabel{}).Where("conversation_id = ? AND label_id = ?", conversation.ID, label.ID).Count(&relationCount).Error; err != nil || relationCount != 0 {
+		t.Fatalf("CON label relation was not deleted: count=%d err=%v", relationCount, err)
+	}
+	if cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.ConversationLabel{}) {
+		t.Fatal("CUS store contains CON authority tables")
+	}
+	if conDB.Migrator().HasTable(&domain.Label{}) {
+		t.Fatal("CON store contains CUS authority tables")
 	}
 }
