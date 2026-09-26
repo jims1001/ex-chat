@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -13,12 +14,61 @@ import (
 )
 
 type AssignmentPolicyHandler struct {
-	repo      *repository.AssignmentPolicyRepository
-	inboxRepo *repository.InboxRepository
+	repo           *repository.AssignmentPolicyRepository
+	inboxRepo      *repository.InboxRepository
+	accountMembers *repository.AccountRepository
+	teams          *repository.TeamRepository
 }
+
+var errAssignmentPolicyFallbackNotFound = errors.New("assignment policy fallback does not belong to account")
 
 func NewAssignmentPolicyHandler(repo *repository.AssignmentPolicyRepository, inboxRepo *repository.InboxRepository) *AssignmentPolicyHandler {
 	return &AssignmentPolicyHandler{repo: repo, inboxRepo: inboxRepo}
+}
+
+func (h *AssignmentPolicyHandler) SetFallbackRepositories(accountMembers *repository.AccountRepository, teams *repository.TeamRepository) {
+	h.accountMembers = accountMembers
+	h.teams = teams
+}
+
+// hydrateFallbacks composes RTE-owned fallback IDs with TEN membership/team
+// ownership and IAM identity data. RTE storage never reads or writes those
+// foreign aggregates directly.
+func (h *AssignmentPolicyHandler) hydrateFallbacks(policy *domain.AssignmentPolicy) error {
+	policy.FallbackAssignee = nil
+	policy.FallbackTeam = nil
+
+	if policy.FallbackAssigneeID != nil && *policy.FallbackAssigneeID > 0 {
+		if h.accountMembers == nil {
+			return errors.New("fallback assignee ports are not configured")
+		}
+		membership, err := h.accountMembers.FindMember(policy.AccountID, *policy.FallbackAssigneeID)
+		if err != nil {
+			return err
+		}
+		if membership == nil {
+			return errAssignmentPolicyFallbackNotFound
+		}
+		if membership.User == nil {
+			return errAssignmentPolicyFallbackNotFound
+		}
+		policy.FallbackAssignee = membership.User
+	}
+
+	if policy.FallbackTeamID != nil && *policy.FallbackTeamID > 0 {
+		if h.teams == nil {
+			return errors.New("fallback team port is not configured")
+		}
+		team, err := h.teams.FindSummaryByID(policy.AccountID, *policy.FallbackTeamID)
+		if err != nil {
+			return err
+		}
+		if team == nil {
+			return errAssignmentPolicyFallbackNotFound
+		}
+		policy.FallbackTeam = team
+	}
+	return nil
 }
 
 type CreateAssignmentPolicyRequest struct {
@@ -57,6 +107,13 @@ func (h *AssignmentPolicyHandler) List(c *gin.Context) {
 		)
 		response.InternalError(c, "Failed to list assignment policies: "+err.Error())
 		return
+	}
+	for i := range policies {
+		if err := h.hydrateFallbacks(&policies[i]); err != nil {
+			logger.WithComponent("assignment_policy").Error("failed to hydrate assignment policy fallbacks", "account_id", accountID, "policy_id", policies[i].ID, "error", err.Error())
+			response.InternalError(c, "Failed to load assignment policy fallbacks")
+			return
+		}
 	}
 
 	response.Success(c, policies)
@@ -99,6 +156,14 @@ func (h *AssignmentPolicyHandler) Create(c *gin.Context) {
 		FallbackTeamID:     req.FallbackTeamID,
 		RuleConfig:         req.RuleConfig,
 	}
+	if err := h.hydrateFallbacks(&policy); err != nil {
+		if errors.Is(err, errAssignmentPolicyFallbackNotFound) {
+			response.BadRequest(c, "Fallback assignee or team does not belong to this account")
+			return
+		}
+		response.InternalError(c, "Failed to validate assignment policy fallbacks")
+		return
+	}
 
 	if err := h.repo.Create(&policy); err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to create assignment policy",
@@ -118,8 +183,7 @@ func (h *AssignmentPolicyHandler) Create(c *gin.Context) {
 		"strategy", policy.StrategyType,
 	)
 
-	created, _ := h.repo.FindByID(accountID, policy.ID)
-	response.Created(c, created)
+	response.Created(c, &policy)
 }
 
 func (h *AssignmentPolicyHandler) Get(c *gin.Context) {
@@ -132,9 +196,13 @@ func (h *AssignmentPolicyHandler) Get(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.repo.FindByID(accountID, uint(id))
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
 	if err != nil || policy == nil {
 		response.NotFound(c, "Assignment policy not found")
+		return
+	}
+	if err := h.hydrateFallbacks(policy); err != nil {
+		response.InternalError(c, "Failed to load assignment policy fallbacks")
 		return
 	}
 
@@ -151,7 +219,7 @@ func (h *AssignmentPolicyHandler) Update(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.repo.FindByID(accountID, uint(id))
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
 	if err != nil || policy == nil {
 		response.NotFound(c, "Assignment policy not found")
 		return
@@ -190,6 +258,14 @@ func (h *AssignmentPolicyHandler) Update(c *gin.Context) {
 	if req.RuleConfig != "" {
 		policy.RuleConfig = req.RuleConfig
 	}
+	if err := h.hydrateFallbacks(policy); err != nil {
+		if errors.Is(err, errAssignmentPolicyFallbackNotFound) {
+			response.BadRequest(c, "Fallback assignee or team does not belong to this account")
+			return
+		}
+		response.InternalError(c, "Failed to validate assignment policy fallbacks")
+		return
+	}
 
 	if err := h.repo.Update(policy); err != nil {
 		logger.WithComponent("assignment_policy").Error("failed to update assignment policy",
@@ -207,8 +283,7 @@ func (h *AssignmentPolicyHandler) Update(c *gin.Context) {
 		"name", policy.Name,
 	)
 
-	updated, _ := h.repo.FindByID(accountID, policy.ID)
-	response.Success(c, updated)
+	response.Success(c, policy)
 }
 
 func (h *AssignmentPolicyHandler) Delete(c *gin.Context) {

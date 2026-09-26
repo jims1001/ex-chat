@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v14 records the ORC-managed CHN/EXT bot binding.
-	const approvedCollaborationSHA = "aeee6da23cba9b86b9d1d8863a06058192725651610d1d94acb388c58f2238d7"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v15 records RTE fallback composition through TEN-owned contracts.
+	const approvedCollaborationSHA = "7b235803538d66b94119c3ace5a0eb110379b829291757ed92b19a90b875d4e7"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -377,7 +377,7 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 
 func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 	for file, forbidden := range map[string][]string{
-		"../internal/repository/assignment_policy_repository.go": {"domain.Inbox"},
+		"../internal/repository/assignment_policy_repository.go": {"domain.Inbox", "Preload(\"FallbackAssignee\")", "Preload(\"FallbackTeam\")"},
 		"../internal/repository/csat_extension_repository.go":    {"domain.Conversation", "domain.Message", "domain.Inbox", "domain.Contact", "domain.ContactInbox", "domain.AccountUser"},
 		"../internal/repository/inbox_repository.go":             {"domain.AssignmentPolicy", "domain.Conversation"},
 	} {

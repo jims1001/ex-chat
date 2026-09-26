@@ -1,6 +1,6 @@
 # ARCH-08 剩余验收清单
 
-基线：E-ARCH-08-v14。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
+基线：E-ARCH-08-v15。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
 
 ## 必须完成的工作
 
@@ -58,5 +58,5 @@
 - 已完成并验证：CHN 分配策略预加载与关联保存移至 ORC/RTE 边界（E-ARCH-08-v12）。
 - 已完成并验证：收件箱 Campaign 查询由 ORC 调用 OPS，CHN 只提供归属校验（E-ARCH-08-v13）。
 - 已完成并验证：CHN/EXT AgentBot 双向绑定、查询与解绑由 ORC 组合（E-ARCH-08-v14）。
-- 下一项：RTE 完整策略查询的 fallback 用户/团队预加载边界。
-- 随后：RoutingService 的跨所有者数据访问。
+- 已完成并验证：RTE 策略详情和列表的 fallback 用户/团队由 TEN/IAM 所有者端口组合，关联对象不写入 RTE（E-ARCH-08-v15）。
+- 下一项：RoutingService 的 fallback 用户、收件箱成员和会话计数等跨所有者数据访问。

@@ -77,6 +77,27 @@ func (r *AccountRepository) GetMembership(accountID, userID uint) (*domain.Accou
 	return &member, nil
 }
 
+// FindMember returns TEN-owned membership data composed with its IAM user.
+// Consumers do not need access to either owner's storage to validate a member.
+func (r *AccountRepository) FindMember(accountID, userID uint) (*domain.AccountUser, error) {
+	member, err := r.GetMembership(accountID, userID)
+	if err != nil || member == nil {
+		return member, err
+	}
+	if r.users == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	users, err := r.users.FindByIDs([]uint{userID})
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, nil
+	}
+	member.User = &users[0]
+	return member, nil
+}
+
 func (r *AccountRepository) HasPermission(accountID, userID uint, permission string) (bool, error) {
 	member, err := r.GetMembership(accountID, userID)
 	if err != nil || member == nil {

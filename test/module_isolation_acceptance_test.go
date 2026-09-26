@@ -78,6 +78,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("CHN_policy_reference_is_composed_outside_owner_storage", func(t *testing.T) { testInboxPolicyBoundary(t, openStore) })
 	t.Run("CHN_campaigns_are_queried_through_OPS", func(t *testing.T) { testInboxCampaignBoundary(t, openStore) })
 	t.Run("CHN_agent_bot_bindings_are_owned_by_EXT", func(t *testing.T) { testInboxAgentBotBoundary(t, openStore) })
+	t.Run("RTE_policy_fallbacks_are_composed_through_TEN_IAM", func(t *testing.T) { testAssignmentPolicyFallbackBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}

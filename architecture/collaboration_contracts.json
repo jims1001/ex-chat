@@ -3474,6 +3474,26 @@
     },
     {
       "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/assignment_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "FindMember",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/assignment_policy_handler.go",
+      "symbol": "TeamRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
       "provider": "CON",
       "file": "internal/service/routing_service.go",
       "symbol": "ConversationRepository",

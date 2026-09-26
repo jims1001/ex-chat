@@ -16,7 +16,7 @@ func NewAssignmentPolicyRepository(db *gorm.DB) *AssignmentPolicyRepository {
 }
 
 func (r *AssignmentPolicyRepository) Create(policy *domain.AssignmentPolicy) error {
-	return r.db.Create(policy).Error
+	return r.db.Omit("FallbackAssignee", "FallbackTeam").Create(policy).Error
 }
 
 // FindSummaryByID returns RTE-owned policy fields without hydrating foreign owners.
@@ -33,27 +33,17 @@ func (r *AssignmentPolicyRepository) FindSummaryByID(accountID, id uint) (*domai
 }
 
 func (r *AssignmentPolicyRepository) FindByID(accountID, id uint) (*domain.AssignmentPolicy, error) {
-	var policy domain.AssignmentPolicy
-	err := r.db.Preload("FallbackAssignee").Preload("FallbackTeam").
-		Where("account_id = ? AND id = ?", accountID, id).First(&policy).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &policy, nil
+	return r.FindSummaryByID(accountID, id)
 }
 
 func (r *AssignmentPolicyRepository) ListByAccount(accountID uint) ([]domain.AssignmentPolicy, error) {
 	var policies []domain.AssignmentPolicy
-	err := r.db.Preload("FallbackAssignee").Preload("FallbackTeam").
-		Where("account_id = ?", accountID).Order("id ASC").Find(&policies).Error
+	err := r.db.Where("account_id = ?", accountID).Order("id ASC").Find(&policies).Error
 	return policies, err
 }
 
 func (r *AssignmentPolicyRepository) Update(policy *domain.AssignmentPolicy) error {
-	return r.db.Save(policy).Error
+	return r.db.Omit("FallbackAssignee", "FallbackTeam").Save(policy).Error
 }
 
 func (r *AssignmentPolicyRepository) Delete(accountID, id uint) error {
