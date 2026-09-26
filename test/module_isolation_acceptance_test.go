@@ -91,6 +91,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_contact_lifecycle_uses_all_owner_commands", func(t *testing.T) { testContactRepositoryOwnerBoundary(t, openStore) })
 	t.Run("ORC_labels_use_CON_conversation_label_owner", func(t *testing.T) { testLabelRepositoryConversationBoundary(t, openStore) })
 	t.Run("ORC_channel_enterprise_facade_uses_seven_owner_stores", func(t *testing.T) { testChannelEnterpriseOwnerBoundary(t, openStore) })
+	t.Run("MSG_attachments_validate_message_owner", func(t *testing.T) { testAttachmentRepositoryMessageBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -1093,5 +1094,32 @@ func testChannelEnterpriseOwnerBoundary(t *testing.T, openStore func(string) *go
 		if check.db.Migrator().HasTable(check.bad) {
 			t.Fatalf("%s store contains a foreign owner table", check.name)
 		}
+	}
+}
+
+func testAttachmentRepositoryMessageBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	msgDB := openStore("MSG")
+	message := domain.Message{AccountID: 1, ConversationID: 10, Content: "attachment owner", MessageType: domain.MessageTypeIncoming}
+	foreignMessage := domain.Message{AccountID: 2, ConversationID: 20, Content: "foreign", MessageType: domain.MessageTypeIncoming}
+	if err := msgDB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := msgDB.Create(&foreignMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewAttachmentRepository(msgDB)
+	attachment := domain.Attachment{AccountID: 1, MessageID: message.ID, FileType: "text/plain", DataURL: "https://example.test/a.txt"}
+	if err := repo.Create(context.Background(), &attachment); err != nil {
+		t.Fatalf("MSG attachment create failed: %v", err)
+	}
+	if err := repo.Create(context.Background(), &domain.Attachment{AccountID: 1, MessageID: foreignMessage.ID}); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("cross-account message accepted: %v", err)
+	}
+	attachments, err := repo.ListByMessage(context.Background(), 1, message.ID)
+	if err != nil || len(attachments) != 1 || attachments[0].ID != attachment.ID {
+		t.Fatalf("account-scoped attachment query failed: rows=%+v err=%v", attachments, err)
+	}
+	if msgDB.Migrator().HasTable(&domain.Company{}) || msgDB.Migrator().HasTable(&domain.AgentBot{}) || msgDB.Migrator().HasTable(&domain.SLAPolicy{}) {
+		t.Fatal("MSG store contains CUS/EXT/RPT authority tables")
 	}
 }

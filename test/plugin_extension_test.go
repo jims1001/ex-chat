@@ -34,7 +34,8 @@ func TestPluginExtensionRegistryIsCompleteAndFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedSHA = "df64a669c2a92666bef5b2e7c886893e4d4f1f05949cecbda4dff8f37313b5fa"
+	// E-ARCH-08-v27 moves the EXT AgentBot repository to its owner-specific source file.
+	const approvedSHA = "48b60b84d3f8b2d06b569fc68c83349c19ea9f787a4b63a0087f2f977ea2785f"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedSHA {
 		t.Fatalf("plugin extension registry changed (%s); reopen ARCH-05", got)
 	}

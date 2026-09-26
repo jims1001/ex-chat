@@ -21,7 +21,7 @@
     {"symbol":"IntegrationRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/integration_repository.go"},
     {"symbol":"WebhookRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/webhook_repository.go"},
     {"symbol":"DashboardAppRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/dashboard_app_repository.go"},
-    {"symbol":"AgentBotRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/crm_ops_advanced_repository.go"},
+    {"symbol":"AgentBotRepository","extensionPoint":"integration_connector","storageOwner":"EXT","source":"internal/repository/agent_bot_repository.go"},
     {"symbol":"AICustomToolRepository","extensionPoint":"custom_tool","storageOwner":"AIC","source":"internal/repository/ai_custom_tool_repository.go"},
     {"symbol":"DataImportService","extensionPoint":"import_source","storageOwner":"MIG","source":"internal/service/data_import_service.go"},
     {"symbol":"MigrationService","extensionPoint":"import_source","storageOwner":"MIG","source":"internal/service/migration_service.go"},

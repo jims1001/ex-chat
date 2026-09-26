@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v26 records the seven-owner enterprise facade split.
-	const approvedCollaborationSHA = "ff7520003cd23ba9acef4bb5d37221de12d40d5cf2ae31c21985c62e21d6cc67"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v27 records MSG attachment ownership and validation.
+	const approvedCollaborationSHA = "f11a971b7b1a438e5c93e04df40e51afdc8c6702672749f53c7c3ddb9273529a"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}

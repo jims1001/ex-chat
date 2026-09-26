@@ -298,10 +298,10 @@
     },
     {
       "symbol": "AttachmentRepository",
-      "provider": "MED",
-      "readQuery": "med.asset.get.v1",
-      "writeCommand": "med.asset.confirm.v1",
-      "replicaEvent": "med.media.ready.v1"
+      "provider": "MSG",
+      "readQuery": "msg.message.get.v1",
+      "writeCommand": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
       "symbol": "StorageService",
@@ -2122,13 +2122,13 @@
     },
     {
       "consumer": "MIG",
-      "provider": "MED",
+      "provider": "MSG",
       "file": "internal/service/migration_service.go",
       "symbol": "AttachmentRepository",
       "method": "Create",
       "use": "write",
-      "contract": "med.asset.confirm.v1",
-      "replicaEvent": "med.media.ready.v1"
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
       "consumer": "MIG",
@@ -3142,13 +3142,13 @@
     },
     {
       "consumer": "ORC",
-      "provider": "MED",
+      "provider": "MSG",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "AttachmentRepository",
       "method": "Create",
       "use": "write",
-      "contract": "med.asset.confirm.v1",
-      "replicaEvent": "med.media.ready.v1"
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
       "consumer": "ORC",
