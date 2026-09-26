@@ -19,6 +19,19 @@ func (r *AssignmentPolicyRepository) Create(policy *domain.AssignmentPolicy) err
 	return r.db.Create(policy).Error
 }
 
+// FindSummaryByID returns RTE-owned policy fields without hydrating foreign owners.
+func (r *AssignmentPolicyRepository) FindSummaryByID(accountID, id uint) (*domain.AssignmentPolicy, error) {
+	var policy domain.AssignmentPolicy
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&policy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &policy, nil
+}
+
 func (r *AssignmentPolicyRepository) FindByID(accountID, id uint) (*domain.AssignmentPolicy, error) {
 	var policy domain.AssignmentPolicy
 	err := r.db.Preload("FallbackAssignee").Preload("FallbackTeam").

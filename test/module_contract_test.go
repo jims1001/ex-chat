@@ -234,7 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	const approvedCollaborationSHA = "92c89834298fb4d98f59cd860670d5cd7174546b45e33e3a96bb263d2fb20407"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v12 records the ORC policy summary binding.
+	const approvedCollaborationSHA = "75cb28d7f4ee3ab718f715cd6c65a5ee5aa218629779e3c765befc97acc8cec2"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}

@@ -3293,6 +3293,16 @@
       "replicaEvent": "rte.assignment.changed.v1"
     },
     {
+      "consumer": "ORC",
+      "provider": "RTE",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "AssignmentPolicyRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "rte.assignment.get.v1",
+      "replicaEvent": "rte.assignment.changed.v1"
+    },
+    {
       "consumer": "QLT",
       "provider": "CHN",
       "file": "internal/handler/csat_handler.go",

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -55,6 +56,23 @@ func (h *InboxHandler) SetAssignmentPolicyRepo(repo *repository.AssignmentPolicy
 	h.policyRepo = repo
 }
 
+// Policy data is composed at the ORC entry point, never inside CHN storage.
+func (h *InboxHandler) hydrateAssignmentPolicy(inbox *domain.Inbox) error {
+	inbox.AssignmentPolicy = nil
+	if inbox.AssignmentPolicyID == nil || *inbox.AssignmentPolicyID == 0 {
+		return nil
+	}
+	if h.policyRepo == nil {
+		return errors.New("assignment policy repository is not configured")
+	}
+	policy, err := h.policyRepo.FindSummaryByID(inbox.AccountID, *inbox.AssignmentPolicyID)
+	if err != nil {
+		return err
+	}
+	inbox.AssignmentPolicy = policy
+	return nil
+}
+
 func (h *InboxHandler) SetContactRepo(cr *repository.ContactRepository) {
 	h.contactRepo = cr
 }
@@ -101,6 +119,12 @@ func (h *InboxHandler) ListInboxes(c *gin.Context) {
 		response.InternalError(c, "Failed to fetch inboxes")
 		return
 	}
+	for i := range inboxes {
+		if err := h.hydrateAssignmentPolicy(&inboxes[i]); err != nil {
+			response.InternalError(c, "Failed to fetch assignment policy")
+			return
+		}
+	}
 
 	response.Success(c, inboxes)
 }
@@ -144,6 +168,14 @@ func (h *InboxHandler) CreateInbox(c *gin.Context) {
 		AssignmentPolicyID:  req.AssignmentPolicyID,
 	}
 
+	if err := h.hydrateAssignmentPolicy(&inbox); err != nil {
+		response.InternalError(c, "Failed to fetch assignment policy")
+		return
+	}
+	if req.AssignmentPolicyID != nil && *req.AssignmentPolicyID != 0 && inbox.AssignmentPolicy == nil {
+		response.NotFound(c, "Assignment policy not found")
+		return
+	}
 	if err := h.inboxRepo.Create(&inbox); err != nil {
 		logger.WithComponent("inbox").Error("failed to create inbox",
 			"account_id", accountID,
@@ -181,6 +213,10 @@ func (h *InboxHandler) GetInbox(c *gin.Context) {
 		return
 	}
 
+	if err := h.hydrateAssignmentPolicy(inbox); err != nil {
+		response.InternalError(c, "Failed to fetch assignment policy")
+		return
+	}
 	response.Success(c, inbox)
 }
 
@@ -229,6 +265,14 @@ func (h *InboxHandler) UpdateInbox(c *gin.Context) {
 	}
 	if req.AssignmentPolicyID != nil {
 		inbox.AssignmentPolicyID = req.AssignmentPolicyID
+	}
+	if err := h.hydrateAssignmentPolicy(inbox); err != nil {
+		response.InternalError(c, "Failed to fetch assignment policy")
+		return
+	}
+	if req.AssignmentPolicyID != nil && *req.AssignmentPolicyID != 0 && inbox.AssignmentPolicy == nil {
+		response.NotFound(c, "Assignment policy not found")
+		return
 	}
 
 	if err := h.inboxRepo.Update(inbox); err != nil {
@@ -286,8 +330,12 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 			response.InternalError(c, "Assignment policy repository is not configured")
 			return
 		}
-		policy, err := h.policyRepo.FindByID(accountID, *policyID)
-		if err != nil || policy == nil {
+		policy, err := h.policyRepo.FindSummaryByID(accountID, *policyID)
+		if err != nil {
+			response.InternalError(c, "Failed to fetch assignment policy")
+			return
+		}
+		if policy == nil {
 			response.NotFound(c, "Assignment policy not found")
 			return
 		}
@@ -323,7 +371,15 @@ func (h *InboxHandler) BindAssignmentPolicy(c *gin.Context) {
 		"policy_id", policyID,
 	)
 
-	updated, _ := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	updated, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	if err != nil || updated == nil {
+		response.InternalError(c, "Failed to fetch updated inbox")
+		return
+	}
+	if err := h.hydrateAssignmentPolicy(updated); err != nil {
+		response.InternalError(c, "Failed to fetch assignment policy")
+		return
+	}
 	res := gin.H{
 		"success": true,
 		"data":    updated,

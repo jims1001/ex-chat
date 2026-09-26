@@ -37,12 +37,12 @@ func NewInboxRepositoryWithAccountPort(db *gorm.DB, accounts inboxAccountPort) *
 }
 
 func (r *InboxRepository) Create(inbox *domain.Inbox) error {
-	return r.db.Omit("Members").Create(inbox).Error
+	return r.db.Omit("Members", "AssignmentPolicy").Create(inbox).Error
 }
 
 func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 	var inbox domain.Inbox
-	err := r.db.Preload("AssignmentPolicy").Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -83,7 +83,7 @@ func (r *InboxRepository) FindByGlobalID(id uint) (*domain.Inbox, error) {
 
 func (r *InboxRepository) FindByWebsiteToken(token string) (*domain.Inbox, error) {
 	var inbox domain.Inbox
-	err := r.db.Preload("AssignmentPolicy").Where("website_token = ?", token).First(&inbox).Error
+	err := r.db.Where("website_token = ?", token).First(&inbox).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -95,7 +95,7 @@ func (r *InboxRepository) FindByWebsiteToken(token string) (*domain.Inbox, error
 
 func (r *InboxRepository) ListByAccount(accountID uint) ([]domain.Inbox, error) {
 	var inboxes []domain.Inbox
-	err := r.db.Preload("AssignmentPolicy").Where("account_id = ?", accountID).Find(&inboxes).Error
+	err := r.db.Where("account_id = ?", accountID).Find(&inboxes).Error
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (r *InboxRepository) RemovePolicy(accountID, policyID uint, inboxIDs []uint
 }
 
 func (r *InboxRepository) Update(inbox *domain.Inbox) error {
-	return r.db.Omit("Members").Save(inbox).Error
+	return r.db.Omit("Members", "AssignmentPolicy").Save(inbox).Error
 }
 
 func (r *InboxRepository) Delete(accountID, id uint) error {

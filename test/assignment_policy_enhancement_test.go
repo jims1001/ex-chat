@@ -226,7 +226,7 @@ func TestAssignmentPolicyEnhancement(t *testing.T) {
 			t.Fatalf("bind policy failed: code=%d body=%s", w.Code, w.Body.String())
 		}
 
-		// Verify inbox has assignment_policy preloaded
+		// CHN retains only the reference; the API composes RTE-owned policy data.
 		inboxRepo := repository.NewInboxRepository(db)
 		ib, err := inboxRepo.FindByID(accountID, inboxID)
 		if err != nil || ib == nil {
@@ -235,8 +235,18 @@ func TestAssignmentPolicyEnhancement(t *testing.T) {
 		if ib.AssignmentPolicyID == nil || *ib.AssignmentPolicyID != policyID {
 			t.Fatalf("inbox AssignmentPolicyID not set properly: %v", ib.AssignmentPolicyID)
 		}
-		if ib.AssignmentPolicy == nil || ib.AssignmentPolicy.Name != "Updated RR Policy" {
-			t.Fatalf("inbox AssignmentPolicy not preloaded: %+v", ib.AssignmentPolicy)
+		if ib.AssignmentPolicy != nil {
+			t.Fatalf("CHN loaded RTE policy: %+v", ib.AssignmentPolicy)
+		}
+		getReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/accounts/%d/inboxes/%d", accountID, inboxID), nil)
+		getReq.Header.Set("Authorization", "Bearer "+token)
+		getResponse := httptest.NewRecorder()
+		r.ServeHTTP(getResponse, getReq)
+		var payload struct {
+			Data domain.Inbox `json:"data"`
+		}
+		if err := json.Unmarshal(getResponse.Body.Bytes(), &payload); err != nil || getResponse.Code != http.StatusOK || payload.Data.AssignmentPolicy == nil || payload.Data.AssignmentPolicy.Name != "Updated RR Policy" {
+			t.Fatalf("API did not compose assignment policy: %d %s err=%v", getResponse.Code, getResponse.Body.String(), err)
 		}
 	})
 
