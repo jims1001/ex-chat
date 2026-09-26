@@ -29,6 +29,14 @@ func (r *CampaignRepository) List(ctx context.Context, accountID uint) ([]domain
 	return list, err
 }
 
+// ListByInbox reads OPS-owned campaigns scoped to both account and inbox.
+func (r *CampaignRepository) ListByInbox(ctx context.Context, accountID, inboxID uint) ([]domain.Campaign, error) {
+	var list []domain.Campaign
+	err := r.db.WithContext(ctx).Where("account_id = ? AND inbox_id = ?", accountID, inboxID).
+		Order("id DESC").Find(&list).Error
+	return list, err
+}
+
 // GetByID finds a campaign by its ID and account ID
 func (r *CampaignRepository) GetByID(ctx context.Context, accountID, id uint) (*domain.Campaign, error) {
 	var camp domain.Campaign

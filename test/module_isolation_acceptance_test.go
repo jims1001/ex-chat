@@ -76,6 +76,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 		return db
 	}
 	t.Run("CHN_policy_reference_is_composed_outside_owner_storage", func(t *testing.T) { testInboxPolicyBoundary(t, openStore) })
+	t.Run("CHN_campaigns_are_queried_through_OPS", func(t *testing.T) { testInboxCampaignBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}

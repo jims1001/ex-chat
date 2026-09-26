@@ -820,15 +820,23 @@ func (h *InboxHandler) ListInboxCampaigns(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	exists, err := h.inboxRepo.Exists(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to fetch inbox")
+		return
+	}
+	if !exists {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
 
-	campaigns, err := h.inboxRepo.ListCampaigns(accountID, uint(inboxID))
+	if h.campaignRepo == nil {
+		response.InternalError(c, "Campaign repository is not configured")
+		return
+	}
+	campaigns, err := h.campaignRepo.ListByInbox(c.Request.Context(), accountID, uint(inboxID))
 	if err != nil {
-		response.InternalError(c, "Failed to list inbox campaigns: "+err.Error())
+		response.InternalError(c, "Failed to list inbox campaigns")
 		return
 	}
 

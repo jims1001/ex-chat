@@ -232,14 +232,6 @@ func (r *InboxRepository) ListAssignableAgents(accountID, inboxID uint) ([]domai
 	return r.accountUsers(accountID)
 }
 
-func (r *InboxRepository) ListCampaigns(accountID, inboxID uint) ([]domain.Campaign, error) {
-	var campaigns []domain.Campaign
-	err := r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).
-		Order("id DESC").
-		Find(&campaigns).Error
-	return campaigns, err
-}
-
 func (r *InboxRepository) GetAgentBot(accountID, inboxID uint) (*domain.AgentBot, error) {
 	var binding domain.AgentBotInbox
 	err := r.db.Preload("AgentBot").

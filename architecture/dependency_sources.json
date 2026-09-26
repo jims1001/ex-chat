@@ -150,6 +150,7 @@
     {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"MessageRepository"},
     {"consumer":"ORC","provider":"NTF","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"NotificationRepository"},
     {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"CampaignRepository"},
+    {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/handler/inbox_handler.go","symbol":"CampaignRepository"},
     {"consumer":"ORC","provider":"RPT","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"SLAService"},
     {"consumer":"ORC","provider":"RTE","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"RoutingService"}
   ]

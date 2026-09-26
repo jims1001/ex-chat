@@ -2607,10 +2607,20 @@
       "provider": "CHN",
       "file": "internal/handler/inbox_handler.go",
       "symbol": "InboxRepository",
-      "method": "ListCampaigns",
+      "method": "Exists",
       "use": "read",
       "contract": "chn.inbox.get.v1",
       "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "OPS",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "CampaignRepository",
+      "method": "ListByInbox",
+      "use": "read",
+      "contract": "ops.campaign.get.v1",
+      "replicaEvent": "ops.campaign.completed.v1"
     },
     {
       "consumer": "ORC",
