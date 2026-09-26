@@ -30,6 +30,27 @@ func (r *AgentCapacityPolicyRepository) SaveLegacyCapacityPolicy(policy *domain.
 		FirstOrCreate(policy).Error
 }
 
+func (r *AgentCapacityPolicyRepository) FindSummaryByID(accountID, id uint) (*domain.AgentCapacityPolicy, error) {
+	var policy domain.AgentCapacityPolicy
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&policy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &policy, err
+}
+
+func (r *AgentCapacityPolicyRepository) FindLegacyCapacityPolicy(accountID, userID uint) (*domain.CapacityPolicy, error) {
+	var policy domain.CapacityPolicy
+	err := r.db.Where("account_id = ? AND user_id = ?", accountID, userID).First(&policy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = r.db.Where("account_id = ? AND user_id = 0", accountID).First(&policy).Error
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &policy, err
+}
+
 func (r *AgentCapacityPolicyRepository) FindByID(accountID, id uint) (*domain.AgentCapacityPolicy, error) {
 	var policy domain.AgentCapacityPolicy
 	err := r.db.Preload("InboxCapacityLimits.Inbox").

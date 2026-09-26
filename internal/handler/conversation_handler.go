@@ -220,7 +220,11 @@ func (h *ConversationHandler) CreateConversation(c *gin.Context) {
 	}
 
 	if req.AssigneeID != nil {
-		hasCapacity, _ := h.routingService.CheckAgentCapacity(accountID, req.InboxID, *req.AssigneeID, nil, 0)
+		hasCapacity, _, err := h.routingService.CheckAgentCapacity(accountID, req.InboxID, *req.AssigneeID, nil, 0)
+		if err != nil {
+			response.InternalError(c, "Failed to check agent capacity")
+			return
+		}
 		if !hasCapacity {
 			response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
 			return
@@ -429,13 +433,21 @@ func (h *ConversationHandler) Assign(c *gin.Context) {
 			if conv.Inbox != nil && conv.Inbox.AssignmentPolicy != nil {
 				policy = conv.Inbox.AssignmentPolicy
 			}
-			hasCap, _ := h.routingService.CheckAgentCapacity(accountID, conv.InboxID, *req.AssigneeID, policy, uint(id))
+			hasCap, _, err := h.routingService.CheckAgentCapacity(accountID, conv.InboxID, *req.AssigneeID, policy, uint(id))
+			if err != nil {
+				response.InternalError(c, "Failed to check agent capacity")
+				return
+			}
 			if !hasCap {
 				response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
 				return
 			}
 		} else if h.routingService != nil {
-			hasCap, _ := h.routingService.CheckAgentCapacity(accountID, 0, *req.AssigneeID, nil, uint(id))
+			hasCap, _, err := h.routingService.CheckAgentCapacity(accountID, 0, *req.AssigneeID, nil, uint(id))
+			if err != nil {
+				response.InternalError(c, "Failed to check agent capacity")
+				return
+			}
 			if !hasCap {
 				response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
 				return

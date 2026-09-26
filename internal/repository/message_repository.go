@@ -111,6 +111,14 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 	return nil
 }
 
+func (r *MessageRepository) ConversationContentExists(accountID, conversationID uint, content string) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND conversation_id = ? AND content = ?", accountID, conversationID, content).
+		Count(&count).Error
+	return count > 0, err
+}
+
 // A CON deletion can race with MSG's initial existence check. If the owner
 // confirms the target is gone, cancel the locally committed create atomically.
 func (r *MessageRepository) cancelOrphanedCreate(msg *domain.Message, changeID string) error {

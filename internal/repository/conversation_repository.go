@@ -362,6 +362,61 @@ func (r *ConversationRepository) AssignTeam(accountID, id uint, teamID *uint) er
 		Updates(updates).Error
 }
 
+// CountActiveAssigned is the CON-owned workload query used by routing. Label
+// titles are resolved through the CUS port before the CON-local relation is
+// applied, so callers never query CON or CUS storage directly.
+func (r *ConversationRepository) CountActiveAssigned(accountID, inboxID, assigneeID, excludeID uint, activeSince *time.Time, excludedLabelTitles []string) (int64, error) {
+	q := r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND assignee_id = ? AND status != ?", accountID, assigneeID, domain.ConversationStatusResolved)
+	if inboxID > 0 {
+		q = q.Where("inbox_id = ?", inboxID)
+	}
+	if excludeID > 0 {
+		q = q.Where("id != ?", excludeID)
+	}
+	if activeSince != nil {
+		q = q.Where("(last_activity_at IS NOT NULL AND last_activity_at >= ?) OR (last_activity_at IS NULL AND created_at >= ?)", *activeSince, *activeSince)
+	}
+	if len(excludedLabelTitles) > 0 {
+		if r.labels == nil {
+			return 0, gorm.ErrInvalidData
+		}
+		titles := make([]any, len(excludedLabelTitles))
+		for i := range excludedLabelTitles {
+			titles[i] = excludedLabelTitles[i]
+		}
+		labelIDs, err := r.labels.FindIDsByTitles(accountID, titles)
+		if err != nil {
+			return 0, err
+		}
+		if len(labelIDs) > 0 {
+			q = q.Where("id NOT IN (SELECT conversation_id FROM conversation_labels WHERE label_id IN ?)", labelIDs)
+		}
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (r *ConversationRepository) LastAssignedAgent(accountID, inboxID, excludeID uint) (uint, error) {
+	var conversation domain.Conversation
+	q := r.db.Select("id", "assignee_id").
+		Where("account_id = ? AND inbox_id = ? AND assignee_id IS NOT NULL", accountID, inboxID)
+	if excludeID > 0 {
+		q = q.Where("id != ?", excludeID)
+	}
+	err := q.Order("id DESC").First(&conversation).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil || conversation.AssigneeID == nil {
+		return 0, err
+	}
+	return *conversation.AssigneeID, nil
+}
+
 func (r *ConversationRepository) MoveInbox(accountID, sourceInboxID, targetInboxID uint) error {
 	var sourceCount, targetCount int64
 	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, sourceInboxID).Count(&sourceCount).Error; err != nil {

@@ -113,6 +113,7 @@ func TestEndToEndBusinessScenarioVerifications(t *testing.T) {
 			Availability: domain.AvailabilityOnline,
 		}
 		_ = db.Create(&agentUser).Error
+		_ = db.Create(&domain.AccountUser{AccountID: accID, UserID: agentUser.ID, Role: domain.RoleAgent}).Error
 
 		// Add agent to inbox members
 		inboxMember := domain.InboxMember{

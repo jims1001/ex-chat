@@ -3523,6 +3523,96 @@
       "replicaEvent": "msg.message.created.v1"
     },
     {
+      "consumer": "RTE",
+      "provider": "MSG",
+      "file": "internal/service/routing_service.go",
+      "symbol": "MessageRepository",
+      "method": "ConversationContentExists",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CON",
+      "file": "internal/service/routing_service.go",
+      "symbol": "ConversationRepository",
+      "method": "CountActiveAssigned",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CON",
+      "file": "internal/service/routing_service.go",
+      "symbol": "ConversationRepository",
+      "method": "LastAssignedAgent",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "file": "internal/service/routing_service.go",
+      "symbol": "InboxRepository",
+      "method": "FindByGlobalID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "file": "internal/service/routing_service.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "file": "internal/service/routing_service.go",
+      "symbol": "InboxRepository",
+      "method": "ListMembers",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/service/routing_service.go",
+      "symbol": "AccountRepository",
+      "method": "FindMember",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/service/routing_service.go",
+      "symbol": "AccountRepository",
+      "method": "GetMembership",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/service/routing_service.go",
+      "symbol": "TeamRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
       "consumer": "TEN",
       "provider": "IAM",
       "file": "internal/handler/account_handler.go",

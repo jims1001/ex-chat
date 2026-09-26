@@ -14,20 +14,39 @@ import (
 )
 
 type RoutingService struct {
-	db       *gorm.DB
-	convRepo *repository.ConversationRepository
-	msgRepo  *repository.MessageRepository
-	hub      *ws.Hub
-	mu       sync.Mutex
+	db                 *gorm.DB
+	convRepo           *repository.ConversationRepository
+	msgRepo            *repository.MessageRepository
+	inboxRepo          *repository.InboxRepository
+	accountRepo        *repository.AccountRepository
+	teamRepo           *repository.TeamRepository
+	policyRepo         *repository.AssignmentPolicyRepository
+	capacityPolicyRepo *repository.AgentCapacityPolicyRepository
+	hub                *ws.Hub
+	mu                 sync.Mutex
 }
 
 func NewRoutingService(db *gorm.DB, convRepo *repository.ConversationRepository, hub *ws.Hub) *RoutingService {
 	return &RoutingService{
-		db:       db,
-		convRepo: convRepo,
-		msgRepo:  repository.NewMessageRepository(db),
-		hub:      hub,
+		db:                 db,
+		convRepo:           convRepo,
+		msgRepo:            repository.NewMessageRepository(db),
+		inboxRepo:          repository.NewInboxRepository(db),
+		accountRepo:        repository.NewAccountRepository(db),
+		teamRepo:           repository.NewTeamRepository(db),
+		policyRepo:         repository.NewAssignmentPolicyRepository(db),
+		capacityPolicyRepo: repository.NewAgentCapacityPolicyRepository(db),
+		hub:                hub,
 	}
+}
+
+func (s *RoutingService) SetOwnerRepositories(inboxes *repository.InboxRepository, accounts *repository.AccountRepository, teams *repository.TeamRepository, policies *repository.AssignmentPolicyRepository, capacityPolicies *repository.AgentCapacityPolicyRepository, messages *repository.MessageRepository) {
+	s.inboxRepo = inboxes
+	s.accountRepo = accounts
+	s.teamRepo = teams
+	s.policyRepo = policies
+	s.capacityPolicyRepo = capacityPolicies
+	s.msgRepo = messages
 }
 
 // IsWithinWorkingHours checks if given time falls within configured inbox working hours
@@ -36,111 +55,99 @@ func (s *RoutingService) IsWithinWorkingHours(inbox *domain.Inbox, t time.Time) 
 }
 
 // CheckAgentCapacity determines if an agent has remaining capacity for a conversation in a specific inbox
-func (s *RoutingService) CheckAgentCapacity(accountID, inboxID, agentID uint, assignmentPolicy *domain.AssignmentPolicy, excludeConvID uint) (hasCapacity bool, currentLoad int64) {
+func (s *RoutingService) CheckAgentCapacity(accountID, inboxID, agentID uint, assignmentPolicy *domain.AssignmentPolicy, excludeConvID uint) (hasCapacity bool, currentLoad int64, err error) {
 	if assignmentPolicy == nil && inboxID > 0 {
-		var inbox domain.Inbox
-		if err := s.db.Preload("AssignmentPolicy").First(&inbox, inboxID).Error; err == nil && inbox.AssignmentPolicy != nil {
-			assignmentPolicy = inbox.AssignmentPolicy
+		if s.inboxRepo == nil || s.policyRepo == nil {
+			return false, 0, gorm.ErrInvalidData
+		}
+		inbox, findErr := s.inboxRepo.FindSummaryByID(accountID, inboxID)
+		if findErr != nil {
+			return false, 0, findErr
+		}
+		if inbox == nil {
+			return false, 0, gorm.ErrRecordNotFound
+		}
+		if inbox.AssignmentPolicyID != nil && *inbox.AssignmentPolicyID > 0 {
+			assignmentPolicy, findErr = s.policyRepo.FindSummaryByID(accountID, *inbox.AssignmentPolicyID)
+			if findErr != nil {
+				return false, 0, findErr
+			}
 		}
 	}
 
-	// 1. First check if agent is assigned to an AgentCapacityPolicy (per-inbox capacity limits)
-	var accountUser domain.AccountUser
-	if err := s.db.Where("account_id = ? AND user_id = ?", accountID, agentID).First(&accountUser).Error; err == nil {
-		if accountUser.AgentCapacityPolicyID != nil && *accountUser.AgentCapacityPolicyID > 0 {
-			var inboxLimit domain.InboxCapacityLimit
-			if err := s.db.Where("agent_capacity_policy_id = ? AND inbox_id = ?", *accountUser.AgentCapacityPolicyID, inboxID).First(&inboxLimit).Error; err == nil {
-				// Specific limit for this inbox configured!
-				var inboxCount int64
-				q := s.db.Model(&domain.Conversation{}).
-					Where("account_id = ? AND inbox_id = ? AND assignee_id = ? AND status != ?", accountID, inboxID, agentID, domain.ConversationStatusResolved)
-				if excludeConvID > 0 {
-					q = q.Where("id != ?", excludeConvID)
-				}
-
-				// Apply ExclusionRules if defined on AgentCapacityPolicy
-				var agentCapPolicy domain.AgentCapacityPolicy
-				if err := s.db.First(&agentCapPolicy, *accountUser.AgentCapacityPolicyID).Error; err == nil && agentCapPolicy.ExclusionRules != "" {
-					var rules struct {
-						ExcludeOlderThanHours int      `json:"exclude_older_than_hours"`
-						ExcludedLabels        []string `json:"excluded_labels"`
-						ExcludeResolved       bool     `json:"exclude_resolved"`
-					}
-					if err := json.Unmarshal([]byte(agentCapPolicy.ExclusionRules), &rules); err == nil {
-						if rules.ExcludeOlderThanHours > 0 {
-							cutoff := time.Now().UTC().Add(-time.Duration(rules.ExcludeOlderThanHours) * time.Hour)
-							q = q.Where("(last_activity_at IS NOT NULL AND last_activity_at >= ?) OR (last_activity_at IS NULL AND created_at >= ?)", cutoff, cutoff)
-						}
-						if len(rules.ExcludedLabels) > 0 {
-							q = q.Where("id NOT IN (SELECT conversation_labels.conversation_id FROM conversation_labels JOIN labels ON labels.id = conversation_labels.label_id WHERE labels.title IN ?)", rules.ExcludedLabels)
-						}
-					}
-				}
-
-				q.Count(&inboxCount)
-				return inboxCount < int64(inboxLimit.ConversationLimit), inboxCount
-			}
-			// If no specific limit for this inbox under this policy, check if assignmentPolicy has an AgentCapacityLimit
-			if assignmentPolicy != nil && assignmentPolicy.AgentCapacityLimit > 0 {
-				var inboxCount int64
-				q := s.db.Model(&domain.Conversation{}).
-					Where("account_id = ? AND inbox_id = ? AND assignee_id = ? AND status != ?", accountID, inboxID, agentID, domain.ConversationStatusResolved)
-				if excludeConvID > 0 {
-					q = q.Where("id != ?", excludeConvID)
-				}
-				q.Count(&inboxCount)
-				return inboxCount < int64(assignmentPolicy.AgentCapacityLimit), inboxCount
-			}
-
-			// Otherwise, agent has unlimited capacity for this inbox
-			var totalCount int64
-			s.db.Model(&domain.Conversation{}).Where("account_id = ? AND assignee_id = ? AND status != ?", accountID, agentID, domain.ConversationStatusResolved).Count(&totalCount)
-			return true, totalCount
+	if s.accountRepo == nil || s.capacityPolicyRepo == nil || s.convRepo == nil {
+		return false, 0, gorm.ErrInvalidData
+	}
+	membership, err := s.accountRepo.GetMembership(accountID, agentID)
+	if err != nil {
+		return false, 0, err
+	}
+	if membership != nil && membership.AgentCapacityPolicyID != nil && *membership.AgentCapacityPolicyID > 0 {
+		capacityPolicyID := *membership.AgentCapacityPolicyID
+		inboxLimit, findErr := s.capacityPolicyRepo.FindInboxLimit(capacityPolicyID, inboxID)
+		if findErr != nil {
+			return false, 0, findErr
 		}
+		if inboxLimit != nil {
+			var cutoff *time.Time
+			var excludedLabels []string
+			capacityPolicy, findErr := s.capacityPolicyRepo.FindSummaryByID(accountID, capacityPolicyID)
+			if findErr != nil {
+				return false, 0, findErr
+			}
+			if capacityPolicy == nil {
+				return false, 0, gorm.ErrRecordNotFound
+			}
+			if capacityPolicy.ExclusionRules != "" {
+				var rules struct {
+					ExcludeOlderThanHours int      `json:"exclude_older_than_hours"`
+					ExcludedLabels        []string `json:"excluded_labels"`
+				}
+				if json.Unmarshal([]byte(capacityPolicy.ExclusionRules), &rules) == nil {
+					if rules.ExcludeOlderThanHours > 0 {
+						value := time.Now().UTC().Add(-time.Duration(rules.ExcludeOlderThanHours) * time.Hour)
+						cutoff = &value
+					}
+					excludedLabels = rules.ExcludedLabels
+				}
+			}
+			count, countErr := s.convRepo.CountActiveAssigned(accountID, inboxID, agentID, excludeConvID, cutoff, excludedLabels)
+			if countErr != nil {
+				return false, 0, countErr
+			}
+			return count < int64(inboxLimit.ConversationLimit), count, nil
+		}
+		if assignmentPolicy != nil && assignmentPolicy.AgentCapacityLimit > 0 {
+			count, countErr := s.convRepo.CountActiveAssigned(accountID, inboxID, agentID, excludeConvID, nil, nil)
+			return count < int64(assignmentPolicy.AgentCapacityLimit), count, countErr
+		}
+		count, countErr := s.convRepo.CountActiveAssigned(accountID, 0, agentID, excludeConvID, nil, nil)
+		return countErr == nil, count, countErr
 	}
 
-	// 2. Next check if AssignmentPolicy has an AgentCapacityLimit
-	var count int64
-	cntQuery := s.db.Model(&domain.Conversation{}).
-		Where("assignee_id = ? AND status != ?", agentID, domain.ConversationStatusResolved)
-	if excludeConvID > 0 {
-		cntQuery = cntQuery.Where("id != ?", excludeConvID)
+	count, err := s.convRepo.CountActiveAssigned(accountID, 0, agentID, excludeConvID, nil, nil)
+	if err != nil {
+		return false, 0, err
 	}
-	if accountID > 0 {
-		cntQuery = cntQuery.Where("account_id = ?", accountID)
-	}
-	cntQuery.Count(&count)
 
 	limit := 0
 	if assignmentPolicy != nil && assignmentPolicy.AgentCapacityLimit > 0 {
 		limit = assignmentPolicy.AgentCapacityLimit
 	} else {
 		// Legacy / general CapacityPolicy fallback
-		var capPolicy domain.CapacityPolicy
-		foundPolicy := false
-		if accountID > 0 {
-			if err := s.db.Where("account_id = ? AND user_id = ?", accountID, agentID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-				foundPolicy = true
-			}
+		capPolicy, findErr := s.capacityPolicyRepo.FindLegacyCapacityPolicy(accountID, agentID)
+		if findErr != nil {
+			return false, 0, findErr
 		}
-		if !foundPolicy {
-			if err := s.db.Where("user_id = ?", agentID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-				foundPolicy = true
-			} else if accountID > 0 {
-				if err := s.db.Where("account_id = ? AND user_id = 0", accountID).First(&capPolicy).Error; err == nil && capPolicy.ID > 0 {
-					foundPolicy = true
-				}
-			}
-		}
-		if foundPolicy {
+		if capPolicy != nil {
 			limit = capPolicy.ConversationLimit
 		}
 	}
 
 	if limit > 0 && count >= int64(limit) {
-		return false, count
+		return false, count, nil
 	}
-	return true, count
+	return true, count, nil
 }
 
 // AutoAssign attempts to assign an open conversation to an available, online agent in the inbox
@@ -150,18 +157,34 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 
 	// Ensure AccountID is resolved from inbox if missing
 	if conv.AccountID == 0 && conv.InboxID > 0 {
-		var inbox domain.Inbox
-		if err := s.db.Select("account_id").First(&inbox, conv.InboxID).Error; err == nil {
-			conv.AccountID = inbox.AccountID
+		if s.inboxRepo == nil {
+			return nil, gorm.ErrInvalidData
 		}
+		inbox, err := s.inboxRepo.FindByGlobalID(conv.InboxID)
+		if err != nil {
+			return nil, err
+		}
+		conv.AccountID = inbox.AccountID
 	}
 
 	var inbox domain.Inbox
 	var policy *domain.AssignmentPolicy
 	if conv.InboxID != 0 {
-		if err := s.db.Preload("AssignmentPolicy").First(&inbox, conv.InboxID).Error; err == nil {
-			if inbox.AssignmentPolicy != nil {
-				policy = inbox.AssignmentPolicy
+		if s.inboxRepo == nil || s.policyRepo == nil {
+			return nil, gorm.ErrInvalidData
+		}
+		ownedInbox, err := s.inboxRepo.FindSummaryByID(conv.AccountID, conv.InboxID)
+		if err != nil {
+			return nil, err
+		}
+		if ownedInbox == nil {
+			return nil, gorm.ErrRecordNotFound
+		}
+		inbox = *ownedInbox
+		if inbox.AssignmentPolicyID != nil && *inbox.AssignmentPolicyID > 0 {
+			policy, err = s.policyRepo.FindSummaryByID(conv.AccountID, *inbox.AssignmentPolicyID)
+			if err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -182,19 +205,24 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	if shouldCheckWorkingHours && !s.IsWithinWorkingHours(&inbox, time.Now()) {
 		// Off-hours! Do not route to agents. Send out-of-office response if configured.
 		if inbox.OutOfOfficeMessage != "" {
-			var count int64
-			s.db.Model(&domain.Message{}).
-				Where("conversation_id = ? AND content = ?", conv.ID, inbox.OutOfOfficeMessage).
-				Count(&count)
-			if count == 0 {
-				_ = s.msgRepo.Create(&domain.Message{
+			if s.msgRepo == nil {
+				return nil, gorm.ErrInvalidData
+			}
+			exists, err := s.msgRepo.ConversationContentExists(conv.AccountID, conv.ID, inbox.OutOfOfficeMessage)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				if err := s.msgRepo.Create(&domain.Message{
 					AccountID:      conv.AccountID,
 					ConversationID: conv.ID,
 					MessageType:    domain.MessageTypeOutgoing,
 					Content:        inbox.OutOfOfficeMessage,
 					CreatedAt:      time.Now().UTC(),
 					UpdatedAt:      time.Now().UTC(),
-				})
+				}); err != nil {
+					return nil, err
+				}
 			}
 		}
 		return nil, nil
@@ -203,11 +231,20 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	// If already assigned, check if existing assignee still has available capacity
 	if conv.AssigneeID != nil && *conv.AssigneeID > 0 {
 		agentID := *conv.AssigneeID
-		hasCap, _ := s.CheckAgentCapacity(conv.AccountID, conv.InboxID, agentID, policy, conv.ID)
+		hasCap, _, err := s.CheckAgentCapacity(conv.AccountID, conv.InboxID, agentID, policy, conv.ID)
+		if err != nil {
+			return nil, err
+		}
 		if hasCap {
-			var existing domain.User
-			if err := s.db.First(&existing, agentID).Error; err == nil {
-				return &existing, nil
+			if s.accountRepo == nil {
+				return nil, gorm.ErrInvalidData
+			}
+			membership, err := s.accountRepo.FindMember(conv.AccountID, agentID)
+			if err != nil {
+				return nil, err
+			}
+			if membership != nil && membership.User != nil {
+				return membership.User, nil
 			}
 		}
 		// Over capacity! Clear assignee so AutoAssign can find an available agent or keep unassigned
@@ -218,14 +255,18 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	}
 
 	// 1. Find all members of the inbox who are currently 'online'
-	var eligibleAgents []domain.User
-	err := s.db.Joins("JOIN inbox_members ON inbox_members.user_id = users.id").
-		Where("inbox_members.inbox_id = ? AND users.availability = ?", conv.InboxID, domain.AvailabilityOnline).
-		Order("users.id ASC").
-		Find(&eligibleAgents).Error
-
+	if s.inboxRepo == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	members, err := s.inboxRepo.ListMembers(conv.InboxID)
 	if err != nil {
 		return nil, err
+	}
+	eligibleAgents := make([]domain.User, 0, len(members))
+	for _, member := range members {
+		if member.Availability == domain.AvailabilityOnline {
+			eligibleAgents = append(eligibleAgents, member)
+		}
 	}
 
 	// 2. Filter available agents based on capacity
@@ -234,7 +275,10 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 
 	for i := range eligibleAgents {
 		agent := &eligibleAgents[i]
-		hasCap, load := s.CheckAgentCapacity(conv.AccountID, conv.InboxID, agent.ID, policy, conv.ID)
+		hasCap, load, err := s.CheckAgentCapacity(conv.AccountID, conv.InboxID, agent.ID, policy, conv.ID)
+		if err != nil {
+			return nil, err
+		}
 		agentLoad[agent.ID] = load
 
 		if !hasCap {
@@ -248,29 +292,51 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 		// No online agents currently available or all reached capacity. Check fallback!
 		if policy != nil {
 			if policy.FallbackAssigneeID != nil && *policy.FallbackAssigneeID > 0 {
-				var fallbackUser domain.User
-				if err := s.db.First(&fallbackUser, *policy.FallbackAssigneeID).Error; err == nil {
-					_ = s.convRepo.Assign(conv.AccountID, conv.ID, &fallbackUser.ID)
-					conv.AssigneeID = &fallbackUser.ID
-					conv.Assignee = &fallbackUser
-					if s.hub != nil {
-						s.hub.Broadcast(&ws.Event{
-							Name:           ws.EventConversationUpdated,
-							AccountID:      conv.AccountID,
-							ConversationID: conv.ID,
-							Data: ginH{
-								"id":          conv.ID,
-								"assignee_id": fallbackUser.ID,
-								"assignee":    fallbackUser,
-							},
-						})
-					}
-					return &fallbackUser, nil
+				if s.accountRepo == nil {
+					return nil, gorm.ErrInvalidData
 				}
+				membership, err := s.accountRepo.FindMember(conv.AccountID, *policy.FallbackAssigneeID)
+				if err != nil {
+					return nil, err
+				}
+				if membership == nil || membership.User == nil {
+					return nil, gorm.ErrRecordNotFound
+				}
+				fallbackUser := membership.User
+				if err := s.convRepo.Assign(conv.AccountID, conv.ID, &fallbackUser.ID); err != nil {
+					return nil, err
+				}
+				conv.AssigneeID = &fallbackUser.ID
+				conv.Assignee = fallbackUser
+				if s.hub != nil {
+					s.hub.Broadcast(&ws.Event{
+						Name:           ws.EventConversationUpdated,
+						AccountID:      conv.AccountID,
+						ConversationID: conv.ID,
+						Data: ginH{
+							"id":          conv.ID,
+							"assignee_id": fallbackUser.ID,
+							"assignee":    *fallbackUser,
+						},
+					})
+				}
+				return fallbackUser, nil
 			}
 			if policy.FallbackTeamID != nil && *policy.FallbackTeamID > 0 {
+				if s.teamRepo == nil {
+					return nil, gorm.ErrInvalidData
+				}
+				team, err := s.teamRepo.FindSummaryByID(conv.AccountID, *policy.FallbackTeamID)
+				if err != nil {
+					return nil, err
+				}
+				if team == nil {
+					return nil, gorm.ErrRecordNotFound
+				}
 				conv.TeamID = policy.FallbackTeamID
-				_ = s.convRepo.AssignTeam(conv.AccountID, conv.ID, policy.FallbackTeamID)
+				if err := s.convRepo.AssignTeam(conv.AccountID, conv.ID, policy.FallbackTeamID); err != nil {
+					return nil, err
+				}
 				return nil, nil
 			}
 		}
@@ -280,15 +346,9 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	// 3. Select agent according to policy strategy (Round-Robin vs Least-Active)
 	var bestAgent *domain.User
 	if policy != nil && policy.StrategyType == domain.StrategyRoundRobin {
-		var lastConv domain.Conversation
-		var lastAssigneeID uint
-		q := s.db.Model(&domain.Conversation{}).
-			Where("inbox_id = ? AND assignee_id IS NOT NULL", conv.InboxID)
-		if conv.ID > 0 {
-			q = q.Where("id != ?", conv.ID)
-		}
-		if err := q.Order("id DESC").First(&lastConv).Error; err == nil && lastConv.AssigneeID != nil {
-			lastAssigneeID = *lastConv.AssigneeID
+		lastAssigneeID, err := s.convRepo.LastAssignedAgent(conv.AccountID, conv.InboxID, conv.ID)
+		if err != nil {
+			return nil, err
 		}
 
 		bestIndex := 0

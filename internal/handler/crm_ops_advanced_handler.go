@@ -1814,7 +1814,11 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 		for _, conv := range conversations {
 			// Check capacity limit if assigning to an agent
 			if targetAgent != nil && h.routingService != nil {
-				hasCapacity, _ := h.routingService.CheckAgentCapacity(uint(accID), conv.InboxID, targetAgent.ID, nil, conv.ID)
+				hasCapacity, _, err := h.routingService.CheckAgentCapacity(uint(accID), conv.InboxID, targetAgent.ID, nil, conv.ID)
+				if err != nil {
+					response.InternalError(c, "Failed to check agent capacity")
+					return
+				}
 				if !hasCapacity {
 					response.BadRequest(c, "Agent has reached maximum conversation capacity limit")
 					return
