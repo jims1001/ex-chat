@@ -104,6 +104,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
 	t.Run("CHN_health_uses_CON_MSG_delivery_queries", func(t *testing.T) { testInboxHealthOwnerBoundary(t, openStore) })
 	t.Run("AUT_assignments_use_TEN_IAM_owner_queries", func(t *testing.T) { testAutomationAssignmentOwnerBoundary(t, openStore) })
+	t.Run("AUT_conditions_use_CUS_contact_company_query", func(t *testing.T) { testAutomationContactOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
@@ -968,7 +969,7 @@ func testAutomationAssignmentOwnerBoundary(t *testing.T, openStore func(string) 
 	}
 	conversations := repository.NewConversationRepository(conDB)
 	accounts := repository.NewAccountRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB))
-	service := service.NewAutomationServiceWithOwnerPorts(autDB, conversations, repository.NewMessageRepository(openStore("MSG")), repository.NewLabelRepository(openStore("CUS")), accounts, repository.NewTeamRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB)))
+	service := service.NewAutomationServiceWithOwnerPorts(autDB, conversations, repository.NewMessageRepository(openStore("MSG")), repository.NewLabelRepository(openStore("CUS")), accounts, repository.NewTeamRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB)), repository.NewContactRepository(openStore("CUS")))
 	service.HandleConversationCreated(&conversation)
 	var updated domain.Conversation
 	if err := conDB.First(&updated, conversation.ID).Error; err != nil || updated.AssigneeID == nil || *updated.AssigneeID != user.ID || updated.TeamID == nil || *updated.TeamID != team.ID {
@@ -978,6 +979,46 @@ func testAutomationAssignmentOwnerBoundary(t *testing.T, openStore func(string) 
 		if autDB.Migrator().HasTable(model) {
 			t.Fatalf("AUT store contains %s authority table", name)
 		}
+	}
+}
+
+func testAutomationContactOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	autDB, conDB, cusDB := openStore("AUT"), openStore("CON"), openStore("CUS")
+	company := domain.Company{AccountID: 171, Name: "Owner Company"}
+	if err := cusDB.Create(&company).Error; err != nil {
+		t.Fatal(err)
+	}
+	contact := domain.Contact{AccountID: 171, CompanyID: &company.ID, Name: "Owner Contact", Email: "owner@company.example", PhoneNumber: "+61000000001", CustomAttributes: `{"country_code":"AU","city":"Sydney"}`}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	valid := domain.Conversation{AccountID: 171, InboxID: 1, ContactID: contact.ID, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: "medium"}
+	foreign := domain.Conversation{AccountID: 172, InboxID: 1, ContactID: contact.ID, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: "medium"}
+	for _, conversation := range []*domain.Conversation{&valid, &foreign} {
+		if err := conDB.Create(conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	conditions := `[{"attribute_key":"company_name","filter_operator":"equal_to","values":["Owner Company"]},{"attribute_key":"email","filter_operator":"contains","values":["company.example"],"query_operator":"AND"}]`
+	actions := `[{"action_name":"change_priority","action_params":{"priority":"urgent"}}]`
+	for _, accountID := range []uint{171, 172} {
+		rule := domain.AutomationRule{AccountID: accountID, Name: "CUS owner condition", EventName: "conversation_created", Conditions: conditions, Actions: actions, Active: true}
+		if err := autDB.Create(&rule).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversations := repository.NewConversationRepository(conDB)
+	automation := service.NewAutomationServiceWithOwnerPorts(autDB, conversations, repository.NewMessageRepository(openStore("MSG")), repository.NewLabelRepository(cusDB), nil, nil, repository.NewContactRepository(cusDB))
+	automation.HandleConversationCreated(&valid)
+	automation.HandleConversationCreated(&foreign)
+	var validResult, foreignResult domain.Conversation
+	_ = conDB.First(&validResult, valid.ID).Error
+	_ = conDB.First(&foreignResult, foreign.ID).Error
+	if validResult.Priority != "urgent" || foreignResult.Priority == "urgent" {
+		t.Fatalf("CUS owner condition scope failed: valid=%s foreign=%s", validResult.Priority, foreignResult.Priority)
+	}
+	if autDB.Migrator().HasTable(&domain.Contact{}) || autDB.Migrator().HasTable(&domain.Company{}) {
+		t.Fatal("AUT store contains CUS authority table")
 	}
 }
 

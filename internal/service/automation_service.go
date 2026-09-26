@@ -45,6 +45,7 @@ type AutomationService struct {
 	labelRepo *repository.LabelRepository
 	accounts  automationAccountPort
 	teams     automationTeamPort
+	contacts  automationContactPort
 
 	// Idempotency cache to prevent same-second duplicated execution for same conversation+event+rule
 	recentExecMu sync.Mutex
@@ -59,15 +60,19 @@ type automationTeamPort interface {
 	FindSummaryByID(accountID, id uint) (*domain.Team, error)
 }
 
+type automationContactPort interface {
+	FindByID(accountID, id uint) (*domain.Contact, error)
+}
+
 func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepos ...*repository.LabelRepository) *AutomationService {
 	labelRepo := repository.NewLabelRepository(db)
 	if len(labelRepos) > 0 && labelRepos[0] != nil {
 		labelRepo = labelRepos[0]
 	}
-	return NewAutomationServiceWithOwnerPorts(db, convRepo, msgRepo, labelRepo, repository.NewAccountRepository(db), repository.NewTeamRepository(db))
+	return NewAutomationServiceWithOwnerPorts(db, convRepo, msgRepo, labelRepo, repository.NewAccountRepository(db), repository.NewTeamRepository(db), repository.NewContactRepository(db))
 }
 
-func NewAutomationServiceWithOwnerPorts(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepo *repository.LabelRepository, accounts automationAccountPort, teams automationTeamPort) *AutomationService {
+func NewAutomationServiceWithOwnerPorts(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepo *repository.LabelRepository, accounts automationAccountPort, teams automationTeamPort, contacts automationContactPort) *AutomationService {
 	return &AutomationService{
 		db:         db,
 		convRepo:   convRepo,
@@ -75,8 +80,27 @@ func NewAutomationServiceWithOwnerPorts(db *gorm.DB, convRepo *repository.Conver
 		labelRepo:  labelRepo,
 		accounts:   accounts,
 		teams:      teams,
+		contacts:   contacts,
 		recentExec: make(map[string]time.Time),
 	}
+}
+
+func (s *AutomationService) ownerContact(conv *domain.Conversation) *domain.Contact {
+	if conv == nil || conv.ContactID == 0 {
+		return nil
+	}
+	if conv.Contact != nil && conv.Contact.ID == conv.ContactID && conv.Contact.AccountID == conv.AccountID {
+		return conv.Contact
+	}
+	if s.contacts == nil {
+		return nil
+	}
+	contact, err := s.contacts.FindByID(conv.AccountID, conv.ContactID)
+	if err != nil || contact == nil {
+		return nil
+	}
+	conv.Contact = contact
+	return contact
 }
 
 type RuleCondition struct {
@@ -436,42 +460,21 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 	case "contact_id":
 		targetVal = int(conv.ContactID)
 	case "email":
-		if conv.Contact != nil && conv.Contact.Email != "" {
-			targetVal = conv.Contact.Email
-		} else if s.db != nil && conv.ContactID > 0 {
-			var contact domain.Contact
-			if err := s.db.Where("id = ?", conv.ContactID).First(&contact).Error; err == nil {
-				conv.Contact = &contact
-				targetVal = contact.Email
-			}
+		if contact := s.ownerContact(conv); contact != nil {
+			targetVal = contact.Email
 		}
 	case "phone_number":
-		if conv.Contact != nil && conv.Contact.PhoneNumber != "" {
-			targetVal = conv.Contact.PhoneNumber
-		} else if s.db != nil && conv.ContactID > 0 {
-			var contact domain.Contact
-			if err := s.db.Where("id = ?", conv.ContactID).First(&contact).Error; err == nil {
-				conv.Contact = &contact
-				targetVal = contact.PhoneNumber
-			}
+		if contact := s.ownerContact(conv); contact != nil {
+			targetVal = contact.PhoneNumber
 		}
 	case "country_code", "city", "company_name":
-		if conv.Contact == nil && s.db != nil && conv.ContactID > 0 {
-			var contact domain.Contact
-			if err := s.db.Where("id = ?", conv.ContactID).First(&contact).Error; err == nil {
-				conv.Contact = &contact
+		if contact := s.ownerContact(conv); contact != nil {
+			if cond.AttributeKey == "company_name" && contact.Company != nil {
+				targetVal = contact.Company.Name
 			}
-		}
-		if conv.Contact != nil {
-			if cond.AttributeKey == "company_name" && conv.Contact.CompanyID != nil && s.db != nil {
-				var company domain.Company
-				if err := s.db.Where("id = ?", *conv.Contact.CompanyID).First(&company).Error; err == nil {
-					targetVal = company.Name
-				}
-			}
-			if targetVal == nil && conv.Contact.CustomAttributes != "" {
+			if targetVal == nil && contact.CustomAttributes != "" {
 				var custMap map[string]any
-				if err := json.Unmarshal([]byte(conv.Contact.CustomAttributes), &custMap); err == nil {
+				if err := json.Unmarshal([]byte(contact.CustomAttributes), &custMap); err == nil {
 					if val, ok := custMap[cond.AttributeKey]; ok {
 						targetVal = val
 					}
