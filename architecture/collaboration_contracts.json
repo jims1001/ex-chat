@@ -3415,6 +3415,36 @@
     {
       "consumer": "RPT",
       "provider": "CON",
+      "file": "internal/handler/applied_sla_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "file": "internal/handler/applied_sla_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindIDsForAppliedSLAFilter",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "file": "internal/handler/applied_sla_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "ResetSLAProjection",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
       "file": "internal/service/sla_service.go",
       "symbol": "ConversationRepository",
       "method": "UpdateSLATiming",

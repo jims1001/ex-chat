@@ -82,6 +82,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RTE_routing_uses_CHN_TEN_IAM_CON_owner_queries", func(t *testing.T) { testRoutingServiceOwnerBoundary(t, openStore) })
 	t.Run("RTE_snooze_scheduler_uses_CON_owner_command", func(t *testing.T) { testRoutingSnoozeOwnerBoundary(t, openStore) })
 	t.Run("RTE_capacity_policies_use_TEN_CHN_owner_contracts", func(t *testing.T) { testAgentCapacityPolicyOwnerBoundary(t, openStore) })
+	t.Run("RPT_applied_slas_use_CON_owner_queries", func(t *testing.T) { testAppliedSLAConversationBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}

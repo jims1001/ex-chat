@@ -528,6 +528,50 @@ func (r *ConversationRepository) UpdateSLATiming(accountID, id uint, updates map
 		Updates(filtered).Error
 }
 
+// ResetSLAProjection clears the CON-owned SLA projection after RPT removes the
+// applied SLA aggregate.
+func (r *ConversationRepository) ResetSLAProjection(accountID, id uint) error {
+	return r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND id = ?", accountID, id).
+		Updates(map[string]any{
+			"sla_policy_id": nil, "sla_status": "active",
+			"first_response_due_at": nil, "next_response_due_at": nil, "resolution_due_at": nil,
+		}).Error
+}
+
+// FindIDsForAppliedSLAFilter resolves RPT's conversation filters inside CON.
+// Label titles are resolved through the CUS owner port.
+func (r *ConversationRepository) FindIDsForAppliedSLAFilter(accountID uint, inboxID, teamID, assigneeID *uint, labelTitle string) ([]uint, error) {
+	q := r.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID)
+	if inboxID != nil && *inboxID > 0 {
+		q = q.Where("inbox_id = ?", *inboxID)
+	}
+	if teamID != nil && *teamID > 0 {
+		q = q.Where("team_id = ?", *teamID)
+	}
+	if assigneeID != nil && *assigneeID > 0 {
+		q = q.Where("assignee_id = ?", *assigneeID)
+	}
+	if labelTitle != "" {
+		if r.labels == nil {
+			return nil, gorm.ErrInvalidData
+		}
+		labelIDs, err := r.labels.FindIDsByTitles(accountID, []any{labelTitle})
+		if err != nil {
+			return nil, err
+		}
+		if len(labelIDs) == 0 {
+			return []uint{}, nil
+		}
+		q = q.Where("id IN (SELECT conversation_id FROM conversation_labels WHERE label_id IN ?)", labelIDs)
+	}
+	var ids []uint
+	if err := q.Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // UpdateLastSeen updates agent read position and clears unread count
 func (r *ConversationRepository) UpdateLastSeen(accountID, id, userID uint, seenAt time.Time) error {
 	var conv domain.Conversation

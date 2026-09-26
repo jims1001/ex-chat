@@ -114,10 +114,38 @@ func (h *AppliedSLAHandler) parseFilter(c *gin.Context) repository.AppliedSLAFil
 	return filter
 }
 
+func (h *AppliedSLAHandler) resolveConversationFilter(accountID uint, filter *repository.AppliedSLAFilter) error {
+	if filter.InboxID == nil && filter.TeamID == nil && filter.AssignedAgentID == nil && filter.Label == "" {
+		return nil
+	}
+	ids, err := h.convRepo.FindIDsForAppliedSLAFilter(accountID, filter.InboxID, filter.TeamID, filter.AssignedAgentID, filter.Label)
+	if err != nil {
+		return err
+	}
+	filter.ConversationIDs = ids
+	filter.ConversationFilterApplied = true
+	return nil
+}
+
+func (h *AppliedSLAHandler) hydrateAppliedSLAConversations(accountID uint, list []domain.AppliedSLA) error {
+	for i := range list {
+		conv, err := h.convRepo.FindByID(accountID, list[i].ConversationID)
+		if err != nil {
+			return err
+		}
+		list[i].Conversation = conv
+	}
+	return nil
+}
+
 // ListAppliedSLAs lists applied SLAs conforming to Chatwoot upstream response format
 func (h *AppliedSLAHandler) ListAppliedSLAs(c *gin.Context) {
 	accountID := h.getAccountID(c)
 	filter := h.parseFilter(c)
+	if err := h.resolveConversationFilter(accountID, &filter); err != nil {
+		response.InternalError(c, "Failed to resolve conversation filters")
+		return
+	}
 
 	list, total, err := h.appliedSLARepo.ListAppliedSLAs(accountID, filter)
 	if err != nil {
@@ -126,6 +154,10 @@ func (h *AppliedSLAHandler) ListAppliedSLAs(c *gin.Context) {
 			"error", err.Error(),
 		)
 		response.InternalError(c, "Failed to list applied SLAs")
+		return
+	}
+	if err := h.hydrateAppliedSLAConversations(accountID, list); err != nil {
+		response.InternalError(c, "Failed to load conversations")
 		return
 	}
 
@@ -231,6 +263,10 @@ func (h *AppliedSLAHandler) ListAppliedSLAs(c *gin.Context) {
 func (h *AppliedSLAHandler) GetMetrics(c *gin.Context) {
 	accountID := h.getAccountID(c)
 	filter := h.parseFilter(c)
+	if err := h.resolveConversationFilter(accountID, &filter); err != nil {
+		response.InternalError(c, "Failed to resolve conversation filters")
+		return
+	}
 
 	metrics, err := h.appliedSLARepo.GetMetrics(accountID, filter)
 	if err != nil {
@@ -256,6 +292,10 @@ func (h *AppliedSLAHandler) GetMetrics(c *gin.Context) {
 func (h *AppliedSLAHandler) Download(c *gin.Context) {
 	accountID := h.getAccountID(c)
 	filter := h.parseFilter(c)
+	if err := h.resolveConversationFilter(accountID, &filter); err != nil {
+		response.InternalError(c, "Failed to resolve conversation filters")
+		return
+	}
 
 	list, err := h.appliedSLARepo.GetMissedAppliedSLAs(accountID, filter)
 	if err != nil {
@@ -264,6 +304,10 @@ func (h *AppliedSLAHandler) Download(c *gin.Context) {
 			"error", err.Error(),
 		)
 		response.InternalError(c, "Failed to generate CSV export")
+		return
+	}
+	if err := h.hydrateAppliedSLAConversations(accountID, list); err != nil {
+		response.InternalError(c, "Failed to load conversations")
 		return
 	}
 
@@ -343,15 +387,22 @@ func (h *AppliedSLAHandler) GetConversationAppliedSLA(c *gin.Context) {
 		return
 	}
 
-	var conv domain.Conversation
-	if err := h.db.Preload("Inbox").Where("account_id = ? AND id = ?", accountID, convID).First(&conv).Error; err != nil {
+	conv, err := h.convRepo.FindByID(accountID, uint(convID))
+	if err != nil {
+		response.InternalError(c, "Failed to load conversation")
+		return
+	}
+	if conv == nil {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
 
 	applied, _ := h.appliedSLARepo.GetAppliedSLAByConversation(accountID, uint(convID))
+	if applied != nil {
+		applied.Conversation = conv
+	}
 
-	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(&conv)
+	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(conv)
 	now := time.Now().UTC()
 
 	var frtRemainingSec, nrtRemainingSec, resRemainingSec *int
@@ -430,8 +481,12 @@ func (h *AppliedSLAHandler) ApplySLA(c *gin.Context) {
 	}
 
 	// Validate conversation exists in account
-	var conv domain.Conversation
-	if err := h.db.Where("account_id = ? AND id = ?", accountID, convID).First(&conv).Error; err != nil {
+	conv, err := h.convRepo.FindByID(accountID, uint(convID))
+	if err != nil {
+		response.InternalError(c, "Failed to load conversation")
+		return
+	}
+	if conv == nil {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -456,7 +511,7 @@ func (h *AppliedSLAHandler) ApplySLA(c *gin.Context) {
 	}
 
 	// Evaluate conversation immediately
-	_, _ = h.slaService.EvaluateConversation(&conv)
+	_, _ = h.slaService.EvaluateConversation(conv)
 
 	logger.WithComponent("sla").Info("sla policy applied to conversation",
 		"account_id", accountID,
@@ -466,6 +521,9 @@ func (h *AppliedSLAHandler) ApplySLA(c *gin.Context) {
 
 	// Refetch applied SLA with relations
 	fullApplied, _ := h.appliedSLARepo.GetAppliedSLAByConversation(accountID, uint(convID))
+	if fullApplied != nil {
+		fullApplied.Conversation = conv
+	}
 	response.Success(c, fullApplied)
 }
 
@@ -478,6 +536,10 @@ func (h *AppliedSLAHandler) RemoveSLA(c *gin.Context) {
 		return
 	}
 
+	if err := h.convRepo.ResetSLAProjection(accountID, uint(convID)); err != nil {
+		response.InternalError(c, "Failed to reset conversation SLA")
+		return
+	}
 	if err := h.appliedSLARepo.DeleteByConversation(accountID, uint(convID)); err != nil {
 		logger.WithComponent("sla").Error("failed to remove applied sla",
 			"account_id", accountID,
@@ -487,7 +549,6 @@ func (h *AppliedSLAHandler) RemoveSLA(c *gin.Context) {
 		response.InternalError(c, "Failed to remove applied SLA")
 		return
 	}
-
 	logger.WithComponent("sla").Info("applied sla removed from conversation",
 		"account_id", accountID,
 		"conversation_id", convID,

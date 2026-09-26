@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v18 records RTE capacity composition through TEN/CHN.
-	const approvedCollaborationSHA = "5a5002d13cf16ae73eaf7d1bd3afefaf7ca26b963808714ade4f848897d13874"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v19 records RPT Applied SLA composition through CON.
+	const approvedCollaborationSHA = "a2fb93e94932f2c37d4bf292b76f0bd255c2f07abad6700238ddd455e094b56b"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -381,6 +381,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/agent_capacity_policy_repository.go": {"domain.AccountUser", "domain.User", "domain.Inbox{", "Preload(\"Inbox"},
 		"../internal/repository/csat_extension_repository.go":        {"domain.Conversation", "domain.Message", "domain.Inbox", "domain.Contact", "domain.ContactInbox", "domain.AccountUser"},
 		"../internal/repository/inbox_repository.go":                 {"domain.AssignmentPolicy", "domain.Conversation"},
+		"../internal/repository/applied_sla_repository.go":           {"domain.Conversation", "Preload(\"Conversation", "JOIN conversations", "JOIN conversation_labels", "JOIN labels"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

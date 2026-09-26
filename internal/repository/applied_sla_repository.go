@@ -13,17 +13,19 @@ import (
 
 // AppliedSLAFilter defines search and filter parameters for Applied SLAs
 type AppliedSLAFilter struct {
-	Since           *time.Time
-	Until           *time.Time
-	InboxID         *uint
-	TeamID          *uint
-	SLAPolicyID     *uint
-	AssignedAgentID *uint
-	Label           string
-	SLAStatus       string // active, hit, missed, active_with_misses
-	OnlyMissed      bool   // when true, filters to missed & active_with_misses
-	Page            int
-	PageSize        int
+	Since                     *time.Time
+	Until                     *time.Time
+	InboxID                   *uint
+	TeamID                    *uint
+	SLAPolicyID               *uint
+	AssignedAgentID           *uint
+	Label                     string
+	SLAStatus                 string // active, hit, missed, active_with_misses
+	OnlyMissed                bool   // when true, filters to missed & active_with_misses
+	ConversationIDs           []uint // resolved by the CON owner before querying RPT
+	ConversationFilterApplied bool
+	Page                      int
+	PageSize                  int
 }
 
 // AppliedSLAMetrics provides hit-rate and breach counts
@@ -96,11 +98,6 @@ func (r *AppliedSLARepository) GetAppliedSLAByConversation(accountID, conversati
 		Preload("SLAEvents", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
-		Preload("Conversation").
-		Preload("Conversation.Contact").
-		Preload("Conversation.Assignee").
-		Preload("Conversation.Team").
-		Preload("Conversation.Inbox").
 		First(&applied).Error
 
 	if err != nil {
@@ -117,11 +114,6 @@ func (r *AppliedSLARepository) GetAppliedSLAByID(accountID, id uint) (*domain.Ap
 		Preload("SLAEvents", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
-		Preload("Conversation").
-		Preload("Conversation.Contact").
-		Preload("Conversation.Assignee").
-		Preload("Conversation.Team").
-		Preload("Conversation.Inbox").
 		First(&applied).Error
 
 	if err != nil {
@@ -194,17 +186,6 @@ func (r *AppliedSLARepository) DeleteByConversation(accountID, conversationID ui
 		return err
 	}
 
-	// Reset Conversation SLA fields
-	_ = r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, conversationID).
-		Updates(map[string]any{
-			"sla_policy_id":         nil,
-			"sla_status":            "active",
-			"first_response_due_at": nil,
-			"next_response_due_at":  nil,
-			"resolution_due_at":     nil,
-		}).Error
-
 	return nil
 }
 
@@ -212,22 +193,11 @@ func (r *AppliedSLARepository) DeleteByConversation(accountID, conversationID ui
 func (r *AppliedSLARepository) buildFilterQuery(accountID uint, filter AppliedSLAFilter) *gorm.DB {
 	q := r.db.Model(&domain.AppliedSLA{}).Where("applied_slas.account_id = ?", accountID)
 
-	needsConvJoin := filter.InboxID != nil || filter.TeamID != nil || filter.AssignedAgentID != nil || filter.Label != ""
-	if needsConvJoin {
-		q = q.Joins("JOIN conversations ON conversations.id = applied_slas.conversation_id")
-		if filter.InboxID != nil && *filter.InboxID > 0 {
-			q = q.Where("conversations.inbox_id = ?", *filter.InboxID)
-		}
-		if filter.TeamID != nil && *filter.TeamID > 0 {
-			q = q.Where("conversations.team_id = ?", *filter.TeamID)
-		}
-		if filter.AssignedAgentID != nil && *filter.AssignedAgentID > 0 {
-			q = q.Where("conversations.assignee_id = ?", *filter.AssignedAgentID)
-		}
-		if filter.Label != "" {
-			q = q.Joins("JOIN conversation_labels ON conversation_labels.conversation_id = conversations.id").
-				Joins("JOIN labels ON labels.id = conversation_labels.label_id").
-				Where("labels.name = ?", filter.Label)
+	if filter.ConversationFilterApplied {
+		if len(filter.ConversationIDs) == 0 {
+			q = q.Where("1 = 0")
+		} else {
+			q = q.Where("applied_slas.conversation_id IN ?", filter.ConversationIDs)
 		}
 	}
 
@@ -275,11 +245,6 @@ func (r *AppliedSLARepository) ListAppliedSLAs(accountID uint, filter AppliedSLA
 		Preload("SLAEvents", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
-		Preload("Conversation").
-		Preload("Conversation.Contact").
-		Preload("Conversation.Assignee").
-		Preload("Conversation.Team").
-		Preload("Conversation.Inbox").
 		Order("applied_slas.created_at DESC, applied_slas.id DESC").
 		Offset(offset).
 		Limit(pageSize).
@@ -295,13 +260,11 @@ func (r *AppliedSLARepository) ListAppliedSLAs(accountID uint, filter AppliedSLA
 func (r *AppliedSLARepository) GetMetrics(accountID uint, filter AppliedSLAFilter) (*AppliedSLAMetrics, error) {
 	var total int64
 	baseQ := r.buildFilterQuery(accountID, AppliedSLAFilter{
-		Since:           filter.Since,
-		Until:           filter.Until,
-		InboxID:         filter.InboxID,
-		TeamID:          filter.TeamID,
-		SLAPolicyID:     filter.SLAPolicyID,
-		AssignedAgentID: filter.AssignedAgentID,
-		Label:           filter.Label,
+		Since:                     filter.Since,
+		Until:                     filter.Until,
+		SLAPolicyID:               filter.SLAPolicyID,
+		ConversationIDs:           filter.ConversationIDs,
+		ConversationFilterApplied: filter.ConversationFilterApplied,
 	})
 
 	if err := baseQ.Count(&total).Error; err != nil {
@@ -310,14 +273,12 @@ func (r *AppliedSLARepository) GetMetrics(accountID uint, filter AppliedSLAFilte
 
 	var misses int64
 	missesQ := r.buildFilterQuery(accountID, AppliedSLAFilter{
-		Since:           filter.Since,
-		Until:           filter.Until,
-		InboxID:         filter.InboxID,
-		TeamID:          filter.TeamID,
-		SLAPolicyID:     filter.SLAPolicyID,
-		AssignedAgentID: filter.AssignedAgentID,
-		Label:           filter.Label,
-		OnlyMissed:      true,
+		Since:                     filter.Since,
+		Until:                     filter.Until,
+		SLAPolicyID:               filter.SLAPolicyID,
+		ConversationIDs:           filter.ConversationIDs,
+		ConversationFilterApplied: filter.ConversationFilterApplied,
+		OnlyMissed:                true,
 	})
 	if err := missesQ.Count(&misses).Error; err != nil {
 		return nil, err
@@ -352,11 +313,6 @@ func (r *AppliedSLARepository) GetMissedAppliedSLAs(accountID uint, filter Appli
 		Preload("SLAEvents", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
-		Preload("Conversation").
-		Preload("Conversation.Contact").
-		Preload("Conversation.Assignee").
-		Preload("Conversation.Team").
-		Preload("Conversation.Inbox").
 		Order("applied_slas.created_at DESC").
 		Find(&list).Error
 
