@@ -700,14 +700,18 @@ func (r *ConversationRepository) ResumeExpiredSnoozed(ctx context.Context, now t
 }
 
 func (r *ConversationRepository) MoveInbox(accountID, sourceInboxID, targetInboxID uint) error {
-	var sourceCount, targetCount int64
-	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, sourceInboxID).Count(&sourceCount).Error; err != nil {
+	if r.inboxes == nil {
+		return gorm.ErrInvalidData
+	}
+	sourceExists, err := r.inboxes.Exists(accountID, sourceInboxID)
+	if err != nil {
 		return err
 	}
-	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, targetInboxID).Count(&targetCount).Error; err != nil {
+	targetExists, err := r.inboxes.Exists(accountID, targetInboxID)
+	if err != nil {
 		return err
 	}
-	if sourceCount != 1 || targetCount != 1 {
+	if !sourceExists || !targetExists {
 		return gorm.ErrRecordNotFound
 	}
 	return r.db.Model(&domain.Conversation{}).

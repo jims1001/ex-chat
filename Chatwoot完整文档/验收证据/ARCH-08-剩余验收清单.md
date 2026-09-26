@@ -77,4 +77,5 @@
 - 已完成并验证：QARepository 通过 TKT/CON 所有者候选查询生成质检任务，QLT 不访问工单和会话权威表（E-ARCH-08-v31）。
 - 已完成并验证：WidgetRepository 通过 CHN/CUS/CON/OPS/MSG 所有者合同组合访客操作，API 只保存 WidgetEvent（E-ARCH-08-v32）。
 - 已完成并验证：TicketRepository 通过 TEN/IAM/CUS/CON 所有者合同完成引用校验与详情组合，RPT SLA 标识保持不透明且 TKT 不访问 SLA 表（E-ARCH-08-v33）。
-- 下一项：ConversationRepository 剩余的 CHN/CUS/IAM/TEN/MSG/MED 跨所有者访问边界。
+- 已完成并验证：ConversationRepository 的收件箱移动通过 CHN 所有者查询校验源和目标收件箱，CON 不再直接访问 Inbox 表（E-ARCH-08-v34）。
+- 下一项：ConversationCleanup 的 MSG/RPT/QLT/RTM/TKT/API/AIC/OPS/BIL 所有者命令边界。

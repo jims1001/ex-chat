@@ -101,6 +101,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
+	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -954,6 +955,39 @@ func testTicketRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gor
 		if db.Migrator().HasTable(&domain.Ticket{}) {
 			t.Fatalf("%s store contains TKT authority table", name)
 		}
+	}
+}
+
+func testConversationMoveInboxBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, chnDB := openStore("CON"), openStore("CHN")
+	source := domain.Inbox{AccountID: 111, Name: "source", WebsiteToken: "move-source"}
+	target := domain.Inbox{AccountID: 111, Name: "target", WebsiteToken: "move-target"}
+	foreign := domain.Inbox{AccountID: 112, Name: "foreign", WebsiteToken: "move-foreign"}
+	for _, inbox := range []*domain.Inbox{&source, &target, &foreign} {
+		if err := chnDB.Create(inbox).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversation := domain.Conversation{AccountID: 111, InboxID: source.ID, ContactID: 1, DisplayID: 1}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewConversationRepositoryWithReferences(conDB, nil, nil, repository.NewInboxRepository(chnDB), nil)
+	if err := repo.MoveInbox(111, source.ID, target.ID); err != nil {
+		t.Fatalf("CHN owner move failed: %v", err)
+	}
+	var moved domain.Conversation
+	if err := conDB.First(&moved, conversation.ID).Error; err != nil || moved.InboxID != target.ID {
+		t.Fatalf("conversation was not moved: inbox=%d err=%v", moved.InboxID, err)
+	}
+	if err := repo.MoveInbox(111, target.ID, foreign.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("foreign CHN inbox accepted: %v", err)
+	}
+	if conDB.Migrator().HasTable(&domain.Inbox{}) {
+		t.Fatal("CON store contains CHN Inbox table")
+	}
+	if chnDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CHN store contains CON Conversation table")
 	}
 }
 
