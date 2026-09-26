@@ -858,15 +858,23 @@ func (h *InboxHandler) GetInboxAgentBot(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	exists, err := h.inboxRepo.Exists(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to fetch inbox")
+		return
+	}
+	if !exists {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
 
-	bot, err := h.inboxRepo.GetAgentBot(accountID, uint(inboxID))
+	if h.agentBotRepo == nil {
+		response.InternalError(c, "Agent bot repository is not configured")
+		return
+	}
+	bot, err := h.agentBotRepo.GetByInbox(c.Request.Context(), accountID, uint(inboxID))
 	if err != nil {
-		response.InternalError(c, "Failed to get agent bot: "+err.Error())
+		response.InternalError(c, "Failed to get agent bot")
 		return
 	}
 	if bot == nil {
@@ -896,8 +904,12 @@ func (h *InboxHandler) SetInboxAgentBot(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	exists, err := h.inboxRepo.Exists(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to fetch inbox")
+		return
+	}
+	if !exists {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
@@ -927,14 +939,23 @@ func (h *InboxHandler) SetInboxAgentBot(c *gin.Context) {
 			response.InternalError(c, "Agent bot repository is not configured")
 			return
 		}
-		if _, err := h.agentBotRepo.GetByID(c.Request.Context(), accountID, targetBotID); err != nil {
+		bot, err := h.agentBotRepo.GetByID(c.Request.Context(), accountID, targetBotID)
+		if err != nil {
+			response.InternalError(c, "Failed to fetch agent bot")
+			return
+		}
+		if bot == nil {
 			response.NotFound(c, "Agent bot not found")
 			return
 		}
 	}
 
-	if err := h.inboxRepo.SetAgentBot(accountID, uint(inboxID), targetBotID); err != nil {
-		response.InternalError(c, "Failed to set agent bot: "+err.Error())
+	if h.agentBotRepo == nil {
+		response.InternalError(c, "Agent bot repository is not configured")
+		return
+	}
+	if err := h.agentBotRepo.ReplaceInboxBinding(c.Request.Context(), accountID, uint(inboxID), targetBotID); err != nil {
+		response.InternalError(c, "Failed to set agent bot")
 		return
 	}
 
@@ -956,14 +977,22 @@ func (h *InboxHandler) UnsetInboxAgentBot(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	exists, err := h.inboxRepo.Exists(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to fetch inbox")
+		return
+	}
+	if !exists {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
 
-	if err := h.inboxRepo.UnsetAgentBot(accountID, uint(inboxID)); err != nil {
-		response.InternalError(c, "Failed to unset agent bot: "+err.Error())
+	if h.agentBotRepo == nil {
+		response.InternalError(c, "Agent bot repository is not configured")
+		return
+	}
+	if err := h.agentBotRepo.ReplaceInboxBinding(c.Request.Context(), accountID, uint(inboxID), 0); err != nil {
+		response.InternalError(c, "Failed to unset agent bot")
 		return
 	}
 

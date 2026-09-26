@@ -33,6 +33,7 @@ type AdvancedHandler struct {
 	campaignRepo      *repository.CampaignRepository
 	slaRepo           *repository.SLARepository
 	agentBotRepo      *repository.AgentBotRepository
+	inboxRepo         *repository.InboxRepository
 	attachmentRepo    *repository.AttachmentRepository
 	labelRepo         *repository.LabelRepository
 	messageRepo       *repository.MessageRepository
@@ -103,6 +104,24 @@ func (h *AdvancedHandler) SetEventServices(
 
 func (h *AdvancedHandler) SetStorageService(ss service.StorageService) {
 	h.storageService = ss
+}
+
+func (h *AdvancedHandler) SetInboxRepo(repo *repository.InboxRepository) {
+	h.inboxRepo = repo
+}
+
+func (h *AdvancedHandler) listAgentBotInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {
+	if h.inboxRepo == nil {
+		return nil, errors.New("inbox repository is not configured")
+	}
+	ids, err := h.agentBotRepo.ListInboxIDs(ctx, accountID, botID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []domain.Inbox{}, nil
+	}
+	return h.inboxRepo.FindByIDs(accountID, ids)
 }
 
 // ----------------- Company Handlers -----------------
@@ -961,7 +980,11 @@ func (h *AdvancedHandler) GetAgentBot(c *gin.Context) {
 		return
 	}
 
-	inboxes, _ := h.agentBotRepo.GetInboxes(c.Request.Context(), uint(accID), uint(botID))
+	inboxes, err := h.listAgentBotInboxes(c.Request.Context(), uint(accID), uint(botID))
+	if err != nil {
+		response.InternalError(c, "Failed to fetch agent bot inboxes")
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":      true,
@@ -1088,7 +1111,7 @@ func (h *AdvancedHandler) GetAgentBotInboxes(c *gin.Context) {
 		return
 	}
 
-	inboxes, err := h.agentBotRepo.GetInboxes(c.Request.Context(), uint(accID), uint(botID))
+	inboxes, err := h.listAgentBotInboxes(c.Request.Context(), uint(accID), uint(botID))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.NotFound(c, "Agent bot not found")
@@ -1115,7 +1138,20 @@ func (h *AdvancedHandler) ConnectAgentBotInbox(c *gin.Context) {
 		return
 	}
 
-	if err := h.agentBotRepo.ConnectInbox(c.Request.Context(), uint(accID), uint(botID), req.InboxID); err != nil {
+	if h.inboxRepo == nil {
+		response.InternalError(c, "Inbox repository is not configured")
+		return
+	}
+	exists, err := h.inboxRepo.Exists(uint(accID), req.InboxID)
+	if err != nil {
+		response.InternalError(c, "Failed to fetch inbox")
+		return
+	}
+	if !exists {
+		response.NotFound(c, "Agent bot or inbox not found")
+		return
+	}
+	if err := h.agentBotRepo.BindInbox(c.Request.Context(), uint(accID), uint(botID), req.InboxID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.NotFound(c, "Agent bot or inbox not found")
 			return
@@ -1141,7 +1177,7 @@ func (h *AdvancedHandler) DisconnectAgentBotInbox(c *gin.Context) {
 		return
 	}
 
-	if err := h.agentBotRepo.DisconnectInbox(c.Request.Context(), uint(accID), uint(botID), uint(inboxID)); err != nil {
+	if err := h.agentBotRepo.UnbindInbox(c.Request.Context(), uint(accID), uint(botID), uint(inboxID)); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.NotFound(c, "Binding not found")
 			return

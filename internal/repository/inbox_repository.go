@@ -232,42 +232,6 @@ func (r *InboxRepository) ListAssignableAgents(accountID, inboxID uint) ([]domai
 	return r.accountUsers(accountID)
 }
 
-func (r *InboxRepository) GetAgentBot(accountID, inboxID uint) (*domain.AgentBot, error) {
-	var binding domain.AgentBotInbox
-	err := r.db.Preload("AgentBot").
-		Where("account_id = ? AND inbox_id = ?", accountID, inboxID).
-		First(&binding).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return binding.AgentBot, nil
-}
-
-func (r *InboxRepository) SetAgentBot(accountID, inboxID, agentBotID uint) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		// Clean up existing binding
-		if err := tx.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Delete(&domain.AgentBotInbox{}).Error; err != nil {
-			return err
-		}
-		if agentBotID == 0 {
-			return nil
-		}
-		binding := domain.AgentBotInbox{
-			AccountID:  accountID,
-			AgentBotID: agentBotID,
-			InboxID:    inboxID,
-		}
-		return tx.Create(&binding).Error
-	})
-}
-
-func (r *InboxRepository) UnsetAgentBot(accountID, inboxID uint) error {
-	return r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Delete(&domain.AgentBotInbox{}).Error
-}
-
 func (r *InboxRepository) DeleteAvatar(accountID, inboxID uint) error {
 	return r.db.Model(&domain.Inbox{}).
 		Where("account_id = ? AND id = ?", accountID, inboxID).

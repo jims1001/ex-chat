@@ -359,7 +359,7 @@ func (r *AgentBotRepository) DeleteAvatar(ctx context.Context, accountID, botID 
 		Update("avatar_url", "").Error
 }
 
-func (r *AgentBotRepository) GetInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {
+func (r *AgentBotRepository) ListInboxIDs(ctx context.Context, accountID, botID uint) ([]uint, error) {
 	bot, err := r.GetByID(ctx, accountID, botID)
 	if err != nil {
 		return nil, err
@@ -368,15 +368,14 @@ func (r *AgentBotRepository) GetInboxes(ctx context.Context, accountID, botID ui
 		return nil, gorm.ErrRecordNotFound
 	}
 
-	var inboxes []domain.Inbox
-	err = r.db.WithContext(ctx).
-		Joins("JOIN agent_bot_inboxes ON agent_bot_inboxes.inbox_id = inboxes.id").
-		Where("agent_bot_inboxes.account_id = ? AND agent_bot_inboxes.agent_bot_id = ?", accountID, botID).
-		Find(&inboxes).Error
-	return inboxes, err
+	var ids []uint
+	err = r.db.WithContext(ctx).Model(&domain.AgentBotInbox{}).
+		Where("account_id = ? AND agent_bot_id = ?", accountID, botID).
+		Order("inbox_id ASC").Pluck("inbox_id", &ids).Error
+	return ids, err
 }
 
-func (r *AgentBotRepository) ConnectInbox(ctx context.Context, accountID, botID, inboxID uint) error {
+func (r *AgentBotRepository) BindInbox(ctx context.Context, accountID, botID, inboxID uint) error {
 	// Verify bot belongs to account
 	bot, err := r.GetByID(ctx, accountID, botID)
 	if err != nil {
@@ -384,12 +383,6 @@ func (r *AgentBotRepository) ConnectInbox(ctx context.Context, accountID, botID,
 	}
 	if bot == nil {
 		return gorm.ErrRecordNotFound
-	}
-
-	// Verify inbox belongs to account
-	var inbox domain.Inbox
-	if err := r.db.WithContext(ctx).Where("account_id = ? AND id = ?", accountID, inboxID).First(&inbox).Error; err != nil {
-		return err
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -407,7 +400,7 @@ func (r *AgentBotRepository) ConnectInbox(ctx context.Context, accountID, botID,
 	})
 }
 
-func (r *AgentBotRepository) DisconnectInbox(ctx context.Context, accountID, botID, inboxID uint) error {
+func (r *AgentBotRepository) UnbindInbox(ctx context.Context, accountID, botID, inboxID uint) error {
 	res := r.db.WithContext(ctx).
 		Where("account_id = ? AND agent_bot_id = ? AND inbox_id = ?", accountID, botID, inboxID).
 		Delete(&domain.AgentBotInbox{})
@@ -418,6 +411,39 @@ func (r *AgentBotRepository) DisconnectInbox(ctx context.Context, accountID, bot
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func (r *AgentBotRepository) GetByInbox(ctx context.Context, accountID, inboxID uint) (*domain.AgentBot, error) {
+	var binding domain.AgentBotInbox
+	err := r.db.WithContext(ctx).Where("account_id = ? AND inbox_id = ?", accountID, inboxID).First(&binding).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r.GetByID(ctx, accountID, binding.AgentBotID)
+}
+
+func (r *AgentBotRepository) ReplaceInboxBinding(ctx context.Context, accountID, inboxID, botID uint) error {
+	if botID > 0 {
+		bot, err := r.GetByID(ctx, accountID, botID)
+		if err != nil {
+			return err
+		}
+		if bot == nil {
+			return gorm.ErrRecordNotFound
+		}
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Delete(&domain.AgentBotInbox{}).Error; err != nil {
+			return err
+		}
+		if botID == 0 {
+			return nil
+		}
+		return tx.Create(&domain.AgentBotInbox{AccountID: accountID, AgentBotID: botID, InboxID: inboxID}).Error
+	})
 }
 
 // AttachmentRepository manages message attachments

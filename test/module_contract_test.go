@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v13 records the ORC-to-OPS inbox campaign query binding.
-	const approvedCollaborationSHA = "aca0c490ac4eb5ba4c4285ecaeab2c34eb72b2cd4cb8baf5b3a7509b463e7718"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v14 records the ORC-managed CHN/EXT bot binding.
+	const approvedCollaborationSHA = "aeee6da23cba9b86b9d1d8863a06058192725651610d1d94acb388c58f2238d7"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}

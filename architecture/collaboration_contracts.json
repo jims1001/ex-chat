@@ -2564,13 +2564,13 @@
     },
     {
       "consumer": "ORC",
-      "provider": "CHN",
+      "provider": "EXT",
       "file": "internal/handler/inbox_handler.go",
-      "symbol": "InboxRepository",
-      "method": "GetAgentBot",
+      "symbol": "AgentBotRepository",
+      "method": "GetByInbox",
       "use": "read",
-      "contract": "chn.inbox.get.v1",
-      "replicaEvent": "chn.inbox.changed.v1"
+      "contract": "ext.bot.get.v1",
+      "replicaEvent": "ext.bot.failed.v1"
     },
     {
       "consumer": "ORC",
@@ -2684,13 +2684,13 @@
     },
     {
       "consumer": "ORC",
-      "provider": "CHN",
+      "provider": "EXT",
       "file": "internal/handler/inbox_handler.go",
-      "symbol": "InboxRepository",
-      "method": "SetAgentBot",
+      "symbol": "AgentBotRepository",
+      "method": "ReplaceInboxBinding",
       "use": "write",
-      "contract": "chn.inbox.update.v1",
-      "replicaEvent": "chn.inbox.changed.v1"
+      "contract": "ext.bot.manage.v1",
+      "replicaEvent": "ext.bot.failed.v1"
     },
     {
       "consumer": "ORC",
@@ -2708,16 +2708,6 @@
       "file": "internal/handler/inbox_handler.go",
       "symbol": "InboxRepository",
       "method": "UnbindAssignmentPolicy",
-      "use": "write",
-      "contract": "chn.inbox.update.v1",
-      "replicaEvent": "chn.inbox.changed.v1"
-    },
-    {
-      "consumer": "ORC",
-      "provider": "CHN",
-      "file": "internal/handler/inbox_handler.go",
-      "symbol": "InboxRepository",
-      "method": "UnsetAgentBot",
       "use": "write",
       "contract": "chn.inbox.update.v1",
       "replicaEvent": "chn.inbox.changed.v1"
@@ -2997,10 +2987,30 @@
       "provider": "EXT",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "AgentBotRepository",
-      "method": "ConnectInbox",
+      "method": "BindInbox",
       "use": "write",
       "contract": "ext.bot.manage.v1",
       "replicaEvent": "ext.bot.failed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "InboxRepository",
+      "method": "Exists",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
     },
     {
       "consumer": "ORC",
@@ -3037,7 +3047,7 @@
       "provider": "EXT",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "AgentBotRepository",
-      "method": "DisconnectInbox",
+      "method": "UnbindInbox",
       "use": "write",
       "contract": "ext.bot.manage.v1",
       "replicaEvent": "ext.bot.failed.v1"
@@ -3057,7 +3067,7 @@
       "provider": "EXT",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "AgentBotRepository",
-      "method": "GetInboxes",
+      "method": "ListInboxIDs",
       "use": "read",
       "contract": "ext.bot.get.v1",
       "replicaEvent": "ext.bot.failed.v1"
