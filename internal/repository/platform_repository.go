@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/google/uuid"
@@ -12,12 +11,19 @@ import (
 
 // PlatformRepository manages platform-level applications and administrative provisioning
 type PlatformRepository struct {
-	db *gorm.DB
+	db       *gorm.DB
+	accounts *AccountRepository
+	users    *UserRepository
 }
 
 // NewPlatformRepository creates a new platform repository instance
 func NewPlatformRepository(db *gorm.DB) *PlatformRepository {
-	return &PlatformRepository{db: db}
+	users := NewUserRepository(db)
+	return NewPlatformRepositoryWithOwnerPorts(db, NewAccountRepositoryWithUserPort(db, users), users)
+}
+
+func NewPlatformRepositoryWithOwnerPorts(db *gorm.DB, accounts *AccountRepository, users *UserRepository) *PlatformRepository {
+	return &PlatformRepository{db: db, accounts: accounts, users: users}
 }
 
 // ----------------- Platform App & Authentication -----------------
@@ -41,229 +47,91 @@ func (r *PlatformRepository) VerifyPlatformToken(ctx context.Context, token stri
 
 // CreateAccount provisions a new tenant account
 func (r *PlatformRepository) CreateAccount(ctx context.Context, acc *domain.Account) error {
-	return r.db.WithContext(ctx).Create(acc).Error
+	return r.accounts.Create(acc)
 }
 
 // GetAccount retrieves account details by primary ID
 func (r *PlatformRepository) GetAccount(ctx context.Context, id uint) (*domain.Account, error) {
-	var acc domain.Account
-	err := r.db.WithContext(ctx).First(&acc, id).Error
-	if err != nil {
-		return nil, err
+	acc, err := r.accounts.FindByID(id)
+	if err == nil && acc == nil {
+		return nil, gorm.ErrRecordNotFound
 	}
-	return &acc, nil
+	return acc, err
 }
 
 // ListAccounts queries accounts with optional search and pagination
 func (r *PlatformRepository) ListAccounts(ctx context.Context, search string, page, pageSize int) ([]domain.Account, int64, error) {
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 25
-	}
-
-	var accounts []domain.Account
-	var total int64
-
-	query := r.db.WithContext(ctx).Model(&domain.Account{})
-	if strings.TrimSpace(search) != "" {
-		s := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
-		query = query.Where("LOWER(name) LIKE ? OR LOWER(domain) LIKE ?", s, s)
-	}
-
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	offset := (page - 1) * pageSize
-	err := query.Order("id DESC").Offset(offset).Limit(pageSize).Find(&accounts).Error
-	if err != nil {
-		return nil, 0, err
-	}
-	return accounts, total, nil
+	return r.accounts.List(search, page, pageSize)
 }
 
 // UpdateAccount updates account attributes
 func (r *PlatformRepository) UpdateAccount(ctx context.Context, id uint, updates map[string]any) (*domain.Account, error) {
-	var acc domain.Account
-	if err := r.db.WithContext(ctx).First(&acc, id).Error; err != nil {
-		return nil, err
-	}
-
-	if len(updates) > 0 {
-		if err := r.db.WithContext(ctx).Model(&domain.Account{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-			return nil, err
-		}
-	}
-
-	var updated domain.Account
-	if err := r.db.WithContext(ctx).First(&updated, id).Error; err != nil {
-		return nil, err
-	}
-	return &updated, nil
+	return r.accounts.UpdateFields(id, updates)
 }
 
 // DeleteAccount cascades deletion of account users and removes the account
 func (r *PlatformRepository) DeleteAccount(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var acc domain.Account
-		if err := tx.First(&acc, id).Error; err != nil {
-			return err
-		}
-		_ = tx.Where("account_id = ?", id).Delete(&domain.AccountUser{}).Error
-		return tx.Delete(&domain.Account{}, id).Error
-	})
+	return r.accounts.Delete(id)
 }
 
 // ----------------- User Lifecycle Management -----------------
 
 // ListUsers queries platform users with optional search, role filter, and pagination
 func (r *PlatformRepository) ListUsers(ctx context.Context, search, role string, page, pageSize int) ([]domain.User, int64, error) {
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 25
-	}
-
-	var users []domain.User
-	var total int64
-
-	query := r.db.WithContext(ctx).Model(&domain.User{})
-	if strings.TrimSpace(search) != "" {
-		s := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
-		query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ?", s, s)
-	}
-	if strings.TrimSpace(role) != "" {
-		query = query.Where("role = ?", strings.TrimSpace(role))
-	}
-
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	offset := (page - 1) * pageSize
-	err := query.Order("id DESC").Offset(offset).Limit(pageSize).Find(&users).Error
-	if err != nil {
-		return nil, 0, err
-	}
-	return users, total, nil
+	return r.users.List(search, role, page, pageSize)
 }
 
 // GetUser retrieves user profile along with associated tenant accounts
 func (r *PlatformRepository) GetUser(ctx context.Context, id uint) (*domain.User, []domain.AccountUser, error) {
-	var user domain.User
-	if err := r.db.WithContext(ctx).First(&user, id).Error; err != nil {
+	user, err := r.users.FindByID(id)
+	if err != nil {
 		return nil, nil, err
 	}
-
-	var memberships []domain.AccountUser
-	_ = r.db.WithContext(ctx).Preload("Account").Where("user_id = ?", id).Find(&memberships).Error
-
-	return &user, memberships, nil
+	if user == nil {
+		return nil, nil, gorm.ErrRecordNotFound
+	}
+	memberships, err := r.accounts.ListMembershipsForUser(id)
+	return user, memberships, err
 }
 
 // UpdateUser updates user profile fields
 func (r *PlatformRepository) UpdateUser(ctx context.Context, id uint, updates map[string]any) (*domain.User, error) {
-	var user domain.User
-	if err := r.db.WithContext(ctx).First(&user, id).Error; err != nil {
-		return nil, err
-	}
-
-	if len(updates) > 0 {
-		if err := r.db.WithContext(ctx).Model(&domain.User{}).Where("id = ?", id).Updates(updates).Error; err != nil {
-			return nil, err
-		}
-	}
-
-	var updated domain.User
-	if err := r.db.WithContext(ctx).First(&updated, id).Error; err != nil {
-		return nil, err
-	}
-	return &updated, nil
+	return r.users.UpdateFields(id, updates)
 }
 
 // DeleteUser removes user and their tenant memberships
 func (r *PlatformRepository) DeleteUser(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var user domain.User
-		if err := tx.First(&user, id).Error; err != nil {
-			return err
-		}
-		_ = tx.Where("user_id = ?", id).Delete(&domain.AccountUser{}).Error
-		return tx.Delete(&domain.User{}, id).Error
-	})
+	if _, err := r.users.FindByID(id); err != nil {
+		return err
+	}
+	if err := r.accounts.RemoveUserMemberships(id); err != nil {
+		return err
+	}
+	return r.users.Delete(id)
 }
 
 // ----------------- AccountUser Membership Management -----------------
 
 // AddUserToAccount associates a user with a tenant account, updating role if already exists
 func (r *PlatformRepository) AddUserToAccount(ctx context.Context, accountID, userID uint, role string) (*domain.AccountUser, error) {
-	if role == "" {
-		role = "agent"
-	}
-
-	var au domain.AccountUser
-	err := r.db.WithContext(ctx).Where("account_id = ? AND user_id = ?", accountID, userID).First(&au).Error
-	if err == nil {
-		if role != "" {
-			au.Role = role
-			if err := r.db.WithContext(ctx).Save(&au).Error; err != nil {
-				return nil, err
-			}
-		}
-		_ = r.db.WithContext(ctx).Preload("User").First(&au, au.ID)
-		return &au, nil
-	}
-
-	au = domain.AccountUser{
-		AccountID: accountID,
-		UserID:    userID,
-		Role:      role,
-	}
-	if err := r.db.WithContext(ctx).Create(&au).Error; err != nil {
-		return nil, err
-	}
-	_ = r.db.WithContext(ctx).Preload("User").First(&au, au.ID)
-	return &au, nil
+	return r.accounts.UpsertMember(accountID, userID, role)
 }
 
 // ListAccountUsers lists all member users within an account
 func (r *PlatformRepository) ListAccountUsers(ctx context.Context, accountID uint, page, pageSize int) ([]domain.AccountUser, int64, error) {
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 25
-	}
-
-	var members []domain.AccountUser
-	var total int64
-
-	query := r.db.WithContext(ctx).Model(&domain.AccountUser{}).Where("account_id = ?", accountID)
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	offset := (page - 1) * pageSize
-	err := query.Preload("User").Order("id ASC").Offset(offset).Limit(pageSize).Find(&members).Error
-	if err != nil {
-		return nil, 0, err
-	}
-	return members, total, nil
+	return r.accounts.ListMembersPage(accountID, page, pageSize)
 }
 
 // RemoveUserFromAccount dissociates a user from an account
 func (r *PlatformRepository) RemoveUserFromAccount(ctx context.Context, accountID, userID uint) error {
-	res := r.db.WithContext(ctx).Where("account_id = ? AND user_id = ?", accountID, userID).Delete(&domain.AccountUser{})
-	if res.Error != nil {
-		return res.Error
+	membership, err := r.accounts.GetMembership(accountID, userID)
+	if err != nil {
+		return err
 	}
-	if res.RowsAffected == 0 {
+	if membership == nil {
 		return errors.New("account user membership not found")
 	}
-	return nil
+	return r.accounts.RemoveMember(accountID, userID)
 }
 
 // ----------------- AgentBot (Platform & Account) -----------------

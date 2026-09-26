@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
@@ -9,6 +10,57 @@ import (
 
 type UserRepository struct {
 	db *gorm.DB
+}
+
+func (r *UserRepository) List(search, role string, page, pageSize int) ([]domain.User, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 25
+	}
+	query := r.db.Model(&domain.User{})
+	if strings.TrimSpace(search) != "" {
+		value := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
+		query = query.Where("LOWER(name) LIKE ? OR LOWER(email) LIKE ?", value, value)
+	}
+	if strings.TrimSpace(role) != "" {
+		query = query.Where("role = ?", strings.TrimSpace(role))
+	}
+	var users []domain.User
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&users).Error
+	return users, total, err
+}
+
+func (r *UserRepository) UpdateFields(id uint, updates map[string]any) (*domain.User, error) {
+	user, err := r.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if len(updates) > 0 {
+		if err := r.db.Model(&domain.User{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+	return r.FindByID(id)
+}
+
+func (r *UserRepository) Delete(id uint) error {
+	result := r.db.Delete(&domain.User{}, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func NewUserRepository(db *gorm.DB) *UserRepository {

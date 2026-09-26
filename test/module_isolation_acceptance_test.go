@@ -94,6 +94,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_channel_enterprise_facade_uses_seven_owner_stores", func(t *testing.T) { testChannelEnterpriseOwnerBoundary(t, openStore) })
 	t.Run("MSG_attachments_validate_message_owner", func(t *testing.T) { testAttachmentRepositoryMessageBoundary(t, openStore) })
 	t.Run("OPS_macros_use_CON_TEN_CUS_MSG_owner_commands", func(t *testing.T) { testMacroRepositoryOwnerBoundary(t, openStore) })
+	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -808,6 +809,61 @@ func testMacroRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm
 	for name, db := range map[string]*gorm.DB{"OPS": opsDB, "CON": conDB, "TEN": tenDB, "CUS": cusDB, "MSG": msgDB} {
 		foreign := map[string]any{"OPS": &domain.Conversation{}, "CON": &domain.Macro{}, "TEN": &domain.Label{}, "CUS": &domain.Message{}, "MSG": &domain.Team{}}[name]
 		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("%s contains a foreign authority table", name)
+		}
+	}
+}
+
+func testPlatformRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	extDB, tenDB, iamDB := openStore("EXT"), openStore("TEN"), openStore("IAM")
+	users := repository.NewUserRepository(iamDB)
+	accounts := repository.NewAccountRepositoryWithUserPort(tenDB, users)
+	repo := repository.NewPlatformRepositoryWithOwnerPorts(extDB, accounts, users)
+	account := domain.Account{Name: "Isolated tenant", Domain: "isolated.example"}
+	user := domain.User{Name: "Platform User", Email: "platform-owner@example.com", Role: domain.RoleAgent}
+	if err := repo.CreateAccount(context.Background(), &account); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.Create(&user); err != nil {
+		t.Fatal(err)
+	}
+	member, err := repo.AddUserToAccount(context.Background(), account.ID, user.ID, domain.RoleAdministrator)
+	if err != nil || member.User == nil || member.User.Email != user.Email {
+		t.Fatalf("member=%+v err=%v", member, err)
+	}
+	listedAccounts, accountTotal, err := repo.ListAccounts(context.Background(), "isolated", 1, 10)
+	if err != nil || accountTotal != 1 || len(listedAccounts) != 1 {
+		t.Fatalf("accounts=%d total=%d err=%v", len(listedAccounts), accountTotal, err)
+	}
+	listedUsers, userTotal, err := repo.ListUsers(context.Background(), "platform-owner", domain.RoleAgent, 1, 10)
+	if err != nil || userTotal != 1 || len(listedUsers) != 1 {
+		t.Fatalf("users=%d total=%d err=%v", len(listedUsers), userTotal, err)
+	}
+	members, memberTotal, err := repo.ListAccountUsers(context.Background(), account.ID, 1, 10)
+	if err != nil || memberTotal != 1 || len(members) != 1 || members[0].User == nil {
+		t.Fatalf("members=%+v total=%d err=%v", members, memberTotal, err)
+	}
+	gotUser, memberships, err := repo.GetUser(context.Background(), user.ID)
+	if err != nil || gotUser.Email != user.Email || len(memberships) != 1 || memberships[0].Account == nil {
+		t.Fatalf("user=%+v memberships=%+v err=%v", gotUser, memberships, err)
+	}
+	if err := repo.DeleteUser(context.Background(), user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if membership, err := accounts.GetMembership(account.ID, user.ID); err != nil || membership != nil {
+		t.Fatalf("membership survived user delete: %+v err=%v", membership, err)
+	}
+	if deleted, err := users.FindByID(user.ID); err != nil || deleted != nil {
+		t.Fatalf("IAM user survived delete: %+v err=%v", deleted, err)
+	}
+	for name, check := range map[string]struct {
+		db    *gorm.DB
+		model any
+	}{
+		"EXT-account": {extDB, &domain.Account{}}, "EXT-user": {extDB, &domain.User{}}, "EXT-member": {extDB, &domain.AccountUser{}},
+		"TEN-user": {tenDB, &domain.User{}}, "IAM-account": {iamDB, &domain.Account{}},
+	} {
+		if check.db.Migrator().HasTable(check.model) {
 			t.Fatalf("%s contains a foreign authority table", name)
 		}
 	}

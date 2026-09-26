@@ -4136,6 +4136,156 @@
       "use": "write",
       "contract": "msg.message.create.v1",
       "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "Create",
+      "use": "write",
+      "contract": "ten.account.create.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "List",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "UpdateFields",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "Delete",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "ListMembershipsForUser",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "RemoveUserMemberships",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "UpsertMember",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "ListMembersPage",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "GetMembership",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository",
+      "method": "RemoveMember",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "IAM",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "UserRepository",
+      "method": "List",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "IAM",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "UserRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "IAM",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "UserRepository",
+      "method": "UpdateFields",
+      "use": "write",
+      "contract": "iam.user.manage.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "IAM",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "UserRepository",
+      "method": "Delete",
+      "use": "write",
+      "contract": "iam.user.manage.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     }
   ]
 }

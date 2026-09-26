@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v28 records OPS macro owner-port orchestration.
-	const approvedCollaborationSHA = "ec1441baf927a65843846eaddb7b75450a7d014312777a91f8757bfcd063357b"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v29 records EXT platform owner-port orchestration.
+	const approvedCollaborationSHA = "0d1fbd070221cd7998ef12bf6b33fde04dabca8b19a8c569dcdf5fe337a9089f"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -389,6 +389,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/contact_repository.go":               {"Model(&domain.Conversation", "Model(&domain.Message", "Model(&domain.Ticket", "Model(&domain.TicketComment", "Model(&domain.Order", "Model(&domain.CampaignDelivery", "Model(&domain.Call", "Model(&domain.WidgetEvent"},
 		"../internal/repository/label_repository.go":                 {"domain.ConversationLabel", "JOIN conversation_labels", "Table(\"conversation_labels\")"},
 		"../internal/repository/macro_repository.go":                 {"Model(&domain.Conversation", "domain.AccountUser", "domain.Team{", "domain.ConversationLabel", "domain.Message{", "domain.Attachment{"},
+		"../internal/repository/platform_repository.go":              {"Model(&domain.Account", "Create(&domain.Account", "Delete(&domain.Account", "Model(&domain.User", "Create(&domain.User", "Delete(&domain.User", "Model(&domain.AccountUser", "Preload(\"User\")", "Preload(\"Account\")"},
 		"../internal/repository/channel_auth_iam_repository.go":      {"domain.Call", "domain.Conference", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
 		"../internal/repository/channel_auth_rtm_repository.go":      {"domain.SAMLSetting", "domain.UserSession", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
 		"../internal/repository/channel_auth_mig_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},

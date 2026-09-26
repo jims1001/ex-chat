@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -12,6 +13,140 @@ import (
 type AccountRepository struct {
 	db    *gorm.DB
 	users *UserRepository
+}
+
+func (r *AccountRepository) List(search string, page, pageSize int) ([]domain.Account, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 25
+	}
+	query := r.db.Model(&domain.Account{})
+	if strings.TrimSpace(search) != "" {
+		value := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
+		query = query.Where("LOWER(name) LIKE ? OR LOWER(domain) LIKE ?", value, value)
+	}
+	var accounts []domain.Account
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&accounts).Error
+	return accounts, total, err
+}
+
+func (r *AccountRepository) UpdateFields(id uint, updates map[string]any) (*domain.Account, error) {
+	account, err := r.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if len(updates) > 0 {
+		if err := r.db.Model(&domain.Account{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+	return r.FindByID(id)
+}
+
+func (r *AccountRepository) Delete(id uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&domain.Account{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Where("account_id = ?", id).Delete(&domain.AccountUser{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&domain.Account{}, id).Error
+	})
+}
+
+func (r *AccountRepository) UpsertMember(accountID, userID uint, role string) (*domain.AccountUser, error) {
+	if r.users == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	user, err := r.users.FindByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if role == "" {
+		role = domain.RoleAgent
+	}
+	var member domain.AccountUser
+	err = r.db.Where("account_id = ? AND user_id = ?", accountID, userID).First(&member).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		member = domain.AccountUser{AccountID: accountID, UserID: userID, Role: role}
+		if err := r.db.Create(&member).Error; err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	} else if member.Role != role {
+		member.Role = role
+		if err := r.db.Save(&member).Error; err != nil {
+			return nil, err
+		}
+	}
+	member.User = user
+	return &member, nil
+}
+
+func (r *AccountRepository) ListMembersPage(accountID uint, page, pageSize int) ([]domain.AccountUser, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 25
+	}
+	query := r.db.Model(&domain.AccountUser{}).Where("account_id = ?", accountID)
+	var members []domain.AccountUser
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Order("id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&members).Error; err != nil {
+		return nil, 0, err
+	}
+	if r.users == nil {
+		return nil, 0, gorm.ErrInvalidData
+	}
+	ids := make([]uint, 0, len(members))
+	for _, member := range members {
+		ids = append(ids, member.UserID)
+	}
+	users, err := r.users.FindByIDs(ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	byID := make(map[uint]*domain.User, len(users))
+	for i := range users {
+		user := users[i]
+		byID[user.ID] = &user
+	}
+	for i := range members {
+		members[i].User = byID[members[i].UserID]
+	}
+	return members, total, nil
+}
+
+func (r *AccountRepository) ListMembershipsForUser(userID uint) ([]domain.AccountUser, error) {
+	var memberships []domain.AccountUser
+	err := r.db.Preload("Account").Where("user_id = ?", userID).Find(&memberships).Error
+	return memberships, err
+}
+
+func (r *AccountRepository) RemoveUserMemberships(userID uint) error {
+	return r.db.Where("user_id = ?", userID).Delete(&domain.AccountUser{}).Error
 }
 
 func NewAccountRepository(db *gorm.DB) *AccountRepository {
