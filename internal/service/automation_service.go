@@ -65,7 +65,7 @@ type automationContactPort interface {
 }
 
 func NewAutomationService(db *gorm.DB, convRepo *repository.ConversationRepository, msgRepo *repository.MessageRepository, labelRepos ...*repository.LabelRepository) *AutomationService {
-	labelRepo := repository.NewLabelRepository(db)
+	labelRepo := repository.NewLabelRepositoryWithConversationPort(db, convRepo)
 	if len(labelRepos) > 0 && labelRepos[0] != nil {
 		labelRepo = labelRepos[0]
 	}
@@ -492,13 +492,8 @@ func (s *AutomationService) matchSingleCondition(cond RuleCondition, conv *domai
 		}
 	case "labels", "label", "tag", "tags", "label_ids", "conversation_labels":
 		var labels []domain.Label
-		if len(conv.Labels) > 0 {
-			labels = conv.Labels
-		}
-		if len(labels) == 0 && s.db != nil && conv.ID > 0 {
-			_ = s.db.Joins("JOIN conversation_labels ON conversation_labels.label_id = labels.id").
-				Where("conversation_labels.conversation_id = ?", conv.ID).
-				Find(&labels).Error
+		if s.labelRepo != nil && conv.ID > 0 {
+			labels, _ = s.labelRepo.GetConversationLabels(conv.AccountID, conv.ID)
 		}
 
 		switch cond.FilterOperator {

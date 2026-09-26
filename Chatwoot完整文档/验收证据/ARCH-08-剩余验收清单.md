@@ -86,4 +86,5 @@
 - 已完成并验证：InboxRepository 通过 CON 获取收件箱会话范围，由 MSG 统计投递失败和连续失败，CHN 不再联表访问会话和消息（E-ARCH-08-v40）。
 - 已完成并验证：AutomationService 通过 TEN 账号成员及团队合同执行分配，TEN 通过 IAM 组合用户，AUT 不再访问三类外部权威表（E-ARCH-08-v41）。
 - 已完成并验证：AutomationService 通过 CUS 所有者查询组合联系人和公司条件，并强制账号范围，AUT 不再访问 Contact/Company 表（E-ARCH-08-v42）。
-- 下一项：AutomationService 标签条件中的 CON/CUS ConversationLabel 访问边界。
+- 已完成并验证：AutomationService 通过 CON 会话标签关系和 CUS 标签详情组合自动化条件，AUT 不再联表访问 Label/ConversationLabel（E-ARCH-08-v43）。
+- 下一项：SLAService 的 CHN/MSG 收件箱与消息访问边界。

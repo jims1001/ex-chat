@@ -78,7 +78,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	convRepo := repository.NewConversationRepository(db)
 	msgRepo := repository.NewMessageRepositoryWithConversationPort(db, convRepo)
 	inboxRepo := repository.NewInboxRepositoryWithOwnerPorts(db, accountRepo, convRepo, msgRepo)
-	labelRepo := repository.NewLabelRepository(db)
+	labelRepo := repository.NewLabelRepositoryWithConversationPort(db, convRepo)
 	cannedRepo := repository.NewCannedResponseRepository(db)
 	journalRepo := repository.NewJournalRepository(db)
 	teamRepo := repository.NewTeamRepositoryWithUserPort(db, userRepo)

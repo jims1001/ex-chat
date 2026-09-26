@@ -1982,6 +1982,16 @@
       "provider": "CUS",
       "file": "internal/service/automation_service.go",
       "symbol": "LabelRepository",
+      "method": "GetConversationLabels",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "AUT",
+      "provider": "CUS",
+      "file": "internal/service/automation_service.go",
+      "symbol": "LabelRepository",
       "method": "FindByID",
       "use": "read",
       "contract": "cus.label.get.v1",
