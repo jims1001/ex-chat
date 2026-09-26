@@ -379,7 +379,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 	for file, forbidden := range map[string][]string{
 		"../internal/repository/assignment_policy_repository.go":     {"domain.Inbox", "Preload(\"FallbackAssignee\")", "Preload(\"FallbackTeam\")"},
 		"../internal/repository/agent_capacity_policy_repository.go": {"domain.AccountUser", "domain.User", "domain.Inbox{", "Preload(\"Inbox"},
-		"../internal/repository/csat_extension_repository.go":        {"domain.Conversation", "domain.Message", "domain.Inbox", "domain.Contact", "domain.ContactInbox", "domain.AccountUser"},
+		"../internal/repository/csat_extension_repository.go":        {"Preload(\"Conversation", "Preload(\"AssignedAgent", "Preload(\"Reviewer", "JOIN conversations", "JOIN users", "Model(&domain.Conversation", "Model(&domain.User", "Model(&domain.Inbox", "Model(&domain.Contact"},
 		"../internal/repository/inbox_repository.go":                 {"domain.AssignmentPolicy", "domain.Conversation"},
 		"../internal/repository/applied_sla_repository.go":           {"domain.Conversation", "Preload(\"Conversation", "JOIN conversations", "JOIN conversation_labels", "JOIN labels"},
 		"../internal/repository/captain_repository.go":               {"Model(&domain.Conversation", "Model(&domain.Message", "Table(\"inboxes\")", "Preload(\"Inboxes\")"},

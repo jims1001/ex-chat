@@ -101,7 +101,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	agentCapacityPolicyRepo := repository.NewAgentCapacityPolicyRepository(db)
 	contactExtensionRepo := repository.NewContactExtensionRepository(db)
 	companyExtensionRepo := repository.NewCompanyExtensionRepository(db)
-	csatExtensionRepo := repository.NewCSATExtensionRepository(db)
+	csatExtensionRepo := repository.NewCSATExtensionRepositoryWithOwners(db, convRepo, contactRepo, inboxRepo, userRepo)
 	appliedSLARepo := repository.NewAppliedSLARepository(db)
 	copilotThreadRepo := repository.NewCopilotThreadRepositoryWithOwners(db, userRepo, convRepo)
 	captainRepo := repository.NewCaptainRepository(db)

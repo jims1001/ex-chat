@@ -103,6 +103,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
+	t.Run("QLT_csat_extensions_use_CON_CUS_CHN_IAM_owner_queries", func(t *testing.T) { testCSATExtensionOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -1028,6 +1029,59 @@ func testCopilotThreadOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	}
 	if aicDB.Migrator().HasTable(&domain.User{}) || aicDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("AIC store contains IAM or CON authority table")
+	}
+}
+
+func testCSATExtensionOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	qltDB, conDB, cusDB, chnDB, iamDB := openStore("QLT"), openStore("CON"), openStore("CUS"), openStore("CHN"), openStore("IAM")
+	contact := domain.Contact{AccountID: 131, Name: "CSAT contact"}
+	inbox := domain.Inbox{AccountID: 131, Name: "CSAT inbox", WebsiteToken: "csat-owner-inbox"}
+	agent := domain.User{Name: "CSAT agent", Email: "csat-agent@example.test"}
+	reviewer := domain.User{Name: "CSAT reviewer", Email: "csat-reviewer@example.test"}
+	for _, item := range []struct {
+		db    *gorm.DB
+		model any
+	}{{cusDB, &contact}, {chnDB, &inbox}, {iamDB, &agent}, {iamDB, &reviewer}} {
+		if err := item.db.Create(item.model).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversation := domain.Conversation{AccountID: 131, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 1}
+	foreignConversation := domain.Conversation{AccountID: 132, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 1}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&foreignConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewCSATExtensionRepositoryWithOwners(qltDB, repository.NewConversationRepository(conDB), repository.NewContactRepository(cusDB), repository.NewInboxRepository(chnDB), repository.NewUserRepository(iamDB))
+	survey := domain.CSATSurvey{AccountID: 131, ConversationID: conversation.ID, Rating: 5, ReviewStatus: "approved", AssignedAgentID: &agent.ID, ReviewerID: &reviewer.ID}
+	if err := qltDB.Create(&survey).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetSurvey(131, survey.ID)
+	if err != nil || got == nil || got.Conversation == nil || got.Conversation.Contact == nil || got.Conversation.Inbox == nil || got.AssignedAgent == nil || got.Reviewer == nil {
+		t.Fatalf("CSAT owner hydration failed: survey=%+v err=%v", got, err)
+	}
+	list, total, err := repo.ListSurveys(131, repository.CSATFilter{InboxID: &inbox.ID})
+	if err != nil || total != 1 || len(list) != 1 {
+		t.Fatalf("CSAT inbox owner filter failed: total=%d list=%+v err=%v", total, list, err)
+	}
+	metrics, err := repo.GetAdvancedMetrics(131, &inbox.ID, nil, nil, nil)
+	if err != nil || len(metrics.AgentMetrics) != 1 || metrics.AgentMetrics[0].AgentName != agent.Name {
+		t.Fatalf("CSAT IAM metric hydration failed: metrics=%+v err=%v", metrics, err)
+	}
+	foreign := domain.CSATSurvey{AccountID: 131, ConversationID: foreignConversation.ID, Rating: 4}
+	if err := qltDB.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetSurvey(131, foreign.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("foreign CON conversation accepted: %v", err)
+	}
+	for name, model := range map[string]any{"CON": &domain.Conversation{}, "CUS": &domain.Contact{}, "CHN": &domain.Inbox{}, "IAM": &domain.User{}} {
+		if qltDB.Migrator().HasTable(model) {
+			t.Fatalf("QLT store contains %s authority table", name)
+		}
 	}
 }
 

@@ -48,12 +48,37 @@ type CSATMetrics struct {
 
 // CSATExtensionRepository manages advanced queries and audit operations for CSAT surveys
 type CSATExtensionRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	conversations csatConversationPort
+	contacts      csatContactPort
+	inboxes       csatInboxPort
+	users         csatUserPort
+}
+
+type csatConversationPort interface {
+	FindSummaryByID(accountID, conversationID uint) (*domain.Conversation, error)
+	FindIDsByInbox(accountID, inboxID uint) ([]uint, error)
+}
+
+type csatContactPort interface {
+	FindSummaryByID(accountID, id uint) (*domain.Contact, error)
+}
+
+type csatInboxPort interface {
+	FindSummaryByID(accountID, id uint) (*domain.Inbox, error)
+}
+
+type csatUserPort interface {
+	FindByID(id uint) (*domain.User, error)
 }
 
 // NewCSATExtensionRepository creates a new repository instance
 func NewCSATExtensionRepository(db *gorm.DB) *CSATExtensionRepository {
-	return &CSATExtensionRepository{db: db}
+	return NewCSATExtensionRepositoryWithOwners(db, NewConversationRepository(db), NewContactRepository(db), NewInboxRepository(db), NewUserRepository(db))
+}
+
+func NewCSATExtensionRepositoryWithOwners(db *gorm.DB, conversations csatConversationPort, contacts csatContactPort, inboxes csatInboxPort, users csatUserPort) *CSATExtensionRepository {
+	return &CSATExtensionRepository{db: db, conversations: conversations, contacts: contacts, inboxes: inboxes, users: users}
 }
 
 func (r *CSATExtensionRepository) SavePublicSurvey(survey *domain.CSATSurvey) error {
@@ -96,8 +121,11 @@ func (r *CSATExtensionRepository) ListSurveys(accountID uint, filter CSATFilter)
 	}
 
 	if filter.InboxID != nil && *filter.InboxID > 0 {
-		query = query.Joins("JOIN conversations ON conversations.id = csat_surveys.conversation_id").
-			Where("conversations.inbox_id = ?", *filter.InboxID)
+		conversationIDs, err := r.conversations.FindIDsByInbox(accountID, *filter.InboxID)
+		if err != nil {
+			return nil, 0, err
+		}
+		query = query.Where("csat_surveys.conversation_id IN ?", conversationIDs)
 	}
 
 	if filter.Since != nil {
@@ -127,28 +155,25 @@ func (r *CSATExtensionRepository) ListSurveys(accountID uint, filter CSATFilter)
 	}
 	offset := (page - 1) * pageSize
 
-	err := query.Preload("Conversation").
-		Preload("Conversation.Contact").
-		Preload("Conversation.Inbox").
-		Preload("AssignedAgent").
-		Preload("Reviewer").
-		Offset(offset).
+	err := query.Offset(offset).
 		Limit(pageSize).
 		Order("csat_surveys.id DESC").
 		Find(&surveys).Error
-
-	return surveys, total, err
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range surveys {
+		if err := r.hydrateOwnerReferences(&surveys[i]); err != nil {
+			return nil, 0, err
+		}
+	}
+	return surveys, total, nil
 }
 
 // GetSurvey retrieves a single CSAT survey response by ID
 func (r *CSATExtensionRepository) GetSurvey(accountID, id uint) (*domain.CSATSurvey, error) {
 	var survey domain.CSATSurvey
-	err := r.db.Preload("Conversation").
-		Preload("Conversation.Contact").
-		Preload("Conversation.Inbox").
-		Preload("AssignedAgent").
-		Preload("Reviewer").
-		Where("account_id = ? AND id = ?", accountID, id).
+	err := r.db.Where("account_id = ? AND id = ?", accountID, id).
 		First(&survey).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -156,7 +181,42 @@ func (r *CSATExtensionRepository) GetSurvey(accountID, id uint) (*domain.CSATSur
 		}
 		return nil, err
 	}
+	if err := r.hydrateOwnerReferences(&survey); err != nil {
+		return nil, err
+	}
 	return &survey, nil
+}
+
+func (r *CSATExtensionRepository) hydrateOwnerReferences(survey *domain.CSATSurvey) error {
+	if r.conversations == nil || r.contacts == nil || r.inboxes == nil || r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	conversation, err := r.conversations.FindSummaryByID(survey.AccountID, survey.ConversationID)
+	if err != nil {
+		return err
+	}
+	conversation.Contact, err = r.contacts.FindSummaryByID(survey.AccountID, conversation.ContactID)
+	if err != nil {
+		return err
+	}
+	conversation.Inbox, err = r.inboxes.FindSummaryByID(survey.AccountID, conversation.InboxID)
+	if err != nil {
+		return err
+	}
+	survey.Conversation = conversation
+	if survey.AssignedAgentID != nil {
+		survey.AssignedAgent, err = r.users.FindByID(*survey.AssignedAgentID)
+		if err != nil {
+			return err
+		}
+	}
+	if survey.ReviewerID != nil {
+		survey.Reviewer, err = r.users.FindByID(*survey.ReviewerID)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ReviewSurvey sets audit moderation status on a survey response
@@ -285,11 +345,18 @@ func (r *CSATExtensionRepository) DeleteSurvey(accountID, id uint) error {
 
 // GetAdvancedMetrics aggregates complete CSAT satisfaction scores, breakdowns and agent ranking
 func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, agentID *uint, since, until *time.Time) (*CSATMetrics, error) {
+	var inboxConversationIDs []uint
+	if inboxID != nil && *inboxID > 0 {
+		var err error
+		inboxConversationIDs, err = r.conversations.FindIDsByInbox(accountID, *inboxID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	baseQuery := func() *gorm.DB {
 		q := r.db.Model(&domain.CSATSurvey{}).Where("csat_surveys.account_id = ? AND csat_surveys.rating > 0", accountID)
 		if inboxID != nil && *inboxID > 0 {
-			q = q.Joins("JOIN conversations ON conversations.id = csat_surveys.conversation_id").
-				Where("conversations.inbox_id = ?", *inboxID)
+			q = q.Where("csat_surveys.conversation_id IN ?", inboxConversationIDs)
 		}
 		if agentID != nil && *agentID > 0 {
 			q = q.Where("csat_surveys.assigned_agent_id = ?", *agentID)
@@ -342,7 +409,6 @@ func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, ag
 	// Agent metrics breakdown
 	type AgentRow struct {
 		AgentID   uint    `gorm:"column:assigned_agent_id"`
-		AgentName string  `gorm:"column:agent_name"`
 		Total     int64   `gorm:"column:total"`
 		Approved  int64   `gorm:"column:approved"`
 		AvgRating float64 `gorm:"column:avg_rating"`
@@ -350,21 +416,24 @@ func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, ag
 	}
 	var agentRows []AgentRow
 	err := baseQuery().
-		Select("csat_surveys.assigned_agent_id, users.name AS agent_name, COUNT(*) AS total, SUM(CASE WHEN csat_surveys.review_status = 'approved' THEN 1 ELSE 0 END) AS approved, AVG(csat_surveys.rating) AS avg_rating, SUM(CASE WHEN csat_surveys.rating >= 4 THEN 1 ELSE 0 END) AS pos_count").
-		Joins("LEFT JOIN users ON users.id = csat_surveys.assigned_agent_id").
+		Select("csat_surveys.assigned_agent_id, COUNT(*) AS total, SUM(CASE WHEN csat_surveys.review_status = 'approved' THEN 1 ELSE 0 END) AS approved, AVG(csat_surveys.rating) AS avg_rating, SUM(CASE WHEN csat_surveys.rating >= 4 THEN 1 ELSE 0 END) AS pos_count").
 		Where("csat_surveys.assigned_agent_id IS NOT NULL").
-		Group("csat_surveys.assigned_agent_id, users.name").
+		Group("csat_surveys.assigned_agent_id").
 		Scan(&agentRows).Error
 
 	if err == nil {
 		for _, ar := range agentRows {
+			agent, ownerErr := r.users.FindByID(ar.AgentID)
+			if ownerErr != nil {
+				return nil, ownerErr
+			}
 			satRate := 0.0
 			if ar.Total > 0 {
 				satRate = math.Round((float64(ar.PosCount)/float64(ar.Total))*10000) / 100
 			}
 			metrics.AgentMetrics = append(metrics.AgentMetrics, CSATAgentMetric{
 				AgentID:           ar.AgentID,
-				AgentName:         ar.AgentName,
+				AgentName:         agent.Name,
 				TotalResponses:    ar.Total,
 				ApprovedResponses: ar.Approved,
 				AverageRating:     math.Round(ar.AvgRating*100) / 100,

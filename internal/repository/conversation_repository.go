@@ -323,6 +323,14 @@ func (r *ConversationRepository) FindSummaryByID(accountID, conversationID uint)
 	return &conversation, nil
 }
 
+func (r *ConversationRepository) FindIDsByInbox(accountID, inboxID uint) ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND inbox_id = ?", accountID, inboxID).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
 func (r *ConversationRepository) ListForWidget(accountID, inboxID, contactID uint, page, pageSize int) ([]domain.Conversation, int64, error) {
 	if page <= 0 {
 		page = 1
