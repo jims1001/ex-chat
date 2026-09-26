@@ -20,20 +20,37 @@ func generateToken(length int) string {
 }
 
 type InboxRepository struct {
-	db       *gorm.DB
-	accounts inboxAccountPort
+	db            *gorm.DB
+	accounts      inboxAccountPort
+	conversations inboxConversationPort
+	messages      inboxMessagePort
 }
 
 type inboxAccountPort interface {
 	ListMembers(accountID uint) ([]domain.AccountUser, error)
 }
 
+type inboxConversationPort interface {
+	FindIDsByInbox(accountID, inboxID uint) ([]uint, error)
+}
+
+type inboxMessagePort interface {
+	ChannelDeliveryStats(accountID uint, conversationIDs []uint, since time.Time) (ChannelDeliveryStats, error)
+}
+
 func NewInboxRepository(db *gorm.DB) *InboxRepository {
-	return NewInboxRepositoryWithAccountPort(db, NewAccountRepository(db))
+	repo := NewInboxRepositoryWithAccountPort(db, NewAccountRepository(db))
+	repo.conversations = &ConversationRepository{db: db}
+	repo.messages = &MessageRepository{db: db}
+	return repo
 }
 
 func NewInboxRepositoryWithAccountPort(db *gorm.DB, accounts inboxAccountPort) *InboxRepository {
 	return &InboxRepository{db: db, accounts: accounts}
+}
+
+func NewInboxRepositoryWithOwnerPorts(db *gorm.DB, accounts inboxAccountPort, conversations inboxConversationPort, messages inboxMessagePort) *InboxRepository {
+	return &InboxRepository{db: db, accounts: accounts, conversations: conversations, messages: messages}
 }
 
 func (r *InboxRepository) Create(inbox *domain.Inbox) error {
@@ -669,15 +686,17 @@ func (r *InboxRepository) CheckChannelHealth(accountID, inboxID uint) (*ChannelH
 
 	// 4. Recent Delivery Errors & Consecutive Failures Check (Within last 24h)
 	sinceTime := now.Add(-24 * time.Hour)
-	var stats struct {
-		TotalMessages  int64
-		FailedMessages int64
+	if r.conversations == nil || r.messages == nil {
+		return nil, gorm.ErrInvalidData
 	}
-	r.db.Table("messages").
-		Select("COUNT(*) as total_messages, SUM(CASE WHEN messages.status = 'failed' THEN 1 ELSE 0 END) as failed_messages").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("conversations.account_id = ? AND conversations.inbox_id = ? AND messages.created_at >= ?", accountID, inboxID, sinceTime).
-		Scan(&stats)
+	conversationIDs, err := r.conversations.FindIDsByInbox(accountID, inboxID)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := r.messages.ChannelDeliveryStats(accountID, conversationIDs, sinceTime)
+	if err != nil {
+		return nil, err
+	}
 
 	var errorRate float64
 	if stats.TotalMessages > 0 {
@@ -685,16 +704,8 @@ func (r *InboxRepository) CheckChannelHealth(accountID, inboxID uint) (*ChannelH
 	}
 
 	// Check consecutive outgoing message failures (latest up to 5 messages)
-	var recentStatuses []string
-	r.db.Table("messages").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("conversations.account_id = ? AND conversations.inbox_id = ? AND messages.message_type = ?", accountID, inboxID, domain.MessageTypeOutgoing).
-		Order("messages.created_at DESC").
-		Limit(5).
-		Pluck("messages.status", &recentStatuses)
-
 	consecutiveFailures := 0
-	for _, st := range recentStatuses {
+	for _, st := range stats.RecentOutgoingStatuses {
 		if st == "failed" {
 			consecutiveFailures++
 		} else {

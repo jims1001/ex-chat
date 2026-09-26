@@ -101,6 +101,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
 	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
+	t.Run("CHN_health_uses_CON_MSG_delivery_queries", func(t *testing.T) { testInboxHealthOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
@@ -905,6 +906,36 @@ func testPortalAuthorOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB
 	}
 	if kbDB.Migrator().HasTable(&domain.User{}) {
 		t.Fatal("KB store contains IAM User table")
+	}
+}
+
+func testInboxHealthOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	chnDB, tenDB, conDB, msgDB := openStore("CHN"), openStore("TEN"), openStore("CON"), openStore("MSG")
+	inbox := domain.Inbox{AccountID: 151, Name: "health", ChannelType: "Channel::WebWidget", WebsiteToken: "health-token", WebhookURL: "/webhook"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 151, InboxID: inbox.ID, ContactID: 1, DisplayID: 1}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		message := domain.Message{AccountID: 151, ConversationID: conversation.ID, MessageType: domain.MessageTypeOutgoing, Status: "failed", Content: "failed", CreatedAt: time.Now().UTC().Add(time.Duration(i) * time.Second)}
+		if err := msgDB.Create(&message).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := repository.NewInboxRepositoryWithOwnerPorts(chnDB, repository.NewAccountRepository(tenDB), repository.NewConversationRepository(conDB), repository.NewMessageRepository(msgDB))
+	health, err := repo.CheckChannelHealth(151, inbox.ID)
+	if err != nil || health.Status != "unhealthy" {
+		t.Fatalf("owner delivery health failed: health=%+v err=%v", health, err)
+	}
+	delivery, ok := health.Checks["delivery"].(map[string]any)
+	if !ok || delivery["consecutive_failures"] != 3 {
+		t.Fatalf("delivery owner stats missing: %+v", health.Checks["delivery"])
+	}
+	if chnDB.Migrator().HasTable(&domain.Conversation{}) || chnDB.Migrator().HasTable(&domain.Message{}) {
+		t.Fatal("CHN store contains CON or MSG authority table")
 	}
 }
 

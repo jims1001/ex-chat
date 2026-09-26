@@ -30,6 +30,31 @@ type MacroAttachmentSpec struct {
 	FileSize int64
 }
 
+type ChannelDeliveryStats struct {
+	TotalMessages          int64
+	FailedMessages         int64
+	RecentOutgoingStatuses []string
+}
+
+func (r *MessageRepository) ChannelDeliveryStats(accountID uint, conversationIDs []uint, since time.Time) (ChannelDeliveryStats, error) {
+	var stats ChannelDeliveryStats
+	if len(conversationIDs) == 0 {
+		return stats, nil
+	}
+	if err := r.db.Model(&domain.Message{}).
+		Select("COUNT(*) as total_messages, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_messages").
+		Where("account_id = ? AND conversation_id IN ? AND created_at >= ?", accountID, conversationIDs, since).
+		Scan(&stats).Error; err != nil {
+		return stats, err
+	}
+	if err := r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND conversation_id IN ? AND message_type = ?", accountID, conversationIDs, domain.MessageTypeOutgoing).
+		Order("created_at DESC").Limit(5).Pluck("status", &stats.RecentOutgoingStatuses).Error; err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
 func (r *MessageRepository) CreateMacroMessage(accountID, conversationID, senderID uint, content string, private bool, attachment *MacroAttachmentSpec) (uint, error) {
 	now := time.Now().UTC()
 	msg := domain.Message{AccountID: accountID, ConversationID: conversationID, SenderType: domain.SenderTypeUser, SenderID: senderID, MessageType: domain.MessageTypeOutgoing, ContentType: domain.ContentTypeText, Content: content, Status: domain.MessageStatusSent, Private: private, CreatedAt: now, UpdatedAt: now}

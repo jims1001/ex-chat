@@ -83,4 +83,5 @@
 - 已完成并验证：CSATExtensionRepository 通过 CON/CUS/CHN/IAM 所有者合同组合调查详情、收件箱筛选和坐席指标，QLT 不再预加载或 JOIN 外部表（E-ARCH-08-v37）。
 - 已完成并验证：QARepository 保留 QLT 自有关联预加载，质检人、二次复核人、坐席、申诉人、审核人和活动参与人均由 IAM 组合（E-ARCH-08-v38）。
 - 已完成并验证：PortalRepository 保留 KB 门户、分类和文章关联，文章作者由 IAM 所有者查询组合（E-ARCH-08-v39）。
-- 下一项：InboxRepository 渠道健康检查中的 CON/MSG 投递统计边界。
+- 已完成并验证：InboxRepository 通过 CON 获取收件箱会话范围，由 MSG 统计投递失败和连续失败，CHN 不再联表访问会话和消息（E-ARCH-08-v40）。
+- 下一项：AutomationService 分配坐席/团队时的 TEN/IAM 访问边界。
