@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -20,6 +21,27 @@ type MessageRepository struct {
 	contacts     messageContactPort
 	reconcileMu  sync.Mutex
 	reconcileID  uint
+}
+
+type MacroAttachmentSpec struct {
+	FileURL  string
+	FileType string
+	FileSize int64
+}
+
+func (r *MessageRepository) CreateMacroMessage(accountID, conversationID, senderID uint, content string, private bool, attachment *MacroAttachmentSpec) (uint, error) {
+	now := time.Now().UTC()
+	msg := domain.Message{AccountID: accountID, ConversationID: conversationID, SenderType: domain.SenderTypeUser, SenderID: senderID, MessageType: domain.MessageTypeOutgoing, ContentType: domain.ContentTypeText, Content: content, Status: domain.MessageStatusSent, Private: private, CreatedAt: now, UpdatedAt: now}
+	if err := r.Create(&msg); err != nil {
+		return 0, err
+	}
+	if attachment != nil {
+		att := domain.Attachment{AccountID: accountID, MessageID: msg.ID, FileType: attachment.FileType, DataURL: attachment.FileURL, FileSize: attachment.FileSize, CreatedAt: now}
+		if err := NewAttachmentRepository(r.db).Create(context.Background(), &att); err != nil {
+			return msg.ID, err
+		}
+	}
+	return msg.ID, nil
 }
 
 type messageUserPort interface {

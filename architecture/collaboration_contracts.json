@@ -204,7 +204,6 @@
       "writeCommand": "iam.session.revoke.v1",
       "replicaEvent": "iam.identity.changed.v1"
     },
-
     {
       "symbol": "ChannelMIGRepository",
       "provider": "MIG",
@@ -1558,18 +1557,6 @@
       "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
     },
-
-
-
-
-
-
-
-
-
-
-
-
     {
       "consumer": "API",
       "provider": "RPT",
@@ -3781,85 +3768,374 @@
       "replicaEvent": "iam.identity.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "IAM", "file": "internal/repository/company_extension_repository.go", "symbol": "UserRepository", "method": "FindByID", "use": "read", "contract": "iam.identity.get.v1", "replicaEvent": "iam.identity.changed.v1"
+      "consumer": "ORC",
+      "provider": "IAM",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "UserRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "IAM", "file": "internal/repository/company_extension_repository.go", "symbol": "UserRepository", "method": "FindByIDs", "use": "read", "contract": "iam.identity.get.v1", "replicaEvent": "iam.identity.changed.v1"
+      "consumer": "ORC",
+      "provider": "IAM",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "UserRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/company_extension_repository.go", "symbol": "ConversationRepository", "method": "ListByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ListByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/company_extension_repository.go", "symbol": "ConversationRepository", "method": "GetStatsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "GetStatsByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/company_extension_repository.go", "symbol": "ConversationRepository", "method": "FindIDsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindIDsByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/company_extension_repository.go", "symbol": "MessageRepository", "method": "CountActivityByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+      "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "MessageRepository",
+      "method": "CountActivityByConversationIDs",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
-      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/company_extension_repository.go", "symbol": "MessageRepository", "method": "ListAttachmentsByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+      "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "MessageRepository",
+      "method": "ListAttachmentsByConversationIDs",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
-      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "FindByIDs", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "ListByAccount", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "InboxRepository",
+      "method": "ListByAccount",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "FindByID", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "Exists", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "InboxRepository",
+      "method": "Exists",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_extension_repository.go", "symbol": "ConversationRepository", "method": "FindIDsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindIDsByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_extension_repository.go", "symbol": "ConversationRepository", "method": "ListByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ListByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_extension_repository.go", "symbol": "ConversationRepository", "method": "GetStatsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "GetStatsByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_extension_repository.go", "symbol": "MessageRepository", "method": "ListAttachmentsByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+      "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "MessageRepository",
+      "method": "ListAttachmentsByConversationIDs",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
-      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_extension_repository.go", "symbol": "MessageRepository", "method": "CountActivityByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+      "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "MessageRepository",
+      "method": "CountActivityByConversationIDs",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_repository.go", "symbol": "ConversationRepository", "method": "ActiveContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ActiveContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_repository.go", "symbol": "ConversationRepository", "method": "DetachContactIfInactive", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "DetachContactIfInactive",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_repository.go", "symbol": "ConversationRepository", "method": "ReassignContact", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ReassignContact",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_repository.go", "symbol": "MessageRepository", "method": "ReassignContactSender", "use": "write", "contract": "msg.message.update.v1", "replicaEvent": "msg.message.changed.v1"
+      "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "MessageRepository",
+      "method": "ReassignContactSender",
+      "use": "write",
+      "contract": "msg.message.update.v1",
+      "replicaEvent": "msg.message.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "TKT", "file": "internal/repository/contact_repository.go", "symbol": "TicketRepository", "method": "ReassignContact", "use": "write", "contract": "tkt.status.change.v1", "replicaEvent": "tkt.ticket_status.changed.v1"
+      "consumer": "ORC",
+      "provider": "TKT",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "TicketRepository",
+      "method": "ReassignContact",
+      "use": "write",
+      "contract": "tkt.status.change.v1",
+      "replicaEvent": "tkt.ticket_status.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "BIL", "file": "internal/repository/contact_repository.go", "symbol": "OrderRepository", "method": "ReassignContact", "use": "write", "contract": "bil.order.update.v1", "replicaEvent": "bil.order.changed.v1"
+      "consumer": "ORC",
+      "provider": "BIL",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "OrderRepository",
+      "method": "ReassignContact",
+      "use": "write",
+      "contract": "bil.order.update.v1",
+      "replicaEvent": "bil.order.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "OPS", "file": "internal/repository/contact_repository.go", "symbol": "CampaignRepository", "method": "ReassignContact", "use": "write", "contract": "ops.campaign.trigger.v1", "replicaEvent": "ops.recipient.ready.v1"
+      "consumer": "ORC",
+      "provider": "OPS",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "CampaignRepository",
+      "method": "ReassignContact",
+      "use": "write",
+      "contract": "ops.campaign.trigger.v1",
+      "replicaEvent": "ops.recipient.ready.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "AttachLabelReference", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/label_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "AttachLabelReference",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "DeleteLabelReferences", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/label_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "DeleteLabelReferences",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "DetachLabel", "use": "write", "contract": "con.conversation.update.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/label_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "DetachLabel",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "ORC", "provider": "CON", "file": "internal/repository/label_repository.go", "symbol": "ConversationRepository", "method": "FindLabelIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/repository/label_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindLabelIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CON",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "MessageTargetExists",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CON",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ApplyMacroMutation",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "TEN",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "AccountRepository",
+      "method": "GetMembership",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "TEN",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "TeamRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "LabelRepository",
+      "method": "FindOrCreateByTitle",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "LabelRepository",
+      "method": "AttachToConversation",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "LabelRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "LabelRepository",
+      "method": "FindByTitle",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "LabelRepository",
+      "method": "DetachFromConversation",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "MSG",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "MessageRepository",
+      "method": "CreateMacroMessage",
+      "use": "write",
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
     }
   ]
 }

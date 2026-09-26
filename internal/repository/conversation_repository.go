@@ -26,6 +26,51 @@ type ConversationRepository struct {
 	deleteID uint
 }
 
+type MacroConversationMutation struct {
+	Status       *string
+	Priority     *string
+	SetAssignee  bool
+	AssigneeID   *uint
+	SetTeam      bool
+	TeamID       *uint
+	Muted        *bool
+	SnoozedUntil *time.Time
+	ClearSnooze  bool
+}
+
+func (r *ConversationRepository) ApplyMacroMutation(accountID, id uint, mutation MacroConversationMutation) error {
+	updates := map[string]any{"last_activity_at": time.Now().UTC(), "object_version": gorm.Expr("object_version + 1"), "updated_at": time.Now().UTC()}
+	if mutation.Status != nil {
+		updates["status"] = *mutation.Status
+	}
+	if mutation.Priority != nil {
+		updates["priority"] = *mutation.Priority
+	}
+	if mutation.SetAssignee {
+		updates["assignee_id"] = mutation.AssigneeID
+	}
+	if mutation.SetTeam {
+		updates["team_id"] = mutation.TeamID
+	}
+	if mutation.Muted != nil {
+		updates["muted"] = *mutation.Muted
+	}
+	if mutation.SnoozedUntil != nil {
+		updates["snoozed_until"] = mutation.SnoozedUntil
+	}
+	if mutation.ClearSnooze {
+		updates["snoozed_until"] = nil
+	}
+	res := r.db.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, id).Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func NewConversationRepository(db *gorm.DB) *ConversationRepository {
 	return NewConversationRepositoryWithPorts(db, NewMessageRepositoryWithConversationPort(db, nil), NewCombinedConversationCleanup(db))
 }

@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -92,6 +93,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_labels_use_CON_conversation_label_owner", func(t *testing.T) { testLabelRepositoryConversationBoundary(t, openStore) })
 	t.Run("ORC_channel_enterprise_facade_uses_seven_owner_stores", func(t *testing.T) { testChannelEnterpriseOwnerBoundary(t, openStore) })
 	t.Run("MSG_attachments_validate_message_owner", func(t *testing.T) { testAttachmentRepositoryMessageBoundary(t, openStore) })
+	t.Run("OPS_macros_use_CON_TEN_CUS_MSG_owner_commands", func(t *testing.T) { testMacroRepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -758,6 +760,57 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("CHN created foreign tables")
 		}
 	})
+}
+
+func testMacroRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	opsDB, conDB, tenDB, cusDB, msgDB := openStore("OPS"), openStore("CON"), openStore("TEN"), openStore("CUS"), openStore("MSG")
+	member := domain.AccountUser{AccountID: 41, UserID: 51, Role: domain.RoleAgent}
+	team := domain.Team{AccountID: 41, Name: "Macro Team"}
+	conversation := domain.Conversation{AccountID: 41, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	for _, fixture := range []struct {
+		db    *gorm.DB
+		value any
+	}{{tenDB, &member}, {tenDB, &team}, {conDB, &conversation}} {
+		if err := fixture.db.Create(fixture.value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	actions, _ := json.Marshal([]map[string]any{
+		{"action_name": "change_priority", "action_params": []any{"urgent"}},
+		{"action_name": "assign_agent", "action_params": []any{member.UserID}},
+		{"action_name": "assign_team", "action_params": []any{team.ID}},
+		{"action_name": "add_label", "action_params": []any{"vip"}},
+		{"action_name": "send_message", "action_params": []any{"owner-routed reply"}},
+		{"action_name": "send_attachment", "action_params": map[string]any{"file_url": "https://files.example/macro.txt", "file_type": "text/plain", "file_size": 12}},
+	})
+	macro := domain.Macro{AccountID: 41, Name: "Owner ports", Actions: string(actions), Visibility: "global"}
+	if err := opsDB.Create(&macro).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversations := repository.NewConversationRepository(conDB)
+	repo := repository.NewMacroRepositoryWithOwnerPorts(opsDB, conversations, repository.NewAccountRepository(tenDB), repository.NewTeamRepository(tenDB), repository.NewLabelRepositoryWithConversationPort(cusDB, conversations), repository.NewMessageRepositoryWithConversationPort(msgDB, conversations))
+	result, err := repo.ExecuteForUser(context.Background(), 41, macro.ID, member.UserID, true, []uint{conversation.ID})
+	if err != nil || result[conversation.ID] != "success" {
+		t.Fatalf("macro result=%v err=%v", result, err)
+	}
+	var updated domain.Conversation
+	if err := conDB.First(&updated, conversation.ID).Error; err != nil || updated.Priority != "urgent" || updated.AssigneeID == nil || *updated.AssigneeID != member.UserID || updated.TeamID == nil || *updated.TeamID != team.ID {
+		t.Fatalf("CON mutation=%+v err=%v", updated, err)
+	}
+	var labelCount, relationCount, messageCount, attachmentCount int64
+	_ = cusDB.Model(&domain.Label{}).Where("account_id = ? AND title = ?", 41, "vip").Count(&labelCount).Error
+	_ = conDB.Model(&domain.ConversationLabel{}).Where("conversation_id = ?", conversation.ID).Count(&relationCount).Error
+	_ = msgDB.Model(&domain.Message{}).Where("account_id = ? AND conversation_id = ?", 41, conversation.ID).Count(&messageCount).Error
+	_ = msgDB.Model(&domain.Attachment{}).Where("account_id = ?", 41).Count(&attachmentCount).Error
+	if labelCount != 1 || relationCount != 1 || messageCount != 2 || attachmentCount != 1 {
+		t.Fatalf("owner counts label=%d relation=%d message=%d attachment=%d", labelCount, relationCount, messageCount, attachmentCount)
+	}
+	for name, db := range map[string]*gorm.DB{"OPS": opsDB, "CON": conDB, "TEN": tenDB, "CUS": cusDB, "MSG": msgDB} {
+		foreign := map[string]any{"OPS": &domain.Conversation{}, "CON": &domain.Macro{}, "TEN": &domain.Label{}, "CUS": &domain.Message{}, "MSG": &domain.Team{}}[name]
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("%s contains a foreign authority table", name)
+		}
+	}
 }
 
 func testCompanyExtensionOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
