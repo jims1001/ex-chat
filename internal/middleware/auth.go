@@ -20,7 +20,7 @@ const (
 	ContextAccountMembership = "account_membership"
 )
 
-func AuthMiddleware(secret string, userRepo *repository.UserRepository, enterpriseRepos ...repository.ChannelAuthEnterpriseRepository) gin.HandlerFunc {
+func AuthMiddleware(secret string, userRepo *repository.UserRepository, enterpriseRepos ...repository.ChannelIAMRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {

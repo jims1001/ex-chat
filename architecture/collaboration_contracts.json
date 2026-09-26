@@ -198,11 +198,47 @@
       "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "provider": "IAM",
-      "readQuery": "iam.enterprise_record.get.v1",
-      "writeCommand": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "readQuery": "iam.identity.get.v1",
+      "writeCommand": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+
+    {
+      "symbol": "ChannelMIGRepository",
+      "provider": "MIG",
+      "readQuery": "mig.job.get.v1",
+      "writeCommand": "mig.job.start.v1",
+      "replicaEvent": "mig.migration.changed.v1"
+    },
+    {
+      "symbol": "ChannelRPTRepository",
+      "provider": "RPT",
+      "readQuery": "rpt.report.get.v1",
+      "writeCommand": "rpt.report.generate.v1",
+      "replicaEvent": "rpt.report.ready.v1"
+    },
+    {
+      "symbol": "ChannelENTRepository",
+      "provider": "ENT",
+      "readQuery": "ent.capability.check.v1",
+      "writeCommand": "ent.quota.reserve.v1",
+      "replicaEvent": "ent.entitlement.changed.v1"
+    },
+    {
+      "symbol": "ChannelBILRepository",
+      "provider": "BIL",
+      "readQuery": "bil.order.get.v1",
+      "writeCommand": "bil.payment.process.v1",
+      "replicaEvent": "bil.payment.completed.v1"
+    },
+    {
+      "symbol": "ChannelTENRepository",
+      "provider": "TEN",
+      "readQuery": "ten.account.get.v1",
+      "writeCommand": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
     },
     {
       "symbol": "ConversationRepository",
@@ -683,7 +719,7 @@
       "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "consumer": "API",
+      "consumer": "RTM",
       "provider": "CHN",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "InboxRepository",
@@ -713,7 +749,7 @@
       "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "API",
+      "consumer": "RTM",
       "provider": "CON",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "ConversationRepository",
@@ -943,7 +979,7 @@
       "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "API",
+      "consumer": "RTM",
       "provider": "CUS",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "ContactRepository",
@@ -953,7 +989,7 @@
       "replicaEvent": "cus.contact.changed.v1"
     },
     {
-      "consumer": "API",
+      "consumer": "RTM",
       "provider": "CUS",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "ContactRepository",
@@ -963,7 +999,7 @@
       "replicaEvent": "cus.contact.changed.v1"
     },
     {
-      "consumer": "API",
+      "consumer": "RTM",
       "provider": "CUS",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "ContactRepository",
@@ -1084,303 +1120,303 @@
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "MIG",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelMIGRepository",
       "method": "CreateEmailMigration",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "mig.job.start.v1",
+      "replicaEvent": "mig.migration.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "MIG",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelMIGRepository",
       "method": "CreateMigrationJob",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "mig.job.start.v1",
+      "replicaEvent": "mig.migration.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "CreatePasswordResetToken",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "RPT",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelRPTRepository",
       "method": "CreateReportingEvent",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "rpt.report.generate.v1",
+      "replicaEvent": "rpt.report.ready.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "DeleteSAMLSetting",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "DeleteSession",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "DisableSAMLSetting",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "GenerateMFABackupCodes",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "ENT",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelENTRepository",
       "method": "GetAccountLimit",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "ent.capability.check.v1",
+      "replicaEvent": "ent.entitlement.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "GetAccountSubscription",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.order.get.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "ENT",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelENTRepository",
       "method": "GetBrandedEmailLayout",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "ent.capability.check.v1",
+      "replicaEvent": "ent.entitlement.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "GetMFAProfile",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "TEN",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelTENRepository",
       "method": "GetOnboarding",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "GetSAMLSetting",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "GetSubscriptionPlan",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.order.get.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "GetSubscriptionPlanBySlug",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.order.get.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "GetValidPasswordResetToken",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "ListBillings",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.order.get.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "MIG",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelMIGRepository",
       "method": "ListMigrationJobs",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "mig.job.get.v1",
+      "replicaEvent": "mig.migration.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "RPT",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelRPTRepository",
       "method": "ListReportingEvents",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "rpt.report.get.v1",
+      "replicaEvent": "rpt.report.ready.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "ListSessions",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "ListSubscriptionPlans",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.order.get.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "MarkPasswordResetTokenUsed",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "RecordBilling",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.payment.process.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "ENT",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelENTRepository",
       "method": "SaveAccountLimit",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "ent.quota.reserve.v1",
+      "replicaEvent": "ent.entitlement.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelBILRepository",
       "method": "SaveAccountSubscription",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "bil.payment.process.v1",
+      "replicaEvent": "bil.payment.completed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "ENT",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelENTRepository",
       "method": "SaveBrandedEmailLayout",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "ent.quota.reserve.v1",
+      "replicaEvent": "ent.entitlement.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "SaveMFAProfile",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
-      "provider": "IAM",
+      "provider": "TEN",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelTENRepository",
       "method": "SaveOnboarding",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "SaveSAMLSetting",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
@@ -1426,51 +1462,51 @@
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "ConfirmUserByToken",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "GenerateConfirmationToken",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "GetMFAProfile",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "RevokeToken",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelIAMRepository",
       "method": "SaveMFAProfile",
       "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "iam.session.revoke.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
@@ -1522,135 +1558,27 @@
       "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
     },
+
+
+
+
+
+
+
+
+
+
+
+
     {
       "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "CreateCall",
-      "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "CreateCallCandidate",
-      "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "CreateConference",
-      "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "DeleteConference",
-      "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "DeleteConferenceByInbox",
-      "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "GetCall",
-      "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "GetCallByProviderCallID",
-      "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "GetConference",
-      "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "GetConferenceByID",
-      "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "ListCallCandidates",
-      "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "ListCalls",
-      "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
-      "method": "UpdateCall",
-      "use": "write",
-      "contract": "iam.enterprise_record.manage.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
+      "provider": "RPT",
       "file": "internal/handler/conversation_handler.go",
-      "symbol": "ChannelAuthEnterpriseRepository",
+      "symbol": "ChannelRPTRepository",
       "method": "ListReportingEventsByConversation",
       "use": "read",
-      "contract": "iam.enterprise_record.get.v1",
-      "replicaEvent": "iam.enterprise_record.changed.v1"
+      "contract": "rpt.report.get.v1",
+      "replicaEvent": "rpt.report.ready.v1"
     },
     {
       "consumer": "API",
@@ -1703,7 +1631,7 @@
       "replicaEvent": "msg.email_delivery.changed.v1"
     },
     {
-      "consumer": "API",
+      "consumer": "RTM",
       "provider": "MSG",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "MessageRepository",

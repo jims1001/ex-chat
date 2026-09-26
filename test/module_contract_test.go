@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v25 records label relation composition through CON commands and queries.
-	const approvedCollaborationSHA = "a4b44b7afd3e9f101899607c0f66ea984e87ba0f63c9e2a7f3b90d0464a016bf"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v26 records the seven-owner enterprise facade split.
+	const approvedCollaborationSHA = "ff7520003cd23ba9acef4bb5d37221de12d40d5cf2ae31c21985c62e21d6cc67"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -388,6 +388,13 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/contact_extension_repository.go":     {"Model(&domain.Conversation", "Preload(\"Inbox\")", "JOIN inboxes", "JOIN conversations", "JOIN messages", "Table(\"attachments\")", "Table(\"messages\")"},
 		"../internal/repository/contact_repository.go":               {"Model(&domain.Conversation", "Model(&domain.Message", "Model(&domain.Ticket", "Model(&domain.TicketComment", "Model(&domain.Order", "Model(&domain.CampaignDelivery", "Model(&domain.Call", "Model(&domain.WidgetEvent"},
 		"../internal/repository/label_repository.go":                 {"domain.ConversationLabel", "JOIN conversation_labels", "Table(\"conversation_labels\")"},
+		"../internal/repository/channel_auth_iam_repository.go":      {"domain.Call", "domain.Conference", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
+		"../internal/repository/channel_auth_rtm_repository.go":      {"domain.SAMLSetting", "domain.UserSession", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
+		"../internal/repository/channel_auth_mig_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
+		"../internal/repository/channel_auth_rpt_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
+		"../internal/repository/channel_auth_ent_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "Model(&domain.AccountBilling", "Create(&domain.AccountBilling", "domain.Onboarding", "domain.SubscriptionPlan"},
+		"../internal/repository/channel_auth_bil_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.Onboarding", "domain.BrandedEmailLayout"},
+		"../internal/repository/channel_auth_ten_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.BrandedEmailLayout"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

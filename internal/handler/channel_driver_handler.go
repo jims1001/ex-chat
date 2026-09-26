@@ -16,7 +16,7 @@ import (
 )
 
 type ChannelDriverHandler struct {
-	repo        repository.ChannelAuthEnterpriseRepository
+	repo        repository.ChannelRTMRepository
 	inboxRepo   *repository.InboxRepository
 	contactRepo *repository.ContactRepository
 	convRepo    *repository.ConversationRepository
@@ -24,7 +24,7 @@ type ChannelDriverHandler struct {
 }
 
 func NewChannelDriverHandler(
-	repo repository.ChannelAuthEnterpriseRepository,
+	repo repository.ChannelRTMRepository,
 	inboxRepo *repository.InboxRepository,
 	contactRepo *repository.ContactRepository,
 	convRepo *repository.ConversationRepository,

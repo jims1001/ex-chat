@@ -764,7 +764,11 @@
       "startupRequired": [],
       "capabilityDependencies": [
         "IAM",
-        "TEN"
+        "TEN",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG"
       ],
       "asynchronousDependencies": [
         "API",

@@ -24,7 +24,12 @@ import (
 )
 
 type AuthEnterpriseHandler struct {
-	repo              repository.ChannelAuthEnterpriseRepository
+	iamRepo           repository.ChannelIAMRepository
+	migRepo           repository.ChannelMIGRepository
+	rptRepo           repository.ChannelRPTRepository
+	entRepo           repository.ChannelENTRepository
+	bilRepo           repository.ChannelBILRepository
+	tenRepo           repository.ChannelTENRepository
 	userRepo          *repository.UserRepository
 	accountRepo       *repository.AccountRepository
 	portalRepo        *repository.PortalRepository
@@ -55,7 +60,12 @@ func NewAuthEnterpriseHandler(
 	cfg *config.Config,
 ) *AuthEnterpriseHandler {
 	return &AuthEnterpriseHandler{
-		repo:             repo,
+		iamRepo:          repo,
+		migRepo:          repo,
+		rptRepo:          repo,
+		entRepo:          repo,
+		bilRepo:          repo,
+		tenRepo:          repo,
 		userRepo:         userRepo,
 		accountRepo:      accountRepo,
 		portalRepo:       portalRepo,
@@ -119,7 +129,7 @@ func (h *AuthEnterpriseHandler) GetSAMLSetting(c *gin.Context) {
 		return
 	}
 
-	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	setting, err := h.iamRepo.GetSAMLSetting(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -181,7 +191,7 @@ func (h *AuthEnterpriseHandler) SaveSAMLSetting(c *gin.Context) {
 		}
 	}
 
-	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	setting, err := h.iamRepo.GetSAMLSetting(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -238,7 +248,7 @@ func (h *AuthEnterpriseHandler) SaveSAMLSetting(c *gin.Context) {
 		}
 	}
 
-	if err := h.repo.SaveSAMLSetting(setting); err != nil {
+	if err := h.iamRepo.SaveSAMLSetting(setting); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -253,7 +263,7 @@ func (h *AuthEnterpriseHandler) DeleteSAMLSetting(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.DeleteSAMLSetting(uint(accountID)); err != nil {
+	if err := h.iamRepo.DeleteSAMLSetting(uint(accountID)); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -271,7 +281,7 @@ func (h *AuthEnterpriseHandler) DisableSAMLSetting(c *gin.Context) {
 		return
 	}
 
-	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	setting, err := h.iamRepo.GetSAMLSetting(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -281,7 +291,7 @@ func (h *AuthEnterpriseHandler) DisableSAMLSetting(c *gin.Context) {
 		return
 	}
 
-	setting, err = h.repo.DisableSAMLSetting(uint(accountID))
+	setting, err = h.iamRepo.DisableSAMLSetting(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -301,7 +311,7 @@ func (h *AuthEnterpriseHandler) EnableSAMLSetting(c *gin.Context) {
 		return
 	}
 
-	setting, err := h.repo.GetSAMLSetting(uint(accountID))
+	setting, err := h.iamRepo.GetSAMLSetting(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -312,7 +322,7 @@ func (h *AuthEnterpriseHandler) EnableSAMLSetting(c *gin.Context) {
 	}
 
 	setting.Enabled = true
-	if err := h.repo.SaveSAMLSetting(setting); err != nil {
+	if err := h.iamRepo.SaveSAMLSetting(setting); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -336,7 +346,7 @@ func (h *AuthEnterpriseHandler) InitiateSAMLLogin(c *gin.Context) {
 
 	ssoURL := "https://idp.example.com/sso/saml"
 	if req.AccountID != nil {
-		setting, err := h.repo.GetSAMLSetting(*req.AccountID)
+		setting, err := h.iamRepo.GetSAMLSetting(*req.AccountID)
 		if err == nil && setting != nil {
 			if !setting.Enabled {
 				response.BadRequest(c, "SAML SSO is disabled for this account")
@@ -349,7 +359,7 @@ func (h *AuthEnterpriseHandler) InitiateSAMLLogin(c *gin.Context) {
 	} else if user, _ := h.userRepo.FindByEmail(req.Email); user != nil {
 		accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
 		if len(accounts) > 0 {
-			setting, err := h.repo.GetSAMLSetting(accounts[0].ID)
+			setting, err := h.iamRepo.GetSAMLSetting(accounts[0].ID)
 			if err == nil && setting != nil {
 				if !setting.Enabled {
 					response.BadRequest(c, "SAML SSO is disabled for this account")
@@ -427,7 +437,7 @@ func (h *AuthEnterpriseHandler) SAMLCallback(c *gin.Context) {
 
 func (h *AuthEnterpriseHandler) GetMFAProfile(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	profile, err := h.repo.GetMFAProfile(userID)
+	profile, err := h.iamRepo.GetMFAProfile(userID)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -447,7 +457,7 @@ func (h *AuthEnterpriseHandler) GetMFAProfile(c *gin.Context) {
 			BackupCodes: string(bBytes),
 			Enabled:     false,
 		}
-		_ = h.repo.SaveMFAProfile(profile)
+		_ = h.iamRepo.SaveMFAProfile(profile)
 	}
 
 	response.Success(c, profile)
@@ -481,7 +491,7 @@ func (h *AuthEnterpriseHandler) VerifyMFA(c *gin.Context) {
 		return
 	}
 
-	profile, err := h.repo.GetMFAProfile(userID)
+	profile, err := h.iamRepo.GetMFAProfile(userID)
 	if err != nil || profile == nil {
 		response.BadRequest(c, "MFA setup has not been initiated. Please setup MFA first.")
 		return
@@ -508,12 +518,12 @@ func (h *AuthEnterpriseHandler) VerifyMFA(c *gin.Context) {
 	}
 
 	profile.Enabled = true
-	_ = h.repo.SaveMFAProfile(profile)
+	_ = h.iamRepo.SaveMFAProfile(profile)
 
 	var backupCodes []string
 	_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
 	if len(backupCodes) == 0 {
-		backupCodes, _ = h.repo.GenerateMFABackupCodes(userID)
+		backupCodes, _ = h.iamRepo.GenerateMFABackupCodes(userID)
 	}
 
 	response.Success(c, gin.H{
@@ -525,7 +535,7 @@ func (h *AuthEnterpriseHandler) VerifyMFA(c *gin.Context) {
 
 func (h *AuthEnterpriseHandler) GenerateBackupCodes(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	profile, err := h.repo.GetMFAProfile(userID)
+	profile, err := h.iamRepo.GetMFAProfile(userID)
 	if err != nil || profile == nil {
 		response.BadRequest(c, "MFA is not set up")
 		return
@@ -535,7 +545,7 @@ func (h *AuthEnterpriseHandler) GenerateBackupCodes(c *gin.Context) {
 		return
 	}
 
-	codes, err := h.repo.GenerateMFABackupCodes(userID)
+	codes, err := h.iamRepo.GenerateMFABackupCodes(userID)
 	if err != nil {
 		response.InternalError(c, "Failed to generate backup codes: "+err.Error())
 		return
@@ -548,17 +558,17 @@ func (h *AuthEnterpriseHandler) GenerateBackupCodes(c *gin.Context) {
 
 func (h *AuthEnterpriseHandler) DisableMFA(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	profile, err := h.repo.GetMFAProfile(userID)
+	profile, err := h.iamRepo.GetMFAProfile(userID)
 	if err == nil && profile != nil {
 		profile.Enabled = false
-		_ = h.repo.SaveMFAProfile(profile)
+		_ = h.iamRepo.SaveMFAProfile(profile)
 	}
 	response.Success(c, gin.H{"enabled": false})
 }
 
 func (h *AuthEnterpriseHandler) ListSessions(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	sessions, err := h.repo.ListSessions(userID)
+	sessions, err := h.iamRepo.ListSessions(userID)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -570,7 +580,7 @@ func (h *AuthEnterpriseHandler) DeleteSession(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	sessionID, _ := strconv.ParseUint(c.Param("session_id"), 10, 64)
 
-	_ = h.repo.DeleteSession(userID, uint(sessionID))
+	_ = h.iamRepo.DeleteSession(userID, uint(sessionID))
 	response.Success(c, gin.H{"revoked": true})
 }
 
@@ -600,7 +610,7 @@ func (h *AuthEnterpriseHandler) RequestPasswordReset(c *gin.Context) {
 		Token:     resetToken,
 		ExpiresAt: time.Now().Add(2 * time.Hour),
 	}
-	_ = h.repo.CreatePasswordResetToken(tokenRecord)
+	_ = h.iamRepo.CreatePasswordResetToken(tokenRecord)
 
 	respData := gin.H{
 		"message": "If email exists, reset instructions have been sent",
@@ -622,7 +632,7 @@ func (h *AuthEnterpriseHandler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	tokenRecord, err := h.repo.GetValidPasswordResetToken(req.Token)
+	tokenRecord, err := h.iamRepo.GetValidPasswordResetToken(req.Token)
 	if err != nil || tokenRecord == nil {
 		response.BadRequest(c, "Reset token is invalid or expired")
 		return
@@ -642,7 +652,7 @@ func (h *AuthEnterpriseHandler) ResetPassword(c *gin.Context) {
 
 	user.PasswordHash = string(hash)
 	_ = h.userRepo.Update(user)
-	_ = h.repo.MarkPasswordResetTokenUsed(tokenRecord.ID)
+	_ = h.iamRepo.MarkPasswordResetTokenUsed(tokenRecord.ID)
 
 	response.Success(c, gin.H{"message": "Password updated successfully"})
 }
@@ -739,7 +749,7 @@ func (h *AuthEnterpriseHandler) CreateMigrationJob(c *gin.Context) {
 		Logs:          logMsg,
 	}
 
-	if err := h.repo.CreateMigrationJob(job); err != nil {
+	if err := h.migRepo.CreateMigrationJob(job); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -754,7 +764,7 @@ func (h *AuthEnterpriseHandler) ListMigrationJobs(c *gin.Context) {
 		return
 	}
 
-	jobs, err := h.repo.ListMigrationJobs(uint(accountID))
+	jobs, err := h.migRepo.ListMigrationJobs(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -859,7 +869,7 @@ func (h *AuthEnterpriseHandler) CreateReportingEvent(c *gin.Context) {
 		MetadataJSON:   req.MetadataJSON,
 	}
 
-	if err := h.repo.CreateReportingEvent(evt); err != nil {
+	if err := h.rptRepo.CreateReportingEvent(evt); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -875,7 +885,7 @@ func (h *AuthEnterpriseHandler) ListReportingEvents(c *gin.Context) {
 	}
 
 	name := c.Query("name")
-	events, err := h.repo.ListReportingEvents(uint(accountID), name)
+	events, err := h.rptRepo.ListReportingEvents(uint(accountID), name)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -890,7 +900,7 @@ func (h *AuthEnterpriseHandler) GetOnboarding(c *gin.Context) {
 		return
 	}
 
-	onb, err := h.repo.GetOnboarding(uint(accountID))
+	onb, err := h.tenRepo.GetOnboarding(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -929,7 +939,7 @@ func (h *AuthEnterpriseHandler) SaveOnboarding(c *gin.Context) {
 		Completed: completed,
 	}
 
-	if err := h.repo.SaveOnboarding(onb); err != nil {
+	if err := h.tenRepo.SaveOnboarding(onb); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -944,7 +954,7 @@ func (h *AuthEnterpriseHandler) GetBrandedEmailLayout(c *gin.Context) {
 		return
 	}
 
-	layout, err := h.repo.GetBrandedEmailLayout(uint(accountID))
+	layout, err := h.entRepo.GetBrandedEmailLayout(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -976,7 +986,7 @@ func (h *AuthEnterpriseHandler) SaveBrandedEmailLayout(c *gin.Context) {
 		LogoURL:     req.LogoURL,
 	}
 
-	if err := h.repo.SaveBrandedEmailLayout(layout); err != nil {
+	if err := h.entRepo.SaveBrandedEmailLayout(layout); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -993,7 +1003,7 @@ func (h *AuthEnterpriseHandler) GetLimits(c *gin.Context) {
 		return
 	}
 
-	limits, err := h.repo.GetAccountLimit(uint(accountID))
+	limits, err := h.entRepo.GetAccountLimit(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -1018,7 +1028,7 @@ func (h *AuthEnterpriseHandler) UpdateLimits(c *gin.Context) {
 		return
 	}
 
-	limit, err := h.repo.GetAccountLimit(uint(accountID))
+	limit, err := h.entRepo.GetAccountLimit(uint(accountID))
 	if err != nil || limit == nil {
 		limit = &domain.AccountLimit{AccountID: uint(accountID)}
 	}
@@ -1033,7 +1043,7 @@ func (h *AuthEnterpriseHandler) UpdateLimits(c *gin.Context) {
 		limit.InboxLimit = req.InboxLimit
 	}
 
-	if err := h.repo.SaveAccountLimit(limit); err != nil {
+	if err := h.entRepo.SaveAccountLimit(limit); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -1072,7 +1082,7 @@ func (h *AuthEnterpriseHandler) RecordBilling(c *gin.Context) {
 		Description: req.Description,
 	}
 
-	if err := h.repo.RecordBilling(billing); err != nil {
+	if err := h.bilRepo.RecordBilling(billing); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -1087,7 +1097,7 @@ func (h *AuthEnterpriseHandler) ListBillings(c *gin.Context) {
 		return
 	}
 
-	list, err := h.repo.ListBillings(uint(accountID))
+	list, err := h.bilRepo.ListBillings(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -1164,7 +1174,7 @@ func (h *AuthEnterpriseHandler) EmailChannelMigration(c *gin.Context) {
 		ProviderConfig: req.ProviderConfig,
 	}
 
-	if err := h.repo.CreateEmailMigration(mig); err != nil {
+	if err := h.migRepo.CreateEmailMigration(mig); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -1178,7 +1188,7 @@ func (h *AuthEnterpriseHandler) EmailChannelMigration(c *gin.Context) {
 // ----------------- SaaS Subscriptions & Billing -----------------
 
 func (h *AuthEnterpriseHandler) ListSubscriptionPlans(c *gin.Context) {
-	plans, err := h.repo.ListSubscriptionPlans()
+	plans, err := h.bilRepo.ListSubscriptionPlans()
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -1193,7 +1203,7 @@ func (h *AuthEnterpriseHandler) GetSubscription(c *gin.Context) {
 		return
 	}
 
-	sub, err := h.repo.GetAccountSubscription(uint(accountID))
+	sub, err := h.bilRepo.GetAccountSubscription(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -1218,16 +1228,16 @@ func (h *AuthEnterpriseHandler) CreateOrUpdateSubscription(c *gin.Context) {
 	}
 
 	// Ensure default plans exist
-	_, _ = h.repo.ListSubscriptionPlans()
+	_, _ = h.bilRepo.ListSubscriptionPlans()
 
 	var plan domain.SubscriptionPlan
 	var planPtr *domain.SubscriptionPlan
 	if req.PlanID > 0 {
-		planPtr, err = h.repo.GetSubscriptionPlan(req.PlanID)
+		planPtr, err = h.bilRepo.GetSubscriptionPlan(req.PlanID)
 	} else if req.PlanSlug != "" {
-		planPtr, err = h.repo.GetSubscriptionPlanBySlug(req.PlanSlug)
+		planPtr, err = h.bilRepo.GetSubscriptionPlanBySlug(req.PlanSlug)
 	} else {
-		planPtr, err = h.repo.GetSubscriptionPlanBySlug("pro")
+		planPtr, err = h.bilRepo.GetSubscriptionPlanBySlug("pro")
 	}
 
 	if err != nil || planPtr == nil {
@@ -1237,7 +1247,7 @@ func (h *AuthEnterpriseHandler) CreateOrUpdateSubscription(c *gin.Context) {
 	plan = *planPtr
 
 	now := time.Now().UTC()
-	sub, _ := h.repo.GetAccountSubscription(uint(accountID))
+	sub, _ := h.bilRepo.GetAccountSubscription(uint(accountID))
 	if sub == nil {
 		sub = &domain.AccountSubscription{
 			AccountID: uint(accountID),
@@ -1249,12 +1259,12 @@ func (h *AuthEnterpriseHandler) CreateOrUpdateSubscription(c *gin.Context) {
 	sub.CurrentPeriodStart = now
 	sub.CurrentPeriodEnd = now.AddDate(0, 1, 0) // 1 month
 
-	if err := h.repo.SaveAccountSubscription(sub); err != nil {
+	if err := h.bilRepo.SaveAccountSubscription(sub); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	_ = h.repo.RecordBilling(&domain.AccountBilling{
+	_ = h.bilRepo.RecordBilling(&domain.AccountBilling{
 		AccountID:   uint(accountID),
 		ActionType:  "subscription",
 		Amount:      float64(plan.PriceCents) / 100.0,
@@ -1348,10 +1358,10 @@ func (h *AuthEnterpriseHandler) SelectBillingCurrency(c *gin.Context) {
 		_ = h.accountRepo.Update(account)
 	}
 
-	sub, _ := h.repo.GetAccountSubscription(accountID)
+	sub, _ := h.bilRepo.GetAccountSubscription(accountID)
 	if sub != nil {
 		sub.BillingCurrency = curr
-		_ = h.repo.SaveAccountSubscription(sub)
+		_ = h.bilRepo.SaveAccountSubscription(sub)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1502,7 +1512,7 @@ func (h *AuthEnterpriseHandler) TopupCheckout(c *gin.Context) {
 	sessionID := hex.EncodeToString(sessionBytes)
 	redirectURL := fmt.Sprintf("https://checkout.stripe.com/pay/cs_topup_%s_%d", sessionID, req.Credits)
 
-	_ = h.repo.RecordBilling(&domain.AccountBilling{
+	_ = h.bilRepo.RecordBilling(&domain.AccountBilling{
 		AccountID:   accountID,
 		ActionType:  "topup",
 		Amount:      amount,
@@ -1511,7 +1521,7 @@ func (h *AuthEnterpriseHandler) TopupCheckout(c *gin.Context) {
 		CreatedAt:   time.Now().UTC(),
 	})
 
-	limits, _ := h.repo.GetAccountLimit(accountID)
+	limits, _ := h.entRepo.GetAccountLimit(accountID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":           accountID,

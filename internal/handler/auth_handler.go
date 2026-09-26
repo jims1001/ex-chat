@@ -25,7 +25,7 @@ type AuthHandler struct {
 	cfg            *config.Config
 	userRepo       *repository.UserRepository
 	accountRepo    *repository.AccountRepository
-	enterpriseRepo repository.ChannelAuthEnterpriseRepository
+	enterpriseRepo repository.ChannelIAMRepository
 	emailService   *service.EmailService
 }
 
@@ -37,7 +37,7 @@ func NewAuthHandler(cfg *config.Config, userRepo *repository.UserRepository, acc
 	}
 }
 
-func (h *AuthHandler) SetEnterpriseRepo(enterpriseRepo repository.ChannelAuthEnterpriseRepository) {
+func (h *AuthHandler) SetEnterpriseRepo(enterpriseRepo repository.ChannelIAMRepository) {
 	h.enterpriseRepo = enterpriseRepo
 }
 

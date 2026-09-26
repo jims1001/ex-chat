@@ -3,7 +3,7 @@
   "contractSource": "Chatwoot完整文档/Chatwoot模块化架构设计文档/02-无循环依赖矩阵.md",
   "scopePolicy": "Every non-test Go file in internal/handler and internal/service containing a registered Repository or Service dependency symbol must appear exactly once in scanScopes; files without such symbols are excluded by rule.",
   "repositoryOwners": {
-    "AICustomToolRepository":"AIC","AccountRepository":"TEN","AgentBotRepository":"EXT","AgentCapacityPolicyRepository":"RTE","AppliedSLARepository":"RPT","AssignmentPolicyRepository":"RTE","AttachmentRepository":"MED","AutomationService":"AUT","CampaignRepository":"OPS","CampaignService":"OPS","CannedResponseRepository":"OPS","CaptainRepository":"AIC","ChannelAuthEnterpriseRepository":"IAM","CompanyExtensionRepository":"CUS","CompanyRepository":"CUS","ContactExtensionRepository":"CUS","ContactRepository":"CUS","ConversationRepository":"CON","CopilotThreadRepository":"AIC","CSATExtensionRepository":"QLT","CSATRepository":"QLT","CustomAttributeRepository":"CUS","DashboardAppRepository":"EXT","DataImportService":"MIG","DeviceRepository":"NTF","EmailLogRepository":"MSG","EmailService":"MSG","EnterpriseRepository":"ENT","InboxRepository":"CHN","IntegrationRepository":"EXT","JournalRepository":"L0","LabelRepository":"CUS","MacroRepository":"OPS","MessageRepository":"MSG","MigrationService":"MIG","NotificationRepository":"NTF","OrderRepository":"BIL","PlatformRepository":"EXT","PortalRepository":"KB","PublicRepository":"API","PushService":"NTF","QARepository":"QLT","ReportService":"RPT","RoutingService":"RTE","SetPublicRepository":"API","SystemConfigRepository":"SYS","SLARepository":"RPT","SLAService":"RPT","StorageService":"MED","TeamRepository":"TEN","TicketRepository":"TKT","UserRepository":"IAM","WebhookRepository":"EXT","WebhookService":"EXT","WidgetRepository":"API","CallRepository":"RTM"
+    "AICustomToolRepository":"AIC","AccountRepository":"TEN","AgentBotRepository":"EXT","AgentCapacityPolicyRepository":"RTE","AppliedSLARepository":"RPT","AssignmentPolicyRepository":"RTE","AttachmentRepository":"MED","AutomationService":"AUT","CampaignRepository":"OPS","CampaignService":"OPS","CannedResponseRepository":"OPS","CaptainRepository":"AIC","ChannelAuthEnterpriseRepository":"IAM","ChannelIAMRepository":"IAM","ChannelRTMRepository":"RTM","ChannelMIGRepository":"MIG","ChannelRPTRepository":"RPT","ChannelENTRepository":"ENT","ChannelBILRepository":"BIL","ChannelTENRepository":"TEN","CompanyExtensionRepository":"CUS","CompanyRepository":"CUS","ContactExtensionRepository":"CUS","ContactRepository":"CUS","ConversationRepository":"CON","CopilotThreadRepository":"AIC","CSATExtensionRepository":"QLT","CSATRepository":"QLT","CustomAttributeRepository":"CUS","DashboardAppRepository":"EXT","DataImportService":"MIG","DeviceRepository":"NTF","EmailLogRepository":"MSG","EmailService":"MSG","EnterpriseRepository":"ENT","InboxRepository":"CHN","IntegrationRepository":"EXT","JournalRepository":"L0","LabelRepository":"CUS","MacroRepository":"OPS","MessageRepository":"MSG","MigrationService":"MIG","NotificationRepository":"NTF","OrderRepository":"BIL","PlatformRepository":"EXT","PortalRepository":"KB","PublicRepository":"API","PushService":"NTF","QARepository":"QLT","ReportService":"RPT","RoutingService":"RTE","SetPublicRepository":"API","SystemConfigRepository":"SYS","SLARepository":"RPT","SLAService":"RPT","StorageService":"MED","TeamRepository":"TEN","TicketRepository":"TKT","UserRepository":"IAM","WebhookRepository":"EXT","WebhookService":"EXT","WidgetRepository":"API","CallRepository":"RTM"
   },
   "scanScopes": [
     {"consumer":"TEN","file":"internal/handler/account_handler.go"},
@@ -12,7 +12,7 @@
     {"consumer":"AUD","file":"internal/handler/audit_handler.go"},
     {"consumer":"API","file":"internal/handler/auth_enterprise_handler.go"},
     {"consumer":"API","file":"internal/handler/auth_handler.go"},
-    {"consumer":"API","file":"internal/handler/channel_driver_handler.go"},
+    {"consumer":"RTM","file":"internal/handler/channel_driver_handler.go"},
     {"consumer":"CUS","file":"internal/handler/company_extension_handler.go"},
     {"consumer":"CUS","file":"internal/handler/contact_extension_handler.go"},
     {"consumer":"CUS","file":"internal/handler/contact_handler.go"},
@@ -82,7 +82,7 @@
     {"name":"SRH","synchronous":["TEN"],"events":["CUS","CON","MSG","TKT","KB"],"shared":[],"startup":[]},
     {"name":"ORC","synchronous":["IAM","TEN","ENT","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH"],"events":[],"shared":[],"startup":[]},
     {"name":"API","synchronous":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC"],"events":[],"shared":[],"startup":["IAM","TEN"]},
-    {"name":"RTM","synchronous":["IAM","TEN"],"events":["API","CON","MSG","RTE","TKT","QLT","NTF","AUT","OPS"],"shared":[],"startup":[]},
+    {"name":"RTM","synchronous":["IAM","TEN","CHN","CUS","CON","MSG"],"events":["API","CON","MSG","RTE","TKT","QLT","NTF","AUT","OPS"],"shared":[],"startup":[]},
     {"name":"AUD","synchronous":[],"events":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC","API","RTM"],"shared":[],"startup":[]}
   ],
   "observedCode": [
@@ -129,6 +129,18 @@
     {"consumer":"MIG","provider":"MSG","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"MessageRepository"},
     {"consumer":"MIG","provider":"MED","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"AttachmentRepository"},
     {"consumer":"MIG","provider":"CUS","kind":"synchronous","file":"internal/service/data_import_service.go","symbol":"ContactRepository"},
+    {"consumer":"RTM","provider":"CHN","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"InboxRepository"},
+    {"consumer":"RTM","provider":"CUS","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"ContactRepository"},
+    {"consumer":"RTM","provider":"CON","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"ConversationRepository"},
+    {"consumer":"RTM","provider":"MSG","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"MessageRepository"},
+        {"consumer":"API","provider":"IAM","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelIAMRepository"},
+    {"consumer":"API","provider":"MIG","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelMIGRepository"},
+    {"consumer":"API","provider":"RPT","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelRPTRepository"},
+    {"consumer":"API","provider":"ENT","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelENTRepository"},
+    {"consumer":"API","provider":"BIL","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelBILRepository"},
+    {"consumer":"API","provider":"TEN","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelTENRepository"},
+    {"consumer":"API","provider":"IAM","kind":"synchronous","file":"internal/handler/auth_handler.go","symbol":"ChannelIAMRepository"},
+    {"consumer":"API","provider":"RPT","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"ChannelRPTRepository"},
     {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"LabelRepository"},
     {"consumer":"OPS","provider":"CON","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"ConversationRepository"},
     {"consumer":"OPS","provider":"EXT","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"WebhookService"},

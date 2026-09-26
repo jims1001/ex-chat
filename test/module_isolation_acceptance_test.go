@@ -90,6 +90,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_contact_extensions_use_CHN_CON_MSG_owner_queries", func(t *testing.T) { testContactExtensionOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_lifecycle_uses_all_owner_commands", func(t *testing.T) { testContactRepositoryOwnerBoundary(t, openStore) })
 	t.Run("ORC_labels_use_CON_conversation_label_owner", func(t *testing.T) { testLabelRepositoryConversationBoundary(t, openStore) })
+	t.Run("ORC_channel_enterprise_facade_uses_seven_owner_stores", func(t *testing.T) { testChannelEnterpriseOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -1027,5 +1028,70 @@ func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string
 	}
 	if conDB.Migrator().HasTable(&domain.Label{}) {
 		t.Fatal("CON store contains CUS authority tables")
+	}
+}
+
+func testChannelEnterpriseOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	iamDB, rtmDB, migDB, rptDB := openStore("IAM"), openStore("RTM"), openStore("MIG"), openStore("RPT")
+	entDB, bilDB, tenDB := openStore("ENT"), openStore("BIL"), openStore("TEN")
+	repo := repository.NewChannelAuthEnterpriseRepositoryWithOwnerStores(iamDB, rtmDB, migDB, rptDB, entDB, bilDB, tenDB)
+
+	if err := repo.SaveSAMLSetting(&domain.SAMLSetting{AccountID: 1, Enabled: true}); err != nil {
+		t.Fatalf("IAM write failed: %v", err)
+	}
+	call := domain.Call{AccountID: 1, InboxID: 10, ProviderCallID: "owner-call"}
+	if err := repo.CreateCall(&call); err != nil {
+		t.Fatalf("RTM write failed: %v", err)
+	}
+	if err := repo.CreateDataImport(&domain.DataImport{AccountID: 1}); err != nil {
+		t.Fatalf("MIG write failed: %v", err)
+	}
+	if err := repo.CreateReportingEvent(&domain.ReportingEvent{AccountID: 1, Name: "owner.report"}); err != nil {
+		t.Fatalf("RPT write failed: %v", err)
+	}
+	if err := repo.SaveOnboarding(&domain.Onboarding{AccountID: 1, Step: "profile"}); err != nil {
+		t.Fatalf("TEN write failed: %v", err)
+	}
+	if err := repo.SaveBrandedEmailLayout(&domain.BrandedEmailLayout{AccountID: 1}); err != nil {
+		t.Fatalf("ENT write failed: %v", err)
+	}
+	billing := domain.AccountBilling{AccountID: 1, ActionType: "deposit", Amount: 25, Currency: "USD"}
+	brokenENT, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "broken-ent.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedRepo := repository.NewChannelAuthEnterpriseRepositoryWithOwnerStores(iamDB, rtmDB, migDB, rptDB, brokenENT, bilDB, tenDB)
+	if err := failedRepo.RecordBilling(&billing); err == nil {
+		t.Fatal("ENT owner failure was hidden")
+	}
+	if err := repo.RecordBilling(&billing); err != nil {
+		t.Fatalf("BIL to ENT retry failed: %v", err)
+	}
+	var billingCount int64
+	if err := bilDB.Model(&domain.AccountBilling{}).Where("id = ?", billing.ID).Count(&billingCount).Error; err != nil || billingCount != 1 {
+		t.Fatalf("BIL record missing: count=%d err=%v", billingCount, err)
+	}
+	limit, err := repo.GetAccountLimit(1)
+	if err != nil || limit.Credits != 1025 {
+		t.Fatalf("ENT credit projection failed: limit=%+v err=%v", limit, err)
+	}
+
+	checks := []struct {
+		name string
+		db   *gorm.DB
+		bad  any
+	}{
+		{"IAM", iamDB, &domain.Call{}},
+		{"RTM", rtmDB, &domain.SAMLSetting{}},
+		{"MIG", migDB, &domain.ReportingEvent{}},
+		{"RPT", rptDB, &domain.DataImport{}},
+		{"ENT", entDB, &domain.AccountBilling{}},
+		{"BIL", bilDB, &domain.AccountLimit{}},
+		{"TEN", tenDB, &domain.BrandedEmailLayout{}},
+	}
+	for _, check := range checks {
+		if check.db.Migrator().HasTable(check.bad) {
+			t.Fatalf("%s store contains a foreign owner table", check.name)
+		}
 	}
 }

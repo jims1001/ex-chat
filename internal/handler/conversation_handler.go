@@ -36,7 +36,7 @@ type ConversationHandler struct {
 	emailService      *service.EmailService
 	campaignService   *service.CampaignService
 	captainRepo       *repository.CaptainRepository
-	enterpriseRepo    repository.ChannelAuthEnterpriseRepository
+	enterpriseRepo    repository.ChannelRPTRepository
 	journalRepo       *repository.JournalRepository
 	accountRepo       *repository.AccountRepository
 	teamRepo          *repository.TeamRepository
@@ -91,7 +91,7 @@ func (h *ConversationHandler) SetCaptainRepo(cr *repository.CaptainRepository) {
 	h.captainRepo = cr
 }
 
-func (h *ConversationHandler) SetEnterpriseRepo(er repository.ChannelAuthEnterpriseRepository) {
+func (h *ConversationHandler) SetEnterpriseRepo(er repository.ChannelRPTRepository) {
 	h.enterpriseRepo = er
 }
 

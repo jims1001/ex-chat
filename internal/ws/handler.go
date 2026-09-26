@@ -27,7 +27,7 @@ func ServeWS(
 	accountRepo *repository.AccountRepository,
 	inboxRepo *repository.InboxRepository,
 	convRepo *repository.ConversationRepository,
-	optionalEnterpriseRepo ...repository.ChannelAuthEnterpriseRepository,
+	optionalEnterpriseRepo ...repository.ChannelIAMRepository,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		log := logger.WithComponent("websocket")

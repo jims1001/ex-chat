@@ -1,17 +1,86 @@
 package repository
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
 
-	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
 )
+
+type ChannelIAMRepository interface {
+	GetSAMLSetting(uint) (*domain.SAMLSetting, error)
+	SaveSAMLSetting(*domain.SAMLSetting) error
+	DeleteSAMLSetting(uint) error
+	DisableSAMLSetting(uint) (*domain.SAMLSetting, error)
+	CreateSession(*domain.UserSession) error
+	ListSessions(uint) ([]domain.UserSession, error)
+	DeleteSession(uint, uint) error
+	CreatePasswordResetToken(*domain.PasswordResetToken) error
+	GetValidPasswordResetToken(string) (*domain.PasswordResetToken, error)
+	MarkPasswordResetTokenUsed(uint) error
+	GetMFAProfile(uint) (*domain.MFAProfile, error)
+	SaveMFAProfile(*domain.MFAProfile) error
+	GenerateMFABackupCodes(uint) ([]string, error)
+	RevokeToken(string, uint, time.Time) error
+	IsTokenRevoked(string) (bool, error)
+	ConfirmUserByToken(string) (*domain.User, error)
+	GenerateConfirmationToken(uint) (string, error)
+}
+
+type ChannelRTMRepository interface {
+	CreateCall(*domain.Call) error
+	ListCalls(uint) ([]domain.Call, error)
+	GetCall(uint, uint) (*domain.Call, error)
+	UpdateCall(*domain.Call) error
+	CreateConference(*domain.Conference) error
+	GetConference(uint, uint) (*domain.Conference, error)
+	GetConferenceByID(uint, uint) (*domain.Conference, error)
+	DeleteConference(uint, uint) error
+	DeleteConferenceByInbox(uint, uint) error
+	GetCallByProviderCallID(uint, string) (*domain.Call, error)
+	CreateCallCandidate(*domain.CallICECandidate) error
+	ListCallCandidates(uint) ([]domain.CallICECandidate, error)
+}
+
+type ChannelMIGRepository interface {
+	CreateDataImport(*domain.DataImport) error
+	ListDataImports(uint) ([]domain.DataImport, error)
+	GetDataImport(uint, uint) (*domain.DataImport, error)
+	UpdateDataImport(*domain.DataImport) error
+	DeleteDataImport(uint, uint) error
+	CreateMigrationJob(*domain.MigrationJob) error
+	ListMigrationJobs(uint) ([]domain.MigrationJob, error)
+	CreateEmailMigration(*domain.EmailChannelMigration) error
+	ListEmailMigrations(uint) ([]domain.EmailChannelMigration, error)
+}
+
+type ChannelRPTRepository interface {
+	CreateReportingEvent(*domain.ReportingEvent) error
+	ListReportingEvents(uint, string) ([]domain.ReportingEvent, error)
+	ListReportingEventsByConversation(uint, uint) ([]domain.ReportingEvent, error)
+}
+
+type ChannelENTRepository interface {
+	GetAccountLimit(uint) (*domain.AccountLimit, error)
+	SaveAccountLimit(*domain.AccountLimit) error
+	GetBrandedEmailLayout(uint) (*domain.BrandedEmailLayout, error)
+	SaveBrandedEmailLayout(*domain.BrandedEmailLayout) error
+}
+
+type ChannelBILRepository interface {
+	RecordBilling(*domain.AccountBilling) error
+	ListBillings(uint) ([]domain.AccountBilling, error)
+	ListSubscriptionPlans() ([]domain.SubscriptionPlan, error)
+	GetSubscriptionPlan(uint) (*domain.SubscriptionPlan, error)
+	GetSubscriptionPlanBySlug(string) (*domain.SubscriptionPlan, error)
+	GetAccountSubscription(uint) (*domain.AccountSubscription, error)
+	SaveAccountSubscription(*domain.AccountSubscription) error
+}
+
+type ChannelTENRepository interface {
+	GetOnboarding(uint) (*domain.Onboarding, error)
+	SaveOnboarding(*domain.Onboarding) error
+}
 
 type ChannelAuthEnterpriseRepository interface {
 	// Calls & Conferences
@@ -92,523 +161,34 @@ type ChannelAuthEnterpriseRepository interface {
 }
 
 type channelAuthEnterpriseRepository struct {
-	db *gorm.DB
+	*channelAuthIAMRepository
+	*channelAuthRTMRepository
+	*channelAuthMIGRepository
+	*channelAuthRPTRepository
+	*channelAuthENTRepository
+	*channelAuthBILRepository
+	*channelAuthTENRepository
 }
 
 func NewChannelAuthEnterpriseRepository(db *gorm.DB) ChannelAuthEnterpriseRepository {
-	return &channelAuthEnterpriseRepository{db: db}
+	return NewChannelAuthEnterpriseRepositoryWithOwnerStores(db, db, db, db, db, db, db)
 }
 
-// Calls & Conferences
-func (r *channelAuthEnterpriseRepository) CreateCall(call *domain.Call) error {
-	return r.db.Create(call).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListCalls(accountID uint) ([]domain.Call, error) {
-	var calls []domain.Call
-	err := r.db.Where("account_id = ?", accountID).Order("id DESC").Find(&calls).Error
-	return calls, err
-}
-
-func (r *channelAuthEnterpriseRepository) GetCall(accountID uint, id uint) (*domain.Call, error) {
-	var call domain.Call
-	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&call).Error
-	if err != nil {
-		return nil, err
+func NewChannelAuthEnterpriseRepositoryWithOwnerStores(iamDB, rtmDB, migDB, rptDB, entDB, bilDB, tenDB *gorm.DB) ChannelAuthEnterpriseRepository {
+	return &channelAuthEnterpriseRepository{
+		channelAuthIAMRepository: &channelAuthIAMRepository{db: iamDB},
+		channelAuthRTMRepository: &channelAuthRTMRepository{db: rtmDB},
+		channelAuthMIGRepository: &channelAuthMIGRepository{db: migDB},
+		channelAuthRPTRepository: &channelAuthRPTRepository{db: rptDB},
+		channelAuthENTRepository: &channelAuthENTRepository{db: entDB},
+		channelAuthBILRepository: &channelAuthBILRepository{db: bilDB},
+		channelAuthTENRepository: &channelAuthTENRepository{db: tenDB},
 	}
-	return &call, nil
-}
-
-func (r *channelAuthEnterpriseRepository) UpdateCall(call *domain.Call) error {
-	return r.db.Save(call).Error
-}
-
-func (r *channelAuthEnterpriseRepository) CreateConference(conf *domain.Conference) error {
-	return r.db.Create(conf).Error
-}
-
-func (r *channelAuthEnterpriseRepository) GetConference(accountID uint, inboxID uint) (*domain.Conference, error) {
-	var conf domain.Conference
-	err := r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Order("id DESC").First(&conf).Error
-	if err != nil {
-		return nil, err
-	}
-	return &conf, nil
-}
-
-func (r *channelAuthEnterpriseRepository) GetConferenceByID(accountID uint, id uint) (*domain.Conference, error) {
-	var conf domain.Conference
-	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&conf).Error
-	if err != nil {
-		return nil, err
-	}
-	return &conf, nil
-}
-
-func (r *channelAuthEnterpriseRepository) DeleteConference(accountID uint, id uint) error {
-	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Conference{}).Error
-}
-
-func (r *channelAuthEnterpriseRepository) DeleteConferenceByInbox(accountID uint, inboxID uint) error {
-	return r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Delete(&domain.Conference{}).Error
-}
-
-func (r *channelAuthEnterpriseRepository) GetCallByProviderCallID(accountID uint, providerCallID string) (*domain.Call, error) {
-	var call domain.Call
-	err := r.db.Where("account_id = ? AND provider_call_id = ?", accountID, providerCallID).First(&call).Error
-	if err != nil {
-		return nil, err
-	}
-	return &call, nil
-}
-
-// SAML
-func (r *channelAuthEnterpriseRepository) GetSAMLSetting(accountID uint) (*domain.SAMLSetting, error) {
-	var setting domain.SAMLSetting
-	err := r.db.Where("account_id = ?", accountID).First(&setting).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &setting, nil
-}
-
-func (r *channelAuthEnterpriseRepository) SaveSAMLSetting(setting *domain.SAMLSetting) error {
-	var existing domain.SAMLSetting
-	err := r.db.Where("account_id = ?", setting.AccountID).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return r.db.Create(setting).Error
-		}
-		return err
-	}
-	setting.ID = existing.ID
-	return r.db.Save(setting).Error
-}
-
-func (r *channelAuthEnterpriseRepository) DeleteSAMLSetting(accountID uint) error {
-	return r.db.Where("account_id = ?", accountID).Delete(&domain.SAMLSetting{}).Error
-}
-
-func (r *channelAuthEnterpriseRepository) DisableSAMLSetting(accountID uint) (*domain.SAMLSetting, error) {
-	var setting domain.SAMLSetting
-	err := r.db.Where("account_id = ?", accountID).First(&setting).Error
-	if err != nil {
-		return nil, err
-	}
-	setting.Enabled = false
-	if err := r.db.Save(&setting).Error; err != nil {
-		return nil, err
-	}
-	return &setting, nil
-}
-
-// Sessions & MFA & Password Reset
-func (r *channelAuthEnterpriseRepository) CreateSession(sess *domain.UserSession) error {
-	return r.db.Create(sess).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListSessions(userID uint) ([]domain.UserSession, error) {
-	var sessions []domain.UserSession
-	err := r.db.Where("user_id = ?", userID).Order("id DESC").Find(&sessions).Error
-	return sessions, err
-}
-
-func (r *channelAuthEnterpriseRepository) DeleteSession(userID uint, sessionID uint) error {
-	return r.db.Where("user_id = ? AND id = ?", userID, sessionID).Delete(&domain.UserSession{}).Error
-}
-
-func (r *channelAuthEnterpriseRepository) CreatePasswordResetToken(token *domain.PasswordResetToken) error {
-	return r.db.Create(token).Error
-}
-
-func (r *channelAuthEnterpriseRepository) GetValidPasswordResetToken(tokenStr string) (*domain.PasswordResetToken, error) {
-	var token domain.PasswordResetToken
-	err := r.db.Where("token = ? AND used = ? AND expires_at > ?", tokenStr, false, time.Now()).First(&token).Error
-	if err != nil {
-		return nil, err
-	}
-	return &token, nil
-}
-
-func (r *channelAuthEnterpriseRepository) MarkPasswordResetTokenUsed(tokenID uint) error {
-	return r.db.Model(&domain.PasswordResetToken{}).Where("id = ?", tokenID).Update("used", true).Error
-}
-
-func (r *channelAuthEnterpriseRepository) GetMFAProfile(userID uint) (*domain.MFAProfile, error) {
-	var profile domain.MFAProfile
-	err := r.db.Where("user_id = ?", userID).First(&profile).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &profile, nil
-}
-
-func (r *channelAuthEnterpriseRepository) SaveMFAProfile(profile *domain.MFAProfile) error {
-	var existing domain.MFAProfile
-	err := r.db.Where("user_id = ?", profile.UserID).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return r.db.Create(profile).Error
-		}
-		return err
-	}
-	profile.ID = existing.ID
-	return r.db.Save(profile).Error
-}
-
-func (r *channelAuthEnterpriseRepository) GenerateMFABackupCodes(userID uint) ([]string, error) {
-	profile, err := r.GetMFAProfile(userID)
-	if err != nil || profile == nil {
-		return nil, errors.New("mfa profile not found")
-	}
-	rawCodes, err := auth.GenerateBackupCodes(8)
-	if err != nil {
-		return nil, err
-	}
-	bBytes, _ := json.Marshal(rawCodes)
-	profile.BackupCodes = string(bBytes)
-	if err := r.SaveMFAProfile(profile); err != nil {
-		return nil, err
-	}
-	return rawCodes, nil
-}
-
-func (r *channelAuthEnterpriseRepository) RevokeToken(token string, userID uint, expiresAt time.Time) error {
-	rev := domain.RevokedToken{
-		Token:     token,
-		UserID:    userID,
-		ExpiresAt: expiresAt,
-		CreatedAt: time.Now(),
-	}
-	return r.db.Create(&rev).Error
-}
-
-func (r *channelAuthEnterpriseRepository) IsTokenRevoked(token string) (bool, error) {
-	var count int64
-	err := r.db.Model(&domain.RevokedToken{}).Where("token = ? AND expires_at > ?", token, time.Now()).Count(&count).Error
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-func (r *channelAuthEnterpriseRepository) ConfirmUserByToken(tokenStr string) (*domain.User, error) {
-	if tokenStr == "" {
-		return nil, errors.New("invalid confirmation token")
-	}
-	var user domain.User
-	err := r.db.Where("confirmation_token = ?", tokenStr).First(&user).Error
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	user.ConfirmedAt = &now
-	user.ConfirmationToken = ""
-	if err := r.db.Save(&user).Error; err != nil {
-		return nil, err
-	}
-	return &user, nil
-}
-
-func (r *channelAuthEnterpriseRepository) GenerateConfirmationToken(userID uint) (string, error) {
-	bytes := make([]byte, 20)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(bytes)
-	now := time.Now()
-	err := r.db.Model(&domain.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"confirmation_token":   token,
-		"confirmation_sent_at": &now,
-	}).Error
-	if err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
-// Data Imports & Migrations
-func (r *channelAuthEnterpriseRepository) CreateDataImport(imp *domain.DataImport) error {
-	return r.db.Create(imp).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListDataImports(accountID uint) ([]domain.DataImport, error) {
-	var imports []domain.DataImport
-	err := r.db.Where("account_id = ?", accountID).Order("id DESC").Find(&imports).Error
-	return imports, err
-}
-
-func (r *channelAuthEnterpriseRepository) GetDataImport(accountID, id uint) (*domain.DataImport, error) {
-	var imp domain.DataImport
-	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&imp).Error
-	if err != nil {
-		return nil, err
-	}
-	return &imp, nil
-}
-
-func (r *channelAuthEnterpriseRepository) UpdateDataImport(imp *domain.DataImport) error {
-	return r.db.Save(imp).Error
-}
-
-func (r *channelAuthEnterpriseRepository) DeleteDataImport(accountID, id uint) error {
-	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.DataImport{}).Error
-}
-
-func (r *channelAuthEnterpriseRepository) CreateMigrationJob(job *domain.MigrationJob) error {
-	return r.db.Create(job).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListMigrationJobs(accountID uint) ([]domain.MigrationJob, error) {
-	var jobs []domain.MigrationJob
-	err := r.db.Where("account_id = ?", accountID).Order("id DESC").Find(&jobs).Error
-	return jobs, err
-}
-
-// Reporting Events
-func (r *channelAuthEnterpriseRepository) CreateReportingEvent(evt *domain.ReportingEvent) error {
-	return r.db.Create(evt).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListReportingEvents(accountID uint, name string) ([]domain.ReportingEvent, error) {
-	var events []domain.ReportingEvent
-	query := r.db.Where("account_id = ?", accountID)
-	if name != "" {
-		query = query.Where("name = ?", name)
-	}
-	err := query.Order("id DESC").Find(&events).Error
-	return events, err
-}
-
-func (r *channelAuthEnterpriseRepository) ListReportingEventsByConversation(accountID, conversationID uint) ([]domain.ReportingEvent, error) {
-	var events []domain.ReportingEvent
-	err := r.db.Where("account_id = ? AND (conversation_id = ? OR metadata_json LIKE ?)",
-		accountID, conversationID, fmt.Sprintf(`%%"conversation_id":%d%%`, conversationID)).
-		Order("id DESC").Find(&events).Error
-	return events, err
-}
-
-// Enterprise Limits & Billing
-func (r *channelAuthEnterpriseRepository) GetAccountLimit(accountID uint) (*domain.AccountLimit, error) {
-	var limit domain.AccountLimit
-	err := r.db.Where("account_id = ?", accountID).First(&limit).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &domain.AccountLimit{
-				AccountID:         accountID,
-				ConversationLimit: 10000,
-				AgentLimit:        50,
-				InboxLimit:        20,
-				Credits:           1000.0,
-				Currency:          "USD",
-			}, nil
-		}
-		return nil, err
-	}
-	return &limit, nil
-}
-
-func (r *channelAuthEnterpriseRepository) SaveAccountLimit(limit *domain.AccountLimit) error {
-	var existing domain.AccountLimit
-	err := r.db.Where("account_id = ?", limit.AccountID).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return r.db.Create(limit).Error
-		}
-		return err
-	}
-	limit.ID = existing.ID
-	return r.db.Save(limit).Error
 }
 
 func (r *channelAuthEnterpriseRepository) RecordBilling(billing *domain.AccountBilling) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(billing).Error; err != nil {
-			return err
-		}
-		var limit domain.AccountLimit
-		if err := tx.Where("account_id = ?", billing.AccountID).First(&limit).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				limit = domain.AccountLimit{
-					AccountID: billing.AccountID,
-					Credits:   1000.0,
-					Currency:  billing.Currency,
-				}
-				if err := tx.Create(&limit).Error; err != nil {
-					return err
-				}
-			} else {
-				return err
-			}
-		}
-		if billing.ActionType == "deposit" {
-			limit.Credits += billing.Amount
-		} else if billing.ActionType == "deduction" {
-			limit.Credits -= billing.Amount
-		}
-		return tx.Save(&limit).Error
-	})
-}
-
-func (r *channelAuthEnterpriseRepository) ListBillings(accountID uint) ([]domain.AccountBilling, error) {
-	var list []domain.AccountBilling
-	err := r.db.Where("account_id = ?", accountID).Order("id DESC").Find(&list).Error
-	return list, err
-}
-
-// Onboarding & Branded Email & Email Migrations
-func (r *channelAuthEnterpriseRepository) GetOnboarding(accountID uint) (*domain.Onboarding, error) {
-	var onb domain.Onboarding
-	err := r.db.Where("account_id = ?", accountID).First(&onb).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &domain.Onboarding{
-				AccountID: accountID,
-				Step:      "welcome",
-				Completed: false,
-			}, nil
-		}
-		return nil, err
-	}
-	return &onb, nil
-}
-
-func (r *channelAuthEnterpriseRepository) SaveOnboarding(onboarding *domain.Onboarding) error {
-	var existing domain.Onboarding
-	err := r.db.Where("account_id = ?", onboarding.AccountID).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return r.db.Create(onboarding).Error
-		}
+	if err := r.channelAuthBILRepository.CreateBilling(billing); err != nil {
 		return err
 	}
-	onboarding.ID = existing.ID
-	return r.db.Save(onboarding).Error
-}
-
-func (r *channelAuthEnterpriseRepository) GetBrandedEmailLayout(accountID uint) (*domain.BrandedEmailLayout, error) {
-	var layout domain.BrandedEmailLayout
-	err := r.db.Where("account_id = ?", accountID).First(&layout).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &layout, nil
-}
-
-func (r *channelAuthEnterpriseRepository) SaveBrandedEmailLayout(layout *domain.BrandedEmailLayout) error {
-	var existing domain.BrandedEmailLayout
-	err := r.db.Where("account_id = ?", layout.AccountID).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return r.db.Create(layout).Error
-		}
-		return err
-	}
-	layout.ID = existing.ID
-	return r.db.Save(layout).Error
-}
-
-func (r *channelAuthEnterpriseRepository) CreateEmailMigration(mig *domain.EmailChannelMigration) error {
-	return r.db.Create(mig).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListEmailMigrations(accountID uint) ([]domain.EmailChannelMigration, error) {
-	var migrations []domain.EmailChannelMigration
-	err := r.db.Where("account_id = ?", accountID).Order("id DESC").Find(&migrations).Error
-	return migrations, err
-}
-
-func (r *channelAuthEnterpriseRepository) CreateCallCandidate(cand *domain.CallICECandidate) error {
-	return r.db.Create(cand).Error
-}
-
-func (r *channelAuthEnterpriseRepository) ListCallCandidates(callID uint) ([]domain.CallICECandidate, error) {
-	var list []domain.CallICECandidate
-	err := r.db.Where("call_id = ?", callID).Order("id ASC").Find(&list).Error
-	return list, err
-}
-
-func (r *channelAuthEnterpriseRepository) ListSubscriptionPlans() ([]domain.SubscriptionPlan, error) {
-	var plans []domain.SubscriptionPlan
-	err := r.db.Find(&plans).Error
-	if err == nil && len(plans) == 0 {
-		// Initialize default tiers
-		plans = []domain.SubscriptionPlan{
-			{Name: "Community Free", Slug: "free", PriceCents: 0, AgentLimit: 2, AITokenLimit: 10000, Features: `["basic_chat","inbox"]`},
-			{Name: "Team Starter", Slug: "starter", PriceCents: 2900, AgentLimit: 10, AITokenLimit: 100000, Features: `["basic_chat","inbox","automation","sla"]`},
-			{Name: "Business Pro", Slug: "pro", PriceCents: 9900, AgentLimit: 50, AITokenLimit: 500000, Features: `["basic_chat","inbox","automation","sla","copilot","reports_export"]`},
-			{Name: "Enterprise Elite", Slug: "enterprise", PriceCents: 29900, AgentLimit: 500, AITokenLimit: 5000000, Features: `["basic_chat","inbox","automation","sla","copilot","reports_export","saml","custom_roles"]`},
-		}
-		for i := range plans {
-			_ = r.db.Create(&plans[i]).Error
-		}
-	}
-	return plans, err
-}
-
-func (r *channelAuthEnterpriseRepository) GetSubscriptionPlan(id uint) (*domain.SubscriptionPlan, error) {
-	var plan domain.SubscriptionPlan
-	err := r.db.First(&plan, id).Error
-	return &plan, err
-}
-
-func (r *channelAuthEnterpriseRepository) GetSubscriptionPlanBySlug(slug string) (*domain.SubscriptionPlan, error) {
-	var plan domain.SubscriptionPlan
-	if err := r.db.Where("slug = ?", slug).First(&plan).Error; err != nil {
-		return nil, err
-	}
-	return &plan, nil
-}
-
-func (r *channelAuthEnterpriseRepository) GetAccountSubscription(accountID uint) (*domain.AccountSubscription, error) {
-	var sub domain.AccountSubscription
-	err := r.db.Preload("Plan").Where("account_id = ?", accountID).First(&sub).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// default to free tier
-			plans, _ := r.ListSubscriptionPlans()
-			var freePlanID uint = 1
-			for _, p := range plans {
-				if p.Slug == "free" {
-					freePlanID = p.ID
-					break
-				}
-			}
-			now := time.Now().UTC()
-			defaultSub := domain.AccountSubscription{
-				AccountID:          accountID,
-				PlanID:             freePlanID,
-				Status:             "active",
-				CurrentPeriodStart: now,
-				CurrentPeriodEnd:   now.AddDate(1, 0, 0),
-			}
-			_ = r.db.Create(&defaultSub).Error
-			_ = r.db.Preload("Plan").First(&defaultSub, defaultSub.ID).Error
-			return &defaultSub, nil
-		}
-		return nil, err
-	}
-	return &sub, nil
-}
-
-func (r *channelAuthEnterpriseRepository) SaveAccountSubscription(sub *domain.AccountSubscription) error {
-	var existing domain.AccountSubscription
-	err := r.db.Where("account_id = ?", sub.AccountID).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return r.db.Create(sub).Error
-		}
-		return err
-	}
-	sub.ID = existing.ID
-	return r.db.Save(sub).Error
+	return r.channelAuthENTRepository.ApplyBilling(billing)
 }

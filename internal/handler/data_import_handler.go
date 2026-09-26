@@ -73,7 +73,7 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 				ProcessedRecords: 0,
 				ErrorsJSON:       fmt.Sprintf(`[{"error": "Invalid JSON: %s"}]`, err.Error()),
 			}
-			_ = h.repo.CreateDataImport(imp)
+			_ = h.migRepo.CreateDataImport(imp)
 			response.BadRequest(c, "Invalid JSON data: "+err.Error())
 			return
 		}
@@ -97,7 +97,7 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 			TotalRecords:     req.TotalRecords,
 			ProcessedRecords: req.TotalRecords,
 		}
-		_ = h.repo.CreateDataImport(imp)
+		_ = h.migRepo.CreateDataImport(imp)
 		response.Created(c, imp)
 		return
 	}
@@ -129,7 +129,7 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 		}
 	}
 
-	_ = h.repo.CreateDataImport(imp)
+	_ = h.migRepo.CreateDataImport(imp)
 
 	logger.WithComponent("data_import").Info("data import task registered",
 		"import_id", imp.ID,
@@ -146,7 +146,7 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 
 	// Immediate execution (AutoStart = true)
 	_ = h.dataImportService.ExecuteImport(c.Request.Context(), uint(accountID), imp)
-	_ = h.repo.UpdateDataImport(imp)
+	_ = h.migRepo.UpdateDataImport(imp)
 	response.Created(c, imp)
 }
 
@@ -170,7 +170,7 @@ func (h *AuthEnterpriseHandler) PrevalidateDataImport(c *gin.Context) {
 			response.BadRequest(c, "Invalid import ID")
 			return
 		}
-		imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+		imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 		if err != nil || imp == nil {
 			response.NotFound(c, "Import task not found")
 			return
@@ -195,7 +195,7 @@ func (h *AuthEnterpriseHandler) PrevalidateDataImport(c *gin.Context) {
 		if valRes.Valid {
 			imp.Status = "validated"
 		}
-		_ = h.repo.UpdateDataImport(imp)
+		_ = h.migRepo.UpdateDataImport(imp)
 
 		response.Success(c, valRes)
 		return
@@ -250,7 +250,7 @@ func (h *AuthEnterpriseHandler) StartDataImport(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
@@ -275,7 +275,7 @@ func (h *AuthEnterpriseHandler) StartDataImport(c *gin.Context) {
 		return
 	}
 
-	_ = h.repo.UpdateDataImport(imp)
+	_ = h.migRepo.UpdateDataImport(imp)
 	response.Success(c, imp)
 }
 
@@ -293,7 +293,7 @@ func (h *AuthEnterpriseHandler) CancelDataImport(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
@@ -305,7 +305,7 @@ func (h *AuthEnterpriseHandler) CancelDataImport(c *gin.Context) {
 	}
 
 	imp.Status = "discarded"
-	_ = h.repo.UpdateDataImport(imp)
+	_ = h.migRepo.UpdateDataImport(imp)
 
 	logger.WithComponent("data_import").Info("data import task discarded",
 		"import_id", imp.ID,
@@ -334,7 +334,7 @@ func (h *AuthEnterpriseHandler) GetDataImport(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
@@ -351,7 +351,7 @@ func (h *AuthEnterpriseHandler) ListDataImports(c *gin.Context) {
 		return
 	}
 
-	imports, err := h.repo.ListDataImports(uint(accountID))
+	imports, err := h.migRepo.ListDataImports(uint(accountID))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -373,7 +373,7 @@ func (h *AuthEnterpriseHandler) GetImportErrors(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
@@ -412,7 +412,7 @@ func (h *AuthEnterpriseHandler) DownloadImportErrors(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
@@ -449,7 +449,7 @@ func (h *AuthEnterpriseHandler) GetImportSkipped(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
@@ -481,7 +481,7 @@ func (h *AuthEnterpriseHandler) DownloadSkippedRecords(c *gin.Context) {
 		return
 	}
 
-	imp, err := h.repo.GetDataImport(uint(accountID), uint(id))
+	imp, err := h.migRepo.GetDataImport(uint(accountID), uint(id))
 	if err != nil || imp == nil {
 		response.NotFound(c, "Import task not found")
 		return
