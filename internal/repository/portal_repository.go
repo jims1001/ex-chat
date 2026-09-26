@@ -9,11 +9,20 @@ import (
 )
 
 type PortalRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	users portalUserPort
+}
+
+type portalUserPort interface {
+	FindByID(id uint) (*domain.User, error)
 }
 
 func NewPortalRepository(db *gorm.DB) *PortalRepository {
-	return &PortalRepository{db: db}
+	return NewPortalRepositoryWithUserPort(db, NewUserRepository(db))
+}
+
+func NewPortalRepositoryWithUserPort(db *gorm.DB, users portalUserPort) *PortalRepository {
+	return &PortalRepository{db: db, users: users}
 }
 
 // ---------------- Portal ----------------
@@ -76,7 +85,7 @@ func (r *PortalRepository) UpdateArticle(a *domain.Article) error {
 
 func (r *PortalRepository) ListArticles(portalID uint, categoryID *uint, status string, search string) ([]domain.Article, error) {
 	var list []domain.Article
-	query := r.db.Preload("Category").Preload("Author").Where("portal_id = ?", portalID)
+	query := r.db.Preload("Category").Where("portal_id = ?", portalID)
 
 	if categoryID != nil {
 		query = query.Where("category_id = ?", *categoryID)
@@ -89,19 +98,29 @@ func (r *PortalRepository) ListArticles(portalID uint, categoryID *uint, status 
 		query = query.Where("LOWER(title) LIKE ? OR LOWER(content) LIKE ?", s, s)
 	}
 
-	err := query.Order("id DESC").Find(&list).Error
-	return list, err
+	if err := query.Order("id DESC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if err := r.hydrateAuthor(&list[i]); err != nil {
+			return nil, err
+		}
+	}
+	return list, nil
 }
 
 func (r *PortalRepository) FindArticleBySlug(portalID uint, slug string) (*domain.Article, error) {
 	var a domain.Article
-	err := r.db.Preload("Category").Preload("Author").
+	err := r.db.Preload("Category").
 		Where("portal_id = ? AND slug = ? AND status = ?", portalID, slug, "published").
 		First(&a).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	if err := r.hydrateAuthor(&a); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -154,14 +173,29 @@ func (r *PortalRepository) DeleteCategory(id uint) error {
 
 func (r *PortalRepository) FindArticleByID(id uint) (*domain.Article, error) {
 	var a domain.Article
-	err := r.db.Preload("Category").Preload("Author").First(&a, id).Error
+	err := r.db.Preload("Category").First(&a, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if err := r.hydrateAuthor(&a); err != nil {
+		return nil, err
+	}
 	return &a, nil
+}
+
+func (r *PortalRepository) hydrateAuthor(article *domain.Article) error {
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	author, err := r.users.FindByID(article.AuthorID)
+	if err != nil {
+		return err
+	}
+	article.Author = author
+	return nil
 }
 
 func (r *PortalRepository) DeleteArticle(id uint) error {

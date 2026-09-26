@@ -363,6 +363,7 @@
       "capabilitiesRef": "KB",
       "startupRequired": [],
       "capabilityDependencies": [
+        "IAM",
         "TEN",
         "MED"
       ],

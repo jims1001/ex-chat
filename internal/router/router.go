@@ -83,7 +83,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	journalRepo := repository.NewJournalRepository(db)
 	teamRepo := repository.NewTeamRepositoryWithUserPort(db, userRepo)
 	customAttrRepo := repository.NewCustomAttributeRepository(db)
-	portalRepo := repository.NewPortalRepository(db)
+	portalRepo := repository.NewPortalRepositoryWithUserPort(db, userRepo)
 	webhookRepo := repository.NewWebhookRepository(db)
 	enterpriseRepo := repository.NewEnterpriseRepository(db)
 	macroRepo := repository.NewMacroRepository(db)

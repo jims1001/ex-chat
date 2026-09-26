@@ -100,6 +100,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
+	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
@@ -868,6 +869,42 @@ func testQAUserOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
 	}
 	if qltDB.Migrator().HasTable(&domain.User{}) {
 		t.Fatal("QLT store contains IAM User table")
+	}
+}
+
+func testPortalAuthorOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	kbDB, iamDB := openStore("KB"), openStore("IAM")
+	author := domain.User{Name: "Knowledge author", Email: "kb-author@example.test"}
+	if err := iamDB.Create(&author).Error; err != nil {
+		t.Fatal(err)
+	}
+	portal := domain.Portal{AccountID: 141, Name: "Help", Slug: "help-141"}
+	if err := kbDB.Create(&portal).Error; err != nil {
+		t.Fatal(err)
+	}
+	category := domain.Category{AccountID: 141, PortalID: portal.ID, Name: "General", Slug: "general"}
+	if err := kbDB.Create(&category).Error; err != nil {
+		t.Fatal(err)
+	}
+	article := domain.Article{AccountID: 141, PortalID: portal.ID, CategoryID: category.ID, AuthorID: author.ID, Title: "Owner boundary", Slug: "owner-boundary", Content: "content", Status: "published"}
+	if err := kbDB.Create(&article).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewPortalRepositoryWithUserPort(kbDB, repository.NewUserRepository(iamDB))
+	articles, err := repo.ListArticles(portal.ID, nil, "published", "")
+	if err != nil || len(articles) != 1 || articles[0].Category == nil || articles[0].Author == nil || articles[0].Author.ID != author.ID {
+		t.Fatalf("KB article list hydration failed: articles=%+v err=%v", articles, err)
+	}
+	bySlug, err := repo.FindArticleBySlug(portal.ID, article.Slug)
+	if err != nil || bySlug == nil || bySlug.Author == nil || bySlug.Author.ID != author.ID {
+		t.Fatalf("KB article slug hydration failed: article=%+v err=%v", bySlug, err)
+	}
+	byID, err := repo.FindArticleByID(article.ID)
+	if err != nil || byID == nil || byID.Author == nil || byID.Author.ID != author.ID {
+		t.Fatalf("KB article ID hydration failed: article=%+v err=%v", byID, err)
+	}
+	if kbDB.Migrator().HasTable(&domain.User{}) {
+		t.Fatal("KB store contains IAM User table")
 	}
 }
 
