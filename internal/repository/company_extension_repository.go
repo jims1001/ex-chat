@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -62,12 +61,65 @@ type CompanyAttachmentFilter struct {
 
 // CompanyExtensionRepository handles extended CRM operations for companies
 type CompanyExtensionRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	users         *UserRepository
+	conversations *ConversationRepository
+	messages      *MessageRepository
 }
 
 // NewCompanyExtensionRepository creates a new repository instance
 func NewCompanyExtensionRepository(db *gorm.DB) *CompanyExtensionRepository {
-	return &CompanyExtensionRepository{db: db}
+	return NewCompanyExtensionRepositoryWithOwnerPorts(db, NewUserRepository(db), NewConversationRepository(db), NewMessageRepository(db))
+}
+
+func NewCompanyExtensionRepositoryWithOwnerPorts(db *gorm.DB, users *UserRepository, conversations *ConversationRepository, messages *MessageRepository) *CompanyExtensionRepository {
+	return &CompanyExtensionRepository{db: db, users: users, conversations: conversations, messages: messages}
+}
+
+func (r *CompanyExtensionRepository) companyContactIDs(accountID, companyID uint) ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&domain.Contact{}).Where("account_id = ? AND company_id = ?", accountID, companyID).Pluck("id", &ids).Error
+	return ids, err
+}
+
+func (r *CompanyExtensionRepository) hydrateNoteUsers(items []UnifiedCompanyNoteItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	ids := make([]uint, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.UserID)
+	}
+	users, err := r.users.FindByIDs(ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[uint]*domain.User, len(users))
+	for i := range users {
+		byID[users[i].ID] = &users[i]
+	}
+	for i := range items {
+		items[i].User = byID[items[i].UserID]
+	}
+	return nil
+}
+
+func (r *CompanyExtensionRepository) hydrateCompanyNote(note *domain.CompanyNote) error {
+	if note == nil {
+		return nil
+	}
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	user, err := r.users.FindByID(note.UserID)
+	if err != nil {
+		return err
+	}
+	note.User = user
+	return nil
 }
 
 // ListCompanyConversations retrieves all conversations across contacts associated with a company
@@ -80,46 +132,14 @@ func (r *CompanyExtensionRepository) ListCompanyConversations(accountID, company
 		return nil, 0, err
 	}
 
-	var conversations []domain.Conversation
-	var total int64
-
-	baseQuery := r.db.Model(&domain.Conversation{}).
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID)
-
-	if status != "" {
-		baseQuery = baseQuery.Where("conversations.status = ?", status)
+	if r.conversations == nil {
+		return nil, 0, gorm.ErrInvalidData
 	}
-	if inboxID != nil && *inboxID > 0 {
-		baseQuery = baseQuery.Where("conversations.inbox_id = ?", *inboxID)
-	}
-	if contactID != nil && *contactID > 0 {
-		baseQuery = baseQuery.Where("conversations.contact_id = ?", *contactID)
-	}
-
-	if err := baseQuery.Count(&total).Error; err != nil {
+	contactIDs, err := r.companyContactIDs(accountID, companyID)
+	if err != nil {
 		return nil, 0, err
 	}
-
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 25
-	}
-	offset := (page - 1) * pageSize
-
-	err := baseQuery.Preload("Contact").
-		Preload("Inbox").
-		Preload("Assignee").
-		Preload("Labels").
-		Preload("Team").
-		Offset(offset).
-		Limit(pageSize).
-		Order("conversations.last_activity_at DESC, conversations.id DESC").
-		Find(&conversations).Error
-
-	return conversations, total, err
+	return r.conversations.ListByContactIDs(accountID, contactIDs, status, inboxID, contactID, page, pageSize)
 }
 
 // ListUnifiedNotes gathers both direct company notes and subordinated contact notes into a single timeline
@@ -139,8 +159,7 @@ func (r *CompanyExtensionRepository) ListUnifiedNotes(accountID, companyID uint,
 
 	if fetchCompanyNotes {
 		var cNotes []domain.CompanyNote
-		if err := r.db.Preload("User").
-			Where("account_id = ? AND company_id = ?", accountID, companyID).
+		if err := r.db.Where("account_id = ? AND company_id = ?", accountID, companyID).
 			Find(&cNotes).Error; err != nil {
 			return nil, 0, err
 		}
@@ -173,28 +192,9 @@ func (r *CompanyExtensionRepository) ListUnifiedNotes(accountID, companyID uint,
 			return nil, 0, err
 		}
 
-		userIDs := make([]uint, 0, len(rows))
-		for _, row := range rows {
-			userIDs = append(userIDs, row.UserID)
-		}
-		userMap := make(map[uint]domain.User)
-		if len(userIDs) > 0 {
-			var users []domain.User
-			if err := r.db.Where("id IN ?", userIDs).Find(&users).Error; err == nil {
-				for _, u := range users {
-					userMap[u.ID] = u
-				}
-			}
-		}
-
 		for _, row := range rows {
 			cid := row.ContactID
 			cName := row.ContactName
-			var userPtr *domain.User
-			if u, ok := userMap[row.UserID]; ok {
-				userCopy := u
-				userPtr = &userCopy
-			}
 			items = append(items, UnifiedCompanyNoteItem{
 				ID:          row.ID,
 				NoteType:    "contact",
@@ -205,9 +205,11 @@ func (r *CompanyExtensionRepository) ListUnifiedNotes(accountID, companyID uint,
 				Content:     row.Content,
 				CreatedAt:   row.CreatedAt,
 				UpdatedAt:   row.UpdatedAt,
-				User:        userPtr,
 			})
 		}
+	}
+	if err := r.hydrateNoteUsers(items); err != nil {
+		return nil, 0, err
 	}
 
 	// Sort chronologically descending
@@ -305,24 +307,25 @@ func (r *CompanyExtensionRepository) CreateCompanyNote(note *domain.CompanyNote)
 		return fmt.Errorf("company not found: %w", err)
 	}
 
-	if err := r.db.Create(note).Error; err != nil {
+	if err := r.db.Omit("User", "Company").Create(note).Error; err != nil {
 		return err
 	}
 
-	_ = r.db.Preload("User").First(note, note.ID)
-	return nil
+	return r.hydrateCompanyNote(note)
 }
 
 // GetCompanyNote retrieves a single direct company note
 func (r *CompanyExtensionRepository) GetCompanyNote(accountID, companyID, noteID uint) (*domain.CompanyNote, error) {
 	var note domain.CompanyNote
-	err := r.db.Preload("User").
-		Where("account_id = ? AND company_id = ? AND id = ?", accountID, companyID, noteID).
+	err := r.db.Where("account_id = ? AND company_id = ? AND id = ?", accountID, companyID, noteID).
 		First(&note).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	if err := r.hydrateCompanyNote(&note); err != nil {
 		return nil, err
 	}
 	return &note, nil
@@ -338,11 +341,13 @@ func (r *CompanyExtensionRepository) UpdateCompanyNote(accountID, companyID, not
 	note.Content = content
 	note.UpdatedAt = time.Now().UTC()
 
-	if err := r.db.Save(note).Error; err != nil {
+	if err := r.db.Omit("User", "Company").Save(note).Error; err != nil {
 		return nil, err
 	}
 
-	_ = r.db.Preload("User").First(note, note.ID)
+	if err := r.hydrateCompanyNote(note); err != nil {
+		return nil, err
+	}
 	return note, nil
 }
 
@@ -378,36 +383,23 @@ func (r *CompanyExtensionRepository) GetCompanyStats(accountID, companyID uint) 
 		Where("account_id = ? AND company_id = ?", accountID, companyID).
 		Count(&stats.ContactsCount).Error
 
-	// 2. Conversations count & breakdown
-	_ = r.db.Model(&domain.Conversation{}).
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID).
-		Count(&stats.ConversationsCount).Error
-
-	_ = r.db.Model(&domain.Conversation{}).
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ? AND conversations.status = ?", accountID, companyID, domain.ConversationStatusOpen).
-		Count(&stats.OpenConversationsCount).Error
-
-	_ = r.db.Model(&domain.Conversation{}).
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ? AND conversations.status = ?", accountID, companyID, domain.ConversationStatusResolved).
-		Count(&stats.ResolvedConversationsCount).Error
-
-	// 3. Messages count
-	_ = r.db.Table("messages").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID).
-		Count(&stats.MessagesCount).Error
-
-	// 4. Attachments count
-	_ = r.db.Table("attachments").
-		Joins("JOIN messages ON messages.id = attachments.message_id").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID).
-		Count(&stats.AttachmentsCount).Error
+	if r.conversations == nil || r.messages == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	contactIDs, err := r.companyContactIDs(accountID, companyID)
+	if err != nil {
+		return nil, err
+	}
+	convStats, err := r.conversations.GetStatsByContactIDs(accountID, contactIDs)
+	if err != nil {
+		return nil, err
+	}
+	stats.ConversationsCount, stats.OpenConversationsCount, stats.ResolvedConversationsCount = convStats.Total, convStats.Open, convStats.Resolved
+	stats.FirstInteractionAt, stats.LastActivityAt = convStats.FirstInteractionAt, convStats.LastActivityAt
+	stats.MessagesCount, stats.AttachmentsCount, err = r.messages.CountActivityByConversationIDs(accountID, convStats.ConversationIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	// 5. Notes count (Company + Contact notes)
 	var cnCount, ctnCount int64
@@ -420,27 +412,11 @@ func (r *CompanyExtensionRepository) GetCompanyStats(accountID, companyID uint) 
 		Count(&ctnCount).Error
 	stats.NotesCount = cnCount + ctnCount
 
-	// 6. First interaction & last activity
-	var earliestConv domain.Conversation
-	if err := r.db.Model(&domain.Conversation{}).
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID).
-		Order("conversations.created_at ASC").First(&earliestConv).Error; err == nil {
-		t := earliestConv.CreatedAt
-		stats.FirstInteractionAt = &t
-	} else {
+	if stats.FirstInteractionAt == nil {
 		t := company.CreatedAt
 		stats.FirstInteractionAt = &t
 	}
-
-	var latestConv domain.Conversation
-	if err := r.db.Model(&domain.Conversation{}).
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID).
-		Order("conversations.last_activity_at DESC").First(&latestConv).Error; err == nil && !latestConv.LastActivityAt.IsZero() {
-		t := latestConv.LastActivityAt
-		stats.LastActivityAt = &t
-	} else if stats.FirstInteractionAt != nil {
+	if stats.LastActivityAt == nil && stats.FirstInteractionAt != nil {
 		stats.LastActivityAt = stats.FirstInteractionAt
 	}
 
@@ -449,76 +425,29 @@ func (r *CompanyExtensionRepository) GetCompanyStats(accountID, companyID uint) 
 
 // ListCompanyAttachments retrieves all attachments belonging to any contact in the company
 func (r *CompanyExtensionRepository) ListCompanyAttachments(accountID, companyID uint, filter CompanyAttachmentFilter) ([]ContactAttachmentItem, int64, error) {
-	var items []ContactAttachmentItem
-	var total int64
-
-	baseQuery := r.db.Table("attachments").
-		Select("attachments.id, attachments.account_id, attachments.message_id, messages.conversation_id, attachments.file_type, attachments.data_url, attachments.file_size, messages.sender_type, messages.sender_id, messages.content AS message_content, attachments.created_at").
-		Joins("JOIN messages ON messages.id = attachments.message_id").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID)
-
-	if filter.FileType != "" {
-		ft := "%" + strings.ToLower(filter.FileType) + "%"
-		baseQuery = baseQuery.Where("LOWER(attachments.file_type) LIKE ?", ft)
+	if r.conversations == nil || r.messages == nil {
+		return nil, 0, gorm.ErrInvalidData
 	}
-	if filter.ContactID != nil && *filter.ContactID > 0 {
-		baseQuery = baseQuery.Where("contacts.id = ?", *filter.ContactID)
-	}
-	if filter.ConversationID != nil && *filter.ConversationID > 0 {
-		baseQuery = baseQuery.Where("messages.conversation_id = ?", *filter.ConversationID)
-	}
-	if filter.SenderType != "" {
-		baseQuery = baseQuery.Where("LOWER(messages.sender_type) = ?", strings.ToLower(filter.SenderType))
-	}
-	if filter.Search != "" {
-		s := "%" + strings.ToLower(filter.Search) + "%"
-		baseQuery = baseQuery.Where("(LOWER(messages.content) LIKE ? OR LOWER(attachments.data_url) LIKE ?)", s, s)
-	}
-
-	countQuery := r.db.Table("attachments").
-		Joins("JOIN messages ON messages.id = attachments.message_id").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Joins("JOIN contacts ON contacts.id = conversations.contact_id").
-		Where("conversations.account_id = ? AND contacts.company_id = ?", accountID, companyID)
-
-	if filter.FileType != "" {
-		ft := "%" + strings.ToLower(filter.FileType) + "%"
-		countQuery = countQuery.Where("LOWER(attachments.file_type) LIKE ?", ft)
-	}
-	if filter.ContactID != nil && *filter.ContactID > 0 {
-		countQuery = countQuery.Where("contacts.id = ?", *filter.ContactID)
-	}
-	if filter.ConversationID != nil && *filter.ConversationID > 0 {
-		countQuery = countQuery.Where("messages.conversation_id = ?", *filter.ConversationID)
-	}
-	if filter.SenderType != "" {
-		countQuery = countQuery.Where("LOWER(messages.sender_type) = ?", strings.ToLower(filter.SenderType))
-	}
-	if filter.Search != "" {
-		s := "%" + strings.ToLower(filter.Search) + "%"
-		countQuery = countQuery.Where("(LOWER(messages.content) LIKE ? OR LOWER(attachments.data_url) LIKE ?)", s, s)
-	}
-
-	if err := countQuery.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	page := filter.Page
-	if page < 1 {
-		page = 1
-	}
-	pageSize := filter.PageSize
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 25
-	}
-	offset := (page - 1) * pageSize
-
-	err := baseQuery.Order("attachments.id DESC").Offset(offset).Limit(pageSize).Scan(&items).Error
+	contactIDs, err := r.companyContactIDs(accountID, companyID)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	return items, total, nil
+	if filter.ContactID != nil {
+		belongs := false
+		for _, id := range contactIDs {
+			if id == *filter.ContactID {
+				belongs = true
+				break
+			}
+		}
+		if !belongs {
+			return []ContactAttachmentItem{}, 0, nil
+		}
+		contactIDs = []uint{*filter.ContactID}
+	}
+	conversationIDs, err := r.conversations.FindIDsByContactIDs(accountID, contactIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.messages.ListAttachmentsByConversationIDs(accountID, conversationIDs, filter)
 }

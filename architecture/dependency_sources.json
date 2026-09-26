@@ -50,6 +50,7 @@
     {"consumer":"AIC","file":"internal/handler/ai_custom_tool_handler.go"},
     {"consumer":"AIC","file":"internal/repository/captain_repository.go"},
     {"consumer":"TEN","file":"internal/repository/account_repository.go"},
+    {"consumer":"ORC","file":"internal/repository/company_extension_repository.go"},
     {"consumer":"RPT","file":"internal/handler/applied_sla_handler.go"},
     {"consumer":"QLT","file":"internal/handler/csat_handler.go"}
   ],
@@ -132,6 +133,9 @@
     {"consumer":"OPS","provider":"QLT","kind":"synchronous","file":"internal/handler/ops_macro_handler.go","symbol":"CSATRepository"},
     {"consumer":"TEN","provider":"IAM","kind":"synchronous","file":"internal/handler/account_handler.go","symbol":"UserRepository"},
     {"consumer":"TEN","provider":"IAM","kind":"synchronous","file":"internal/repository/account_repository.go","symbol":"UserRepository"},
+    {"consumer":"ORC","provider":"IAM","kind":"synchronous","file":"internal/repository/company_extension_repository.go","symbol":"UserRepository"},
+    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/repository/company_extension_repository.go","symbol":"ConversationRepository"},
+    {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/repository/company_extension_repository.go","symbol":"MessageRepository"},
     {"consumer":"CUS","provider":"CHN","kind":"synchronous","file":"internal/handler/contact_handler.go","symbol":"InboxRepository"},
     {"consumer":"EXT","provider":"IAM","kind":"synchronous","file":"internal/handler/platform_handler.go","symbol":"UserRepository"},
     {"consumer":"OPS","provider":"AUT","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"AutomationService"},

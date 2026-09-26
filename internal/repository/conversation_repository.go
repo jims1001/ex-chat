@@ -328,6 +328,90 @@ func (r *ConversationRepository) List(accountID uint, status, priority string, a
 	return conversations, total, nil
 }
 
+type ContactConversationStats struct {
+	Total              int64
+	Open               int64
+	Resolved           int64
+	ConversationIDs    []uint
+	FirstInteractionAt *time.Time
+	LastActivityAt     *time.Time
+}
+
+func (r *ConversationRepository) contactIDsQuery(accountID uint, contactIDs []uint) *gorm.DB {
+	query := r.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID)
+	if len(contactIDs) == 0 {
+		return query.Where("1 = 0")
+	}
+	return query.Where("contact_id IN ?", contactIDs)
+}
+
+func (r *ConversationRepository) FindIDsByContactIDs(accountID uint, contactIDs []uint) ([]uint, error) {
+	var ids []uint
+	err := r.contactIDsQuery(accountID, contactIDs).Pluck("id", &ids).Error
+	return ids, err
+}
+
+func (r *ConversationRepository) ListByContactIDs(accountID uint, contactIDs []uint, status string, inboxID, contactID *uint, page, pageSize int) ([]domain.Conversation, int64, error) {
+	query := r.contactIDsQuery(accountID, contactIDs)
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if inboxID != nil {
+		query = query.Where("inbox_id = ?", *inboxID)
+	}
+	if contactID != nil {
+		query = query.Where("contact_id = ?", *contactID)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 25
+	}
+	var conversations []domain.Conversation
+	if err := query.Order("last_activity_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&conversations).Error; err != nil {
+		return nil, 0, err
+	}
+	for i := range conversations {
+		if err := r.hydrateConversation(accountID, &conversations[i]); err != nil {
+			return nil, 0, err
+		}
+	}
+	return conversations, total, nil
+}
+
+func (r *ConversationRepository) GetStatsByContactIDs(accountID uint, contactIDs []uint) (*ContactConversationStats, error) {
+	stats := &ContactConversationStats{}
+	if err := r.contactIDsQuery(accountID, contactIDs).Count(&stats.Total).Error; err != nil {
+		return nil, err
+	}
+	if err := r.contactIDsQuery(accountID, contactIDs).Where("status = ?", domain.ConversationStatusOpen).Count(&stats.Open).Error; err != nil {
+		return nil, err
+	}
+	if err := r.contactIDsQuery(accountID, contactIDs).Where("status = ?", domain.ConversationStatusResolved).Count(&stats.Resolved).Error; err != nil {
+		return nil, err
+	}
+	if err := r.contactIDsQuery(accountID, contactIDs).Pluck("id", &stats.ConversationIDs).Error; err != nil {
+		return nil, err
+	}
+	var first, last domain.Conversation
+	if err := r.contactIDsQuery(accountID, contactIDs).Order("created_at ASC").First(&first).Error; err == nil {
+		stats.FirstInteractionAt = &first.CreatedAt
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if err := r.contactIDsQuery(accountID, contactIDs).Order("last_activity_at DESC").First(&last).Error; err == nil {
+		stats.LastActivityAt = &last.LastActivityAt
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	return stats, nil
+}
+
 func (r *ConversationRepository) captainQuery(accountID uint, inboxIDs, messageConversationIDs []uint, start, end time.Time) *gorm.DB {
 	q := r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND created_at >= ? AND created_at <= ?", accountID, start, end)

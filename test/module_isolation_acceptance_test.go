@@ -85,6 +85,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RPT_applied_slas_use_CON_owner_queries", func(t *testing.T) { testAppliedSLAConversationBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
+	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -751,4 +752,69 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 			t.Fatal("CHN created foreign tables")
 		}
 	})
+}
+
+func testCompanyExtensionOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, iamDB, chnDB, conDB, msgDB := openStore("CUS"), openStore("IAM"), openStore("CHN"), openStore("CON"), openStore("MSG")
+	company := domain.Company{AccountID: 1, Name: "Boundary Company"}
+	if err := cusDB.Create(&company).Error; err != nil {
+		t.Fatal(err)
+	}
+	contact := domain.Contact{AccountID: 1, CompanyID: &company.ID, Name: "Boundary Contact"}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	user := domain.User{Name: "Note Author", Email: "company-boundary@example.test"}
+	if err := iamDB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	inbox := domain.Inbox{AccountID: 1, Name: "Boundary Inbox", ChannelType: "web_widget"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 1, InboxID: inbox.ID, ContactID: contact.ID, Status: domain.ConversationStatusOpen, LastActivityAt: time.Now().UTC()}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := domain.Message{AccountID: 1, ConversationID: conversation.ID, SenderType: "contact", SenderID: contact.ID, Content: "company attachment"}
+	if err := msgDB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	attachment := domain.Attachment{AccountID: 1, MessageID: message.ID, FileType: "image/png", DataURL: "https://example.test/company.png"}
+	if err := msgDB.Create(&attachment).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	contactRepo := repository.NewContactRepository(cusDB)
+	convRepo := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, repository.NewInboxRepository(chnDB), contactRepo, nil, nil, nil)
+	msgRepo := repository.NewMessageRepositoryWithPorts(msgDB, convRepo, repository.NewUserRepository(iamDB), contactRepo)
+	repo := repository.NewCompanyExtensionRepositoryWithOwnerPorts(cusDB, repository.NewUserRepository(iamDB), convRepo, msgRepo)
+	note := domain.CompanyNote{AccountID: 1, CompanyID: company.ID, UserID: user.ID, Content: "owner composed note"}
+	if err := repo.CreateCompanyNote(&note); err != nil || note.User == nil || note.User.Email != user.Email {
+		t.Fatalf("IAM note hydration failed: user=%+v err=%v", note.User, err)
+	}
+	updatedNote, err := repo.UpdateCompanyNote(1, company.ID, note.ID, "updated through CUS")
+	if err != nil || updatedNote == nil || updatedNote.User == nil || updatedNote.Content != "updated through CUS" {
+		t.Fatalf("CUS note update wrote an IAM association: note=%+v err=%v", updatedNote, err)
+	}
+	conversations, total, err := repo.ListCompanyConversations(1, company.ID, "", nil, nil, 1, 25)
+	if err != nil || total != 1 || len(conversations) != 1 || conversations[0].Contact == nil || conversations[0].Inbox == nil {
+		t.Fatalf("CON composition failed: total=%d rows=%d err=%v", total, len(conversations), err)
+	}
+	stats, err := repo.GetCompanyStats(1, company.ID)
+	if err != nil || stats.ConversationsCount != 1 || stats.MessagesCount != 1 || stats.AttachmentsCount != 1 {
+		t.Fatalf("owner stats failed: stats=%+v err=%v", stats, err)
+	}
+	attachments, total, err := repo.ListCompanyAttachments(1, company.ID, repository.CompanyAttachmentFilter{Page: 1, PageSize: 25})
+	if err != nil || total != 1 || len(attachments) != 1 || attachments[0].ConversationID != conversation.ID {
+		t.Fatalf("MSG attachment composition failed: total=%d rows=%d err=%v", total, len(attachments), err)
+	}
+	foreignContact := contact.ID + 999
+	attachments, total, err = repo.ListCompanyAttachments(1, company.ID, repository.CompanyAttachmentFilter{ContactID: &foreignContact})
+	if err != nil || total != 0 || len(attachments) != 0 {
+		t.Fatalf("foreign contact escaped company scope: total=%d rows=%d err=%v", total, len(attachments), err)
+	}
+	if cusDB.Migrator().HasTable(&domain.User{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Message{}) || cusDB.Migrator().HasTable(&domain.Attachment{}) {
+		t.Fatal("CUS store contains foreign owner tables")
+	}
 }

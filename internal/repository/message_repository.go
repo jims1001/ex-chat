@@ -119,6 +119,58 @@ func (r *MessageRepository) ConversationContentExists(accountID, conversationID 
 	return count > 0, err
 }
 
+func (r *MessageRepository) CountActivityByConversationIDs(accountID uint, conversationIDs []uint) (int64, int64, error) {
+	if len(conversationIDs) == 0 {
+		return 0, 0, nil
+	}
+	var messages, attachments int64
+	if err := r.db.Model(&domain.Message{}).Where("account_id = ? AND conversation_id IN ?", accountID, conversationIDs).Count(&messages).Error; err != nil {
+		return 0, 0, err
+	}
+	if err := r.db.Table("attachments").Joins("JOIN messages ON messages.id = attachments.message_id").Where("attachments.account_id = ? AND messages.account_id = ? AND messages.conversation_id IN ?", accountID, accountID, conversationIDs).Count(&attachments).Error; err != nil {
+		return 0, 0, err
+	}
+	return messages, attachments, nil
+}
+
+func (r *MessageRepository) ListAttachmentsByConversationIDs(accountID uint, conversationIDs []uint, filter CompanyAttachmentFilter) ([]ContactAttachmentItem, int64, error) {
+	if len(conversationIDs) == 0 {
+		return []ContactAttachmentItem{}, 0, nil
+	}
+	query := r.db.Table("attachments").
+		Select("attachments.id, attachments.account_id, attachments.message_id, messages.conversation_id, attachments.file_type, attachments.data_url, attachments.file_size, messages.sender_type, messages.sender_id, messages.content AS message_content, attachments.created_at").
+		Joins("JOIN messages ON messages.id = attachments.message_id").
+		Where("attachments.account_id = ? AND messages.account_id = ? AND messages.conversation_id IN ?", accountID, accountID, conversationIDs)
+	if filter.FileType != "" {
+		query = query.Where("LOWER(attachments.file_type) LIKE ?", "%"+strings.ToLower(filter.FileType)+"%")
+	}
+	if filter.ConversationID != nil {
+		query = query.Where("messages.conversation_id = ?", *filter.ConversationID)
+	}
+	if filter.SenderType != "" {
+		query = query.Where("LOWER(messages.sender_type) = ?", strings.ToLower(filter.SenderType))
+	}
+	if filter.Search != "" {
+		term := "%" + strings.ToLower(filter.Search) + "%"
+		query = query.Where("(LOWER(messages.content) LIKE ? OR LOWER(attachments.data_url) LIKE ?)", term, term)
+	}
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if filter.Page < 1 {
+		filter.Page = 1
+	}
+	if filter.PageSize < 1 || filter.PageSize > 100 {
+		filter.PageSize = 25
+	}
+	var items []ContactAttachmentItem
+	if err := query.Order("attachments.created_at DESC, attachments.id DESC").Offset((filter.Page - 1) * filter.PageSize).Limit(filter.PageSize).Scan(&items).Error; err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
 // A CON deletion can race with MSG's initial existence check. If the owner
 // confirms the target is gone, cancel the locally committed create atomically.
 func (r *MessageRepository) cancelOrphanedCreate(msg *domain.Message, changeID string) error {

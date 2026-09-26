@@ -3851,6 +3851,27 @@
       "use": "write",
       "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "IAM", "file": "internal/repository/company_extension_repository.go", "symbol": "UserRepository", "method": "FindByID", "use": "read", "contract": "iam.identity.get.v1", "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "IAM", "file": "internal/repository/company_extension_repository.go", "symbol": "UserRepository", "method": "FindByIDs", "use": "read", "contract": "iam.identity.get.v1", "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/company_extension_repository.go", "symbol": "ConversationRepository", "method": "ListByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/company_extension_repository.go", "symbol": "ConversationRepository", "method": "GetStatsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/company_extension_repository.go", "symbol": "ConversationRepository", "method": "FindIDsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/company_extension_repository.go", "symbol": "MessageRepository", "method": "CountActivityByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/company_extension_repository.go", "symbol": "MessageRepository", "method": "ListAttachmentsByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
     }
   ]
 }
