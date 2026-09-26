@@ -14,7 +14,6 @@ import (
 )
 
 type RoutingService struct {
-	db                 *gorm.DB
 	convRepo           *repository.ConversationRepository
 	msgRepo            *repository.MessageRepository
 	inboxRepo          *repository.InboxRepository
@@ -28,7 +27,6 @@ type RoutingService struct {
 
 func NewRoutingService(db *gorm.DB, convRepo *repository.ConversationRepository, hub *ws.Hub) *RoutingService {
 	return &RoutingService{
-		db:                 db,
 		convRepo:           convRepo,
 		msgRepo:            repository.NewMessageRepository(db),
 		inboxRepo:          repository.NewInboxRepository(db),
@@ -426,47 +424,32 @@ func (s *RoutingService) ResumeSnoozedConversations(ctx context.Context) ([]doma
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	var snoozed []domain.Conversation
-	err := s.db.WithContext(ctx).
-		Where("status = ? AND snoozed_until IS NOT NULL AND snoozed_until <= ?", domain.ConversationStatusSnoozed, now).
-		Find(&snoozed).Error
+	if s.convRepo == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	resumed, err := s.convRepo.ResumeExpiredSnoozed(ctx, now)
 	if err != nil {
 		return nil, err
 	}
 
-	var resumed []domain.Conversation
-	for i := range snoozed {
-		conv := &snoozed[i]
-		updates := map[string]any{
-			"status":           domain.ConversationStatusOpen,
-			"snoozed_until":    nil,
-			"last_activity_at": now,
-		}
-		if err := s.db.WithContext(ctx).Model(&domain.Conversation{}).
-			Where("id = ? AND account_id = ?", conv.ID, conv.AccountID).
-			Updates(updates).Error; err == nil {
-			conv.Status = domain.ConversationStatusOpen
-			conv.SnoozedUntil = nil
-			conv.LastActivityAt = now
-			resumed = append(resumed, *conv)
+	for i := range resumed {
+		conv := &resumed[i]
+		logger.WithComponent("routing").Info("resumed expired snoozed conversation",
+			"conversation_id", conv.ID,
+			"account_id", conv.AccountID,
+		)
 
-			logger.WithComponent("routing").Info("resumed expired snoozed conversation",
-				"conversation_id", conv.ID,
-				"account_id", conv.AccountID,
-			)
-
-			if s.hub != nil {
-				s.hub.Broadcast(&ws.Event{
-					Name:           ws.EventConversationUpdated,
-					AccountID:      conv.AccountID,
-					ConversationID: conv.ID,
-					Data: ginH{
-						"id":            conv.ID,
-						"status":        domain.ConversationStatusOpen,
-						"snoozed_until": nil,
-					},
-				})
-			}
+		if s.hub != nil {
+			s.hub.Broadcast(&ws.Event{
+				Name:           ws.EventConversationUpdated,
+				AccountID:      conv.AccountID,
+				ConversationID: conv.ID,
+				Data: ginH{
+					"id":            conv.ID,
+					"status":        domain.ConversationStatusOpen,
+					"snoozed_until": nil,
+				},
+			})
 		}
 	}
 	return resumed, nil

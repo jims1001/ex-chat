@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v16 records RoutingService owner queries.
-	const approvedCollaborationSHA = "d2cc707723a677e34af8c24f72452f2eb2ad9a93f78f16ad1e6be53436434d93"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v17 records the CON-owned snooze resume command.
+	const approvedCollaborationSHA = "a38504a0bb3e4d7393f566fe1a431bb0c1aea49da988b9eb6d7df0af6d0eea64"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}

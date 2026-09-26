@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -415,6 +416,40 @@ func (r *ConversationRepository) LastAssignedAgent(accountID, inboxID, excludeID
 		return 0, err
 	}
 	return *conversation.AssigneeID, nil
+}
+
+// ResumeExpiredSnoozed owns both the CON scan and conditional state change.
+// The guarded update makes repeated or concurrent scheduler runs idempotent.
+func (r *ConversationRepository) ResumeExpiredSnoozed(ctx context.Context, now time.Time) ([]domain.Conversation, error) {
+	var candidates []domain.Conversation
+	if err := r.db.WithContext(ctx).
+		Where("status = ? AND snoozed_until IS NOT NULL AND snoozed_until <= ?", domain.ConversationStatusSnoozed, now).
+		Order("id ASC").Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+
+	resumed := make([]domain.Conversation, 0, len(candidates))
+	for i := range candidates {
+		conversation := &candidates[i]
+		result := r.db.WithContext(ctx).Model(&domain.Conversation{}).
+			Where("account_id = ? AND id = ? AND status = ? AND snoozed_until IS NOT NULL AND snoozed_until <= ?", conversation.AccountID, conversation.ID, domain.ConversationStatusSnoozed, now).
+			Updates(map[string]any{
+				"status":           domain.ConversationStatusOpen,
+				"snoozed_until":    nil,
+				"last_activity_at": now,
+			})
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected == 0 {
+			continue
+		}
+		conversation.Status = domain.ConversationStatusOpen
+		conversation.SnoozedUntil = nil
+		conversation.LastActivityAt = now
+		resumed = append(resumed, *conversation)
+	}
+	return resumed, nil
 }
 
 func (r *ConversationRepository) MoveInbox(accountID, sourceInboxID, targetInboxID uint) error {

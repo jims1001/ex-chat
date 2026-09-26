@@ -3554,6 +3554,16 @@
     },
     {
       "consumer": "RTE",
+      "provider": "CON",
+      "file": "internal/service/routing_service.go",
+      "symbol": "ConversationRepository",
+      "method": "ResumeExpiredSnoozed",
+      "use": "write",
+      "contract": "con.status.change.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTE",
       "provider": "CHN",
       "file": "internal/service/routing_service.go",
       "symbol": "InboxRepository",
