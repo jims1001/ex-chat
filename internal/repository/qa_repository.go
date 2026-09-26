@@ -37,6 +37,11 @@ type QARepository struct {
 	db            *gorm.DB
 	tickets       *TicketRepository
 	conversations *ConversationRepository
+	users         qaUserPort
+}
+
+type qaUserPort interface {
+	FindByID(id uint) (*domain.User, error)
 }
 
 // NewQARepository creates a new QARepository instance
@@ -45,7 +50,11 @@ func NewQARepository(db *gorm.DB) *QARepository {
 }
 
 func NewQARepositoryWithOwnerPorts(db *gorm.DB, tickets *TicketRepository, conversations *ConversationRepository) *QARepository {
-	return &QARepository{db: db, tickets: tickets, conversations: conversations}
+	return NewQARepositoryWithOwnerPortsAndUsers(db, tickets, conversations, NewUserRepository(db))
+}
+
+func NewQARepositoryWithOwnerPortsAndUsers(db *gorm.DB, tickets *TicketRepository, conversations *ConversationRepository, users qaUserPort) *QARepository {
+	return &QARepository{db: db, tickets: tickets, conversations: conversations, users: users}
 }
 
 // EnsureDefaultScorecard ensures at least one default QA scorecard exists for the account
@@ -229,10 +238,14 @@ func (r *QARepository) ListSamplingRules(accountID uint) ([]domain.QASamplingRul
 	var rules []domain.QASamplingRule
 	if err := r.db.Where("account_id = ?", accountID).
 		Preload("Scorecard").
-		Preload("AssignedInspector").
 		Order("created_at DESC").
 		Find(&rules).Error; err != nil {
 		return nil, err
+	}
+	for i := range rules {
+		if err := r.hydrateSamplingRuleUsers(&rules[i]); err != nil {
+			return nil, err
+		}
 	}
 	return rules, nil
 }
@@ -242,11 +255,28 @@ func (r *QARepository) GetSamplingRuleByID(accountID, id uint) (*domain.QASampli
 	var rule domain.QASamplingRule
 	if err := r.db.Where("account_id = ? AND id = ?", accountID, id).
 		Preload("Scorecard").
-		Preload("AssignedInspector").
 		First(&rule).Error; err != nil {
 		return nil, err
 	}
+	if err := r.hydrateSamplingRuleUsers(&rule); err != nil {
+		return nil, err
+	}
 	return &rule, nil
+}
+
+func (r *QARepository) hydrateSamplingRuleUsers(rule *domain.QASamplingRule) error {
+	if rule.AssignedInspectorID == nil {
+		return nil
+	}
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	user, err := r.users.FindByID(*rule.AssignedInspectorID)
+	if err != nil {
+		return err
+	}
+	rule.AssignedInspector = user
+	return nil
 }
 
 // GenerateTasksFromSampling runs a sampling rule to extract conversations or tickets into QA tasks
@@ -483,14 +513,17 @@ func (r *QARepository) ListTasks(accountID uint, filter QATaskFilter) ([]domain.
 
 	var tasks []domain.QATask
 	if err := query.Preload("Scorecard").
-		Preload("Inspector").
-		Preload("Agent").
 		Preload("Evaluations").
 		Order("created_at DESC").
 		Offset(offset).
 		Limit(limit).
 		Find(&tasks).Error; err != nil {
 		return nil, 0, err
+	}
+	for i := range tasks {
+		if err := r.hydrateTaskUsers(&tasks[i]); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	return tasks, total, nil
@@ -502,13 +535,12 @@ func (r *QARepository) GetTaskByID(accountID, id uint) (*domain.QATask, error) {
 	if err := r.db.Where("account_id = ? AND id = ?", accountID, id).
 		Preload("Scorecard").
 		Preload("Scorecard.Criteria").
-		Preload("Inspector").
-		Preload("Agent").
 		Preload("Evaluations").
 		Preload("Appeals").
-		Preload("Appeals.Appellant").
-		Preload("Appeals.Reviewer").
 		First(&task).Error; err != nil {
+		return nil, err
+	}
+	if err := r.hydrateTaskUsers(&task); err != nil {
 		return nil, err
 	}
 	return &task, nil
@@ -525,16 +557,40 @@ func (r *QARepository) GetTaskByIDOrNumber(accountID uint, idOrNumber string) (*
 	if err := r.db.Where("account_id = ? AND task_number = ?", accountID, idOrNumber).
 		Preload("Scorecard").
 		Preload("Scorecard.Criteria").
-		Preload("Inspector").
-		Preload("Agent").
 		Preload("Evaluations").
 		Preload("Appeals").
-		Preload("Appeals.Appellant").
-		Preload("Appeals.Reviewer").
 		First(&task).Error; err != nil {
 		return nil, err
 	}
+	if err := r.hydrateTaskUsers(&task); err != nil {
+		return nil, err
+	}
 	return &task, nil
+}
+
+func (r *QARepository) hydrateTaskUsers(task *domain.QATask) error {
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	for _, ref := range []struct {
+		id     *uint
+		target **domain.User
+	}{{task.InspectorID, &task.Inspector}, {task.SecondInspectorID, &task.SecondInspector}, {task.AgentID, &task.Agent}} {
+		if ref.id == nil {
+			continue
+		}
+		user, err := r.users.FindByID(*ref.id)
+		if err != nil {
+			return err
+		}
+		*ref.target = user
+	}
+	for i := range task.Appeals {
+		if err := r.hydrateAppealUsers(&task.Appeals[i], false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // EvaluateTask records evaluations, calculates total score, evaluates fatal red-lines, and updates status
@@ -850,13 +906,16 @@ func (r *QARepository) ListAppeals(accountID uint, filter QAAppealFilter) ([]dom
 
 	var appeals []domain.QAAppeal
 	if err := query.Preload("Task").
-		Preload("Appellant").
-		Preload("Reviewer").
 		Order("created_at DESC").
 		Offset(offset).
 		Limit(limit).
 		Find(&appeals).Error; err != nil {
 		return nil, 0, err
+	}
+	for i := range appeals {
+		if err := r.hydrateAppealUsers(&appeals[i], true); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	return appeals, total, nil
@@ -868,16 +927,43 @@ func (r *QARepository) GetAppealByID(accountID, id uint) (*domain.QAAppeal, erro
 	if err := r.db.Where("account_id = ? AND id = ?", accountID, id).
 		Preload("Task").
 		Preload("Task.Scorecard").
-		Preload("Appellant").
-		Preload("Reviewer").
 		Preload("Activities", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at ASC")
 		}).
-		Preload("Activities.Actor").
 		First(&appeal).Error; err != nil {
 		return nil, err
 	}
+	if err := r.hydrateAppealUsers(&appeal, true); err != nil {
+		return nil, err
+	}
 	return &appeal, nil
+}
+
+func (r *QARepository) hydrateAppealUsers(appeal *domain.QAAppeal, hydrateTask bool) error {
+	if r.users == nil {
+		return gorm.ErrInvalidData
+	}
+	appellant, err := r.users.FindByID(appeal.AppellantID)
+	if err != nil {
+		return err
+	}
+	appeal.Appellant = appellant
+	if appeal.ReviewerID != nil {
+		appeal.Reviewer, err = r.users.FindByID(*appeal.ReviewerID)
+		if err != nil {
+			return err
+		}
+	}
+	for i := range appeal.Activities {
+		appeal.Activities[i].Actor, err = r.users.FindByID(appeal.Activities[i].ActorID)
+		if err != nil {
+			return err
+		}
+	}
+	if hydrateTask && appeal.Task != nil {
+		return r.hydrateTaskUsers(appeal.Task)
+	}
+	return nil
 }
 
 // ReviewAppeal adjudicates a QA appeal with strict avoidance check (reviewer cannot be original inspector)

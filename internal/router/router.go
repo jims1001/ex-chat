@@ -110,7 +110,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	publicRepo := repository.NewPublicRepository(db)
 	dashboardAppRepo := repository.NewDashboardAppRepository(db)
 	ticketRepo := repository.NewTicketRepository(db)
-	qaRepo := repository.NewQARepository(db)
+	qaRepo := repository.NewQARepositoryWithOwnerPortsAndUsers(db, ticketRepo, convRepo, userRepo)
 	emailLogRepo := repository.NewEmailLogRepository(db)
 
 	// 核心业务服务 (Services)

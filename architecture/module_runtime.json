@@ -328,6 +328,7 @@
       "capabilitiesRef": "QLT",
       "startupRequired": [],
       "capabilityDependencies": [
+        "IAM",
         "TEN",
         "CHN",
         "CUS",

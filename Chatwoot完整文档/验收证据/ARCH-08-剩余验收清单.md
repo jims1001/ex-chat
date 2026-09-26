@@ -81,4 +81,5 @@
 - 已完成并验证：ConversationCleanup 只协调 MSG/RPT/QLT/RTM/TKT/API/AIC/OPS/BIL 所有者命令，不再包含外部领域模型和数据库查询（E-ARCH-08-v35）。
 - 已完成并验证：CopilotThreadRepository 通过 IAM/CON 所有者查询组合用户和会话，AIC 仅预加载自有助手数据（E-ARCH-08-v36）。
 - 已完成并验证：CSATExtensionRepository 通过 CON/CUS/CHN/IAM 所有者合同组合调查详情、收件箱筛选和坐席指标，QLT 不再预加载或 JOIN 外部表（E-ARCH-08-v37）。
-- 下一项：QARepository 的 IAM 质检人、坐席、申诉人和审核人预加载边界。
+- 已完成并验证：QARepository 保留 QLT 自有关联预加载，质检人、二次复核人、坐席、申诉人、审核人和活动参与人均由 IAM 组合（E-ARCH-08-v38）。
+- 下一项：PortalRepository 的 IAM 文章作者预加载边界。

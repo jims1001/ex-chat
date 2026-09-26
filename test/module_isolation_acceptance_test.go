@@ -99,6 +99,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
+	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
@@ -815,6 +816,58 @@ func testQARepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB
 	}
 	if tktDB.Migrator().HasTable(&domain.QATask{}) || conDB.Migrator().HasTable(&domain.QATask{}) {
 		t.Fatal("TKT/CON store contains QLT authority table")
+	}
+}
+
+func testQAUserOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	qltDB, iamDB := openStore("QLT"), openStore("IAM")
+	users := []domain.User{
+		{Name: "QA inspector", Email: "qa-inspector@example.test"},
+		{Name: "QA second inspector", Email: "qa-second@example.test"},
+		{Name: "QA agent", Email: "qa-agent@example.test"},
+		{Name: "QA appellant", Email: "qa-appellant@example.test"},
+		{Name: "QA reviewer", Email: "qa-reviewer@example.test"},
+	}
+	for i := range users {
+		if err := iamDB.Create(&users[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	scorecard := domain.QAScorecard{AccountID: 82, Name: "IAM scorecard", TotalScore: 100, PassingScore: 85, Status: "active"}
+	if err := qltDB.Create(&scorecard).Error; err != nil {
+		t.Fatal(err)
+	}
+	rule := domain.QASamplingRule{AccountID: 82, Name: "IAM sampling", TargetType: "conversation", ScorecardID: scorecard.ID, AssignedInspectorID: &users[0].ID, Status: "active"}
+	if err := qltDB.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewQARepositoryWithOwnerPortsAndUsers(qltDB, nil, nil, repository.NewUserRepository(iamDB))
+	task := domain.QATask{AccountID: 82, TargetType: "conversation", TargetID: 1, ScorecardID: scorecard.ID, InspectorID: &users[0].ID, SecondInspectorID: &users[1].ID, AgentID: &users[2].ID}
+	if err := repo.CreateTask(&task); err != nil {
+		t.Fatal(err)
+	}
+	appeal := domain.QAAppeal{AccountID: 82, TaskID: task.ID, AppealNumber: "AP-IAM-1", AppellantID: users[3].ID, ReviewerID: &users[4].ID, Reason: "owner boundary", Status: "pending"}
+	if err := qltDB.Create(&appeal).Error; err != nil {
+		t.Fatal(err)
+	}
+	activity := domain.QAAppealActivity{AccountID: 82, AppealID: appeal.ID, ActorID: users[3].ID, Action: "submitted"}
+	if err := qltDB.Create(&activity).Error; err != nil {
+		t.Fatal(err)
+	}
+	rules, err := repo.ListSamplingRules(82)
+	if err != nil || len(rules) != 1 || rules[0].AssignedInspector == nil || rules[0].AssignedInspector.ID != users[0].ID {
+		t.Fatalf("sampling inspector hydration failed: rules=%+v err=%v", rules, err)
+	}
+	gotTask, err := repo.GetTaskByID(82, task.ID)
+	if err != nil || gotTask.Inspector == nil || gotTask.SecondInspector == nil || gotTask.Agent == nil || len(gotTask.Appeals) != 1 || gotTask.Appeals[0].Appellant == nil || gotTask.Appeals[0].Reviewer == nil {
+		t.Fatalf("QA task IAM hydration failed: task=%+v err=%v", gotTask, err)
+	}
+	gotAppeal, err := repo.GetAppealByID(82, appeal.ID)
+	if err != nil || gotAppeal.Appellant == nil || gotAppeal.Reviewer == nil || gotAppeal.Task == nil || gotAppeal.Task.Inspector == nil || len(gotAppeal.Activities) != 1 || gotAppeal.Activities[0].Actor == nil {
+		t.Fatalf("QA appeal IAM hydration failed: appeal=%+v err=%v", gotAppeal, err)
+	}
+	if qltDB.Migrator().HasTable(&domain.User{}) {
+		t.Fatal("QLT store contains IAM User table")
 	}
 }
 
