@@ -15,6 +15,12 @@ type AccountRepository struct {
 	users *UserRepository
 }
 
+func (r *AccountRepository) ListIDs() ([]uint, error) {
+	var ids []uint
+	err := r.db.Model(&domain.Account{}).Order("id ASC").Pluck("id", &ids).Error
+	return ids, err
+}
+
 func (r *AccountRepository) List(search string, page, pageSize int) ([]domain.Account, int64, error) {
 	if page <= 0 {
 		page = 1

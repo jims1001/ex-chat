@@ -18,6 +18,7 @@ type SLAService struct {
 	convRepo       *repository.ConversationRepository
 	inboxes        slaInboxPort
 	messages       slaMessagePort
+	accounts       slaAccountPort
 }
 
 type slaInboxPort interface {
@@ -26,6 +27,10 @@ type slaInboxPort interface {
 
 type slaMessagePort interface {
 	ListSLATimeline(accountID, conversationID uint) ([]domain.Message, error)
+}
+
+type slaAccountPort interface {
+	ListIDs() ([]uint, error)
 }
 
 func NewSLAService(db *gorm.DB, convRepos ...*repository.ConversationRepository) *SLAService {
@@ -39,12 +44,16 @@ func NewSLAService(db *gorm.DB, convRepos ...*repository.ConversationRepository)
 		convRepo:       convRepo,
 		inboxes:        repository.NewInboxRepository(db),
 		messages:       repository.NewMessageRepository(db),
+		accounts:       repository.NewAccountRepository(db),
 	}
 }
 
-func (s *SLAService) SetOwnerRepositories(inboxes slaInboxPort, messages slaMessagePort) {
+func (s *SLAService) SetOwnerRepositories(inboxes slaInboxPort, messages slaMessagePort, accounts ...slaAccountPort) {
 	s.inboxes = inboxes
 	s.messages = messages
+	if len(accounts) > 0 && accounts[0] != nil {
+		s.accounts = accounts[0]
+	}
 }
 
 func (s *SLAService) loadInbox(conv *domain.Conversation) *domain.Inbox {
@@ -642,18 +651,21 @@ func (s *SLAService) StartSLAScheduler(ctx context.Context, interval time.Durati
 
 // ProcessAllBreaches runs SLA checks across all tenant accounts
 func (s *SLAService) ProcessAllBreaches() int {
-	var accounts []domain.Account
-	if err := s.db.Find(&accounts).Error; err != nil {
+	if s.accounts == nil {
+		return 0
+	}
+	accountIDs, err := s.accounts.ListIDs()
+	if err != nil {
 		return 0
 	}
 	totalBreaches := 0
-	for _, acc := range accounts {
-		if b, err := s.EvaluateAccountSLAs(acc.ID); err == nil {
+	for _, accountID := range accountIDs {
+		if b, err := s.EvaluateAccountSLAs(accountID); err == nil {
 			totalBreaches += len(b)
 		}
 	}
 	logger.WithComponent("sla").Info("sla periodic evaluation executed",
-		"accounts_count", len(accounts),
+		"accounts_count", len(accountIDs),
 		"breaches_count", totalBreaches,
 	)
 	return totalBreaches

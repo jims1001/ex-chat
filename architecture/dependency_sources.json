@@ -101,6 +101,7 @@
     {"consumer":"RPT","provider":"CON","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"ConversationRepository"},
     {"consumer":"RPT","provider":"CHN","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"InboxRepository"},
     {"consumer":"RPT","provider":"MSG","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"MessageRepository"},
+    {"consumer":"RPT","provider":"TEN","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"AccountRepository"},
     {"consumer":"RPT","provider":"CON","kind":"synchronous","file":"internal/handler/applied_sla_handler.go","symbol":"ConversationRepository"},
     {"consumer":"AIC","provider":"BIL","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"OrderRepository"},
     {"consumer":"AIC","provider":"TKT","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"TicketRepository"},

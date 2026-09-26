@@ -1066,7 +1066,11 @@ func testAutomationLabelOwnerBoundary(t *testing.T, openStore func(string) *gorm
 }
 
 func testSLAServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
-	rptDB, conDB, chnDB, msgDB := openStore("RPT"), openStore("CON"), openStore("CHN"), openStore("MSG")
+	rptDB, conDB, chnDB, msgDB, tenDB := openStore("RPT"), openStore("CON"), openStore("CHN"), openStore("MSG"), openStore("TEN")
+	account := domain.Account{ID: 191, Name: "SLA Tenant"}
+	if err := tenDB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
 	inbox := domain.Inbox{AccountID: 191, Name: "SLA Inbox", ChannelType: "Channel::WebWidget", Timezone: "UTC", WorkingHoursEnabled: false}
 	if err := chnDB.Create(&inbox).Error; err != nil {
 		t.Fatal(err)
@@ -1089,12 +1093,15 @@ func testSLAServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) 
 		}
 	}
 	service := service.NewSLAService(rptDB, repository.NewConversationRepository(conDB))
-	service.SetOwnerRepositories(repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB))
+	service.SetOwnerRepositories(repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB), repository.NewAccountRepository(tenDB))
 	frt, _, _, breached, _, _, selected := service.GetConversationSLADeadlines(&conversation)
 	if frt == nil || !breached || selected == nil || selected.ID != policy.ID || conversation.Inbox == nil || conversation.Inbox.ID != inbox.ID {
 		t.Fatalf("SLA owner composition failed: frt=%v breached=%v policy=%+v inbox=%+v", frt, breached, selected, conversation.Inbox)
 	}
-	for name, model := range map[string]any{"CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}} {
+	if breaches := service.ProcessAllBreaches(); breaches != 1 {
+		t.Fatalf("expected one breach from TEN-owned account enumeration, got %d", breaches)
+	}
+	for name, model := range map[string]any{"TEN": &domain.Account{}, "CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}} {
 		if rptDB.Migrator().HasTable(model) {
 			t.Fatalf("RPT store contains %s authority table", name)
 		}
