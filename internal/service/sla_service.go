@@ -16,6 +16,16 @@ type SLAService struct {
 	db             *gorm.DB
 	appliedSLARepo *repository.AppliedSLARepository
 	convRepo       *repository.ConversationRepository
+	inboxes        slaInboxPort
+	messages       slaMessagePort
+}
+
+type slaInboxPort interface {
+	FindSummaryByID(accountID, id uint) (*domain.Inbox, error)
+}
+
+type slaMessagePort interface {
+	ListSLATimeline(accountID, conversationID uint) ([]domain.Message, error)
 }
 
 func NewSLAService(db *gorm.DB, convRepos ...*repository.ConversationRepository) *SLAService {
@@ -27,7 +37,71 @@ func NewSLAService(db *gorm.DB, convRepos ...*repository.ConversationRepository)
 		db:             db,
 		appliedSLARepo: repository.NewAppliedSLARepository(db),
 		convRepo:       convRepo,
+		inboxes:        repository.NewInboxRepository(db),
+		messages:       repository.NewMessageRepository(db),
 	}
+}
+
+func (s *SLAService) SetOwnerRepositories(inboxes slaInboxPort, messages slaMessagePort) {
+	s.inboxes = inboxes
+	s.messages = messages
+}
+
+func (s *SLAService) loadInbox(conv *domain.Conversation) *domain.Inbox {
+	if conv == nil || conv.InboxID == 0 {
+		return nil
+	}
+	if conv.Inbox != nil && conv.Inbox.ID == conv.InboxID && conv.Inbox.AccountID == conv.AccountID {
+		return conv.Inbox
+	}
+	if s.inboxes == nil {
+		return nil
+	}
+	inbox, err := s.inboxes.FindSummaryByID(conv.AccountID, conv.InboxID)
+	if err != nil || inbox == nil {
+		return nil
+	}
+	conv.Inbox = inbox
+	return inbox
+}
+
+func (s *SLAService) loadMessages(conv *domain.Conversation) []domain.Message {
+	if conv == nil || s.messages == nil {
+		return nil
+	}
+	messages, err := s.messages.ListSLATimeline(conv.AccountID, conv.ID)
+	if err != nil {
+		return nil
+	}
+	return messages
+}
+
+func firstCustomerMessage(messages []domain.Message) *domain.Message {
+	for i := range messages {
+		if messages[i].MessageType == domain.MessageTypeIncoming || strings.EqualFold(messages[i].SenderType, "contact") {
+			return &messages[i]
+		}
+	}
+	return nil
+}
+
+func firstAgentMessageAfter(messages []domain.Message, after time.Time) *domain.Message {
+	for i := range messages {
+		m := &messages[i]
+		if !m.CreatedAt.Before(after) && m.MessageType == domain.MessageTypeOutgoing && !m.Private && m.ContentType != "activity" && m.ContentType != "internal_note" && !strings.EqualFold(m.SenderType, "contact") {
+			return m
+		}
+	}
+	return nil
+}
+
+func lastCustomerMessage(messages []domain.Message) *domain.Message {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].MessageType == domain.MessageTypeIncoming || strings.EqualFold(messages[i].SenderType, "contact") {
+			return &messages[i]
+		}
+	}
+	return nil
 }
 
 func (s *SLAService) SetAppliedSLARepo(repo *repository.AppliedSLARepository) {
@@ -82,10 +156,7 @@ func (s *SLAService) EvaluateNextResponse(conv *domain.Conversation, effectiveIn
 		return nil, false, 0, time.Time{}
 	}
 
-	var messages []domain.Message
-	_ = s.db.Where("conversation_id = ?", conv.ID).
-		Order("created_at ASC, id ASC").
-		Find(&messages).Error
+	messages := s.loadMessages(conv)
 
 	type turnMsg struct {
 		isCustomer bool
@@ -168,12 +239,7 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 	}
 	policy = &applicablePolicy
 
-	if conv.Inbox == nil && conv.InboxID > 0 {
-		var inbox domain.Inbox
-		if err := s.db.Where("id = ?", conv.InboxID).First(&inbox).Error; err == nil {
-			conv.Inbox = &inbox
-		}
-	}
+	s.loadInbox(conv)
 
 	var effectiveInbox *domain.Inbox
 	if applicablePolicy.OnlyDuringBusinessHours {
@@ -184,9 +250,8 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 
 	// 1. First Response Deadline
 	startTime := conv.CreatedAt
-	var firstCustomerMsg domain.Message
-	if err := s.db.Where("conversation_id = ? AND (message_type = ? OR sender_type IN ('Contact', 'contact'))", conv.ID, domain.MessageTypeIncoming).
-		Order("created_at ASC, id ASC").First(&firstCustomerMsg).Error; err == nil && !firstCustomerMsg.CreatedAt.IsZero() {
+	messages := s.loadMessages(conv)
+	if firstCustomerMsg := firstCustomerMessage(messages); firstCustomerMsg != nil {
 		startTime = firstCustomerMsg.CreatedAt
 	}
 
@@ -202,12 +267,9 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		if existingBreach > 0 {
 			isFRTBreached = true
 		} else {
-			var firstAgentMsg domain.Message
-			err := s.db.Where("conversation_id = ? AND message_type = ? AND (private = 0 OR private = false OR private IS NULL) AND (content_type NOT IN ('activity', 'internal_note') OR content_type IS NULL) AND sender_type NOT IN ('Contact', 'contact') AND created_at >= ?",
-				conv.ID, domain.MessageTypeOutgoing, startTime).
-				Order("created_at ASC, id ASC").First(&firstAgentMsg).Error
+			firstAgentMsg := firstAgentMessageAfter(messages, startTime)
 
-			if err != nil || firstAgentMsg.CreatedAt.IsZero() {
+			if firstAgentMsg == nil {
 				// No agent reply yet
 				if !now.Before(fDue) {
 					isFRTBreached = true
@@ -278,12 +340,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 		return nil, nil
 	}
 
-	if conv.Inbox == nil && conv.InboxID > 0 {
-		var inbox domain.Inbox
-		if err := s.db.Where("id = ?", conv.InboxID).First(&inbox).Error; err == nil {
-			conv.Inbox = &inbox
-		}
-	}
+	s.loadInbox(conv)
 
 	var effectiveInbox *domain.Inbox
 	if applicablePolicy.OnlyDuringBusinessHours {
@@ -300,9 +357,8 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 	// 1. First Response Time Evaluation
 	startTime := conv.CreatedAt
-	var firstCustomerMsg domain.Message
-	if err := s.db.Where("conversation_id = ? AND (message_type = ? OR sender_type IN ('Contact', 'contact'))", conv.ID, domain.MessageTypeIncoming).
-		Order("created_at ASC, id ASC").First(&firstCustomerMsg).Error; err == nil && !firstCustomerMsg.CreatedAt.IsZero() {
+	messages := s.loadMessages(conv)
+	if firstCustomerMsg := firstCustomerMessage(messages); firstCustomerMsg != nil {
 		startTime = firstCustomerMsg.CreatedAt
 	}
 
@@ -316,14 +372,8 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 	isFRTBreached := false
 	if applicablePolicy.FirstResponseTimeThreshold > 0 {
-		var firstAgentMsg domain.Message
-		hasAgentReply := false
-		err := s.db.Where("conversation_id = ? AND message_type = ? AND (private = 0 OR private = false OR private IS NULL) AND (content_type NOT IN ('activity', 'internal_note') OR content_type IS NULL) AND sender_type NOT IN ('Contact', 'contact') AND created_at >= ?",
-			conv.ID, domain.MessageTypeOutgoing, startTime).
-			Order("created_at ASC, id ASC").First(&firstAgentMsg).Error
-		if err == nil && !firstAgentMsg.CreatedAt.IsZero() {
-			hasAgentReply = true
-		}
+		firstAgentMsg := firstAgentMessageAfter(messages, startTime)
+		hasAgentReply := firstAgentMsg != nil
 
 		var actualSec int
 		var breachTime time.Time
@@ -396,11 +446,8 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 		if isNRTBreached {
 			if appliedSLA != nil && s.appliedSLARepo != nil {
-				var lastIncomingMsg domain.Message
-				_ = s.db.Where("conversation_id = ? AND (message_type = ? OR sender_type IN ('Contact', 'contact'))", conv.ID, domain.MessageTypeIncoming).
-					Order("created_at DESC, id DESC").First(&lastIncomingMsg).Error
 				nrtMeta := ""
-				if lastIncomingMsg.ID > 0 {
+				if lastIncomingMsg := lastCustomerMessage(messages); lastIncomingMsg != nil {
 					nrtMeta = fmt.Sprintf("{\"message_id\":%d}", lastIncomingMsg.ID)
 				}
 				_ = s.appliedSLARepo.RecordSLAEvent(&domain.SLAEvent{
@@ -555,10 +602,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 // EvaluateAccountSLAs scans open (and unbreached resolved) conversations and logs breaches according to applicable SLA policies
 func (s *SLAService) EvaluateAccountSLAs(accountID uint) ([]domain.SLABreachLog, error) {
-	var conversations []domain.Conversation
-	err := s.db.Preload("Inbox").
-		Where("account_id = ? AND (status != ? OR sla_status != 'breached' OR sla_status IS NULL)", accountID, domain.ConversationStatusResolved).
-		Find(&conversations).Error
+	conversations, err := s.convRepo.FindSLACandidates(accountID)
 	if err != nil {
 		return nil, err
 	}

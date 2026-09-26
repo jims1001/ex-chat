@@ -413,6 +413,15 @@ func (r *MessageRepository) ListByConversation(accountID, conversationID uint, i
 	return messages, total, err
 }
 
+// ListSLATimeline returns the complete ordered MSG-owned timeline used by SLA evaluation.
+func (r *MessageRepository) ListSLATimeline(accountID, conversationID uint) ([]domain.Message, error) {
+	messages := make([]domain.Message, 0)
+	err := r.db.Model(&domain.Message{}).
+		Where("account_id = ? AND conversation_id = ?", accountID, conversationID).
+		Order("created_at ASC, id ASC").Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ListPublicByConversation(accountID, conversationID, beforeID, afterID uint, page, pageSize int) ([]domain.Message, int64, error) {
 	if page <= 0 {
 		page = 1

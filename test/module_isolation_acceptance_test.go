@@ -88,6 +88,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RTE_snooze_scheduler_uses_CON_owner_command", func(t *testing.T) { testRoutingSnoozeOwnerBoundary(t, openStore) })
 	t.Run("RTE_capacity_policies_use_TEN_CHN_owner_contracts", func(t *testing.T) { testAgentCapacityPolicyOwnerBoundary(t, openStore) })
 	t.Run("RPT_applied_slas_use_CON_owner_queries", func(t *testing.T) { testAppliedSLAConversationBoundary(t, openStore) })
+	t.Run("RPT_SLA_service_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testSLAServiceOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1061,6 +1062,42 @@ func testAutomationLabelOwnerBoundary(t *testing.T, openStore func(string) *gorm
 	}
 	if autDB.Migrator().HasTable(&domain.Label{}) || autDB.Migrator().HasTable(&domain.ConversationLabel{}) {
 		t.Fatal("AUT store contains CUS/CON label authority table")
+	}
+}
+
+func testSLAServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	rptDB, conDB, chnDB, msgDB := openStore("RPT"), openStore("CON"), openStore("CHN"), openStore("MSG")
+	inbox := domain.Inbox{AccountID: 191, Name: "SLA Inbox", ChannelType: "Channel::WebWidget", Timezone: "UTC", WorkingHoursEnabled: false}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Add(-10 * time.Minute)
+	conversation := domain.Conversation{AccountID: 191, InboxID: inbox.ID, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: "medium", CreatedAt: createdAt, UpdatedAt: createdAt}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	policy := domain.SLAPolicy{AccountID: 191, Name: "Owner SLA", FirstResponseTimeThreshold: 60, OnlyDuringBusinessHours: true}
+	if err := rptDB.Create(&policy).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []*domain.Message{
+		{AccountID: 191, ConversationID: conversation.ID, MessageType: domain.MessageTypeIncoming, SenderType: domain.SenderTypeContact, CreatedAt: createdAt.Add(time.Minute)},
+		{AccountID: 191, ConversationID: conversation.ID, MessageType: domain.MessageTypeOutgoing, SenderType: domain.SenderTypeUser, CreatedAt: createdAt.Add(9 * time.Minute)},
+	} {
+		if err := msgDB.Create(message).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := service.NewSLAService(rptDB, repository.NewConversationRepository(conDB))
+	service.SetOwnerRepositories(repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB))
+	frt, _, _, breached, _, _, selected := service.GetConversationSLADeadlines(&conversation)
+	if frt == nil || !breached || selected == nil || selected.ID != policy.ID || conversation.Inbox == nil || conversation.Inbox.ID != inbox.ID {
+		t.Fatalf("SLA owner composition failed: frt=%v breached=%v policy=%+v inbox=%+v", frt, breached, selected, conversation.Inbox)
+	}
+	for name, model := range map[string]any{"CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}} {
+		if rptDB.Migrator().HasTable(model) {
+			t.Fatalf("RPT store contains %s authority table", name)
+		}
 	}
 }
 

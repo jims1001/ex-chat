@@ -125,6 +125,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	}
 	slaService := service.NewSLAService(db, convRepo)
 	slaService.SetAppliedSLARepo(appliedSLARepo)
+	slaService.SetOwnerRepositories(inboxRepo, msgRepo)
 	campaignService := service.NewCampaignService(db, convRepo, msgRepo, contactRepo)
 	campaignService.SetHub(hub)
 	emailService := service.NewEmailService(db)

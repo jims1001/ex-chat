@@ -331,6 +331,14 @@ func (r *ConversationRepository) FindIDsByInbox(accountID, inboxID uint) ([]uint
 	return ids, err
 }
 
+func (r *ConversationRepository) FindSLACandidates(accountID uint) ([]domain.Conversation, error) {
+	conversations := make([]domain.Conversation, 0)
+	err := r.db.Model(&domain.Conversation{}).
+		Where("account_id = ? AND (status != ? OR sla_status != 'breached' OR sla_status IS NULL)", accountID, domain.ConversationStatusResolved).
+		Find(&conversations).Error
+	return conversations, err
+}
+
 func (r *ConversationRepository) ListForWidget(accountID, inboxID, contactID uint, page, pageSize int) ([]domain.Conversation, int64, error) {
 	if page <= 0 {
 		page = 1

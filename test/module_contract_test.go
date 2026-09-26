@@ -235,7 +235,7 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ARCH-04 remains REOPENED; E-ARCH-08-v30 records public API owner-port orchestration.
-	const approvedCollaborationSHA = "fe4770ce8ba428d24b49d5ff8cf9a7bfc08a4d7993a549a94e2d56360e08e2a9"
+	const approvedCollaborationSHA = "c4fe032703a4060bdae0fdd5b3d2db507650db7176bfa4e5cdb3b477217c4e8a"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -406,6 +406,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/channel_auth_bil_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.Onboarding", "domain.BrandedEmailLayout"},
 		"../internal/repository/channel_auth_ten_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.BrandedEmailLayout"},
 		"../internal/service/automation_service.go":                  {"Model(&domain.AccountUser", "HasTable(&domain.AccountUser", "var agent domain.User", "var team domain.Team", "var contact domain.Contact", "var company domain.Company", "JOIN conversation_labels", "s.db.Joins(", "s.db.Where(\"id = ?\", uid)", "s.db.Where(\"account_id = ? AND id = ?\", conv.AccountID, tid)", "s.db.Where(\"id = ?\", conv.ContactID)", "s.db.Where(\"id = ?\", *conv.Contact.CompanyID)"},
+		"../internal/service/sla_service.go":                         {"Preload(\"Inbox\")", "var inbox domain.Inbox", "var messages []domain.Message", "var firstCustomerMsg domain.Message", "var firstAgentMsg domain.Message", "var lastIncomingMsg domain.Message", "s.db.Model(&domain.Message", "s.db.Model(&domain.Inbox"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

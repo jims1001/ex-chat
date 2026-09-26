@@ -616,7 +616,9 @@
       "startupRequired": [],
       "capabilityDependencies": [
         "TEN",
-        "CON"
+        "CHN",
+        "CON",
+        "MSG"
       ],
       "asynchronousDependencies": [
         "CHN",

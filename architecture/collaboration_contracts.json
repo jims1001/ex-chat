@@ -3452,6 +3452,16 @@
       "provider": "CON",
       "file": "internal/service/sla_service.go",
       "symbol": "ConversationRepository",
+      "method": "FindSLACandidates",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "file": "internal/service/sla_service.go",
+      "symbol": "ConversationRepository",
       "method": "UpdateSLATiming",
       "use": "write",
       "contract": "con.conversation.update.v1",
