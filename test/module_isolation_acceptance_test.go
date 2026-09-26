@@ -86,6 +86,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
+	t.Run("ORC_contact_extensions_use_CHN_CON_MSG_owner_queries", func(t *testing.T) { testContactExtensionOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -816,5 +817,70 @@ func testCompanyExtensionOwnerBoundary(t *testing.T, openStore func(string) *gor
 	}
 	if cusDB.Migrator().HasTable(&domain.User{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Message{}) || cusDB.Migrator().HasTable(&domain.Attachment{}) {
 		t.Fatal("CUS store contains foreign owner tables")
+	}
+}
+
+func testContactExtensionOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, chnDB, conDB, msgDB := openStore("CUS"), openStore("CHN"), openStore("CON"), openStore("MSG")
+	contact := domain.Contact{AccountID: 1, Name: "Boundary Contact", Email: "contact-boundary@example.test"}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	inbox := domain.Inbox{AccountID: 1, Name: "Boundary Email", ChannelType: "Channel::Email", WebsiteToken: "contact-boundary-1"}
+	foreignInbox := domain.Inbox{AccountID: 2, Name: "Foreign Email", ChannelType: "Channel::Email", WebsiteToken: "contact-boundary-2"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := chnDB.Create(&foreignInbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 1, InboxID: inbox.ID, ContactID: contact.ID, Status: domain.ConversationStatusOpen, LastActivityAt: time.Now().UTC()}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := domain.Message{AccountID: 1, ConversationID: conversation.ID, SenderType: "contact", SenderID: contact.ID, Content: "contact attachment"}
+	if err := msgDB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	attachment := domain.Attachment{AccountID: 1, MessageID: message.ID, FileType: "image/png", DataURL: "https://example.test/contact.png"}
+	if err := msgDB.Create(&attachment).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	contactRepo := repository.NewContactRepository(cusDB)
+	inboxRepo := repository.NewInboxRepository(chnDB)
+	convRepo := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, inboxRepo, contactRepo, nil, nil, nil)
+	msgRepo := repository.NewMessageRepositoryWithPorts(msgDB, convRepo, nil, contactRepo)
+	repo := repository.NewContactExtensionRepositoryWithOwnerPorts(cusDB, inboxRepo, convRepo, msgRepo)
+
+	contactable, err := repo.GetContactableInboxes(1, contact.ID)
+	if err != nil || len(contactable) != 1 || contactable[0].Inbox.ID != inbox.ID {
+		t.Fatalf("CHN contactable inbox composition failed: rows=%+v err=%v", contactable, err)
+	}
+	link, err := repo.CreateContactInbox(1, contact.ID, inbox.ID, "")
+	if err != nil || link.Inbox == nil || link.SourceID != contact.Email {
+		t.Fatalf("CHN validated contact inbox create failed: link=%+v err=%v", link, err)
+	}
+	if _, err := repo.CreateContactInbox(1, contact.ID, foreignInbox.ID, "foreign"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("foreign CHN inbox was accepted: %v", err)
+	}
+	links, err := repo.ListContactInboxes(1, contact.ID)
+	if err != nil || len(links) != 1 || links[0].Inbox == nil {
+		t.Fatalf("CHN inbox hydration failed: rows=%+v err=%v", links, err)
+	}
+	conversations, total, err := repo.ListContactConversations(1, contact.ID, "", nil, 1, 25)
+	if err != nil || total != 1 || len(conversations) != 1 || conversations[0].Inbox == nil {
+		t.Fatalf("CON conversation composition failed: total=%d rows=%d err=%v", total, len(conversations), err)
+	}
+	attachments, total, err := repo.ListContactAttachments(1, contact.ID, repository.ContactAttachmentFilter{Page: 1, PageSize: 25})
+	if err != nil || total != 1 || len(attachments) != 1 {
+		t.Fatalf("MSG attachment composition failed: total=%d rows=%d err=%v", total, len(attachments), err)
+	}
+	stats, err := repo.GetContactStats(1, contact.ID)
+	if err != nil || stats.ConversationsCount != 1 || stats.MessagesCount != 1 || stats.AttachmentsCount != 1 || stats.ContactInboxesCount != 1 {
+		t.Fatalf("owner contact stats failed: stats=%+v err=%v", stats, err)
+	}
+	if cusDB.Migrator().HasTable(&domain.Inbox{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Message{}) || cusDB.Migrator().HasTable(&domain.Attachment{}) {
+		t.Fatal("CUS store contains CHN/CON/MSG authority tables")
 	}
 }

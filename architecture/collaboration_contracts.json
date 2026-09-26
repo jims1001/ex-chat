@@ -3872,6 +3872,33 @@
     },
     {
       "consumer": "ORC", "provider": "MSG", "file": "internal/repository/company_extension_repository.go", "symbol": "MessageRepository", "method": "ListAttachmentsByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "FindByIDs", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "ListByAccount", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "FindByID", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CHN", "file": "internal/repository/contact_extension_repository.go", "symbol": "InboxRepository", "method": "Exists", "use": "read", "contract": "chn.inbox.get.v1", "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_extension_repository.go", "symbol": "ConversationRepository", "method": "FindIDsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_extension_repository.go", "symbol": "ConversationRepository", "method": "ListByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "CON", "file": "internal/repository/contact_extension_repository.go", "symbol": "ConversationRepository", "method": "GetStatsByContactIDs", "use": "read", "contract": "con.conversation.get.v1", "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_extension_repository.go", "symbol": "MessageRepository", "method": "ListAttachmentsByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "ORC", "provider": "MSG", "file": "internal/repository/contact_extension_repository.go", "symbol": "MessageRepository", "method": "CountActivityByConversationIDs", "use": "read", "contract": "msg.message.get.v1", "replicaEvent": "msg.message.created.v1"
     }
   ]
 }

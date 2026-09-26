@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,103 +59,98 @@ type ContactStats struct {
 
 // ContactExtensionRepository handles advanced CRM queries for contacts
 type ContactExtensionRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	inboxes       *InboxRepository
+	conversations *ConversationRepository
+	messages      *MessageRepository
 }
 
 // NewContactExtensionRepository creates a new repository instance
 func NewContactExtensionRepository(db *gorm.DB) *ContactExtensionRepository {
-	return &ContactExtensionRepository{db: db}
+	return NewContactExtensionRepositoryWithOwnerPorts(db, NewInboxRepository(db), NewConversationRepository(db), NewMessageRepository(db))
+}
+
+func NewContactExtensionRepositoryWithOwnerPorts(db *gorm.DB, inboxes *InboxRepository, conversations *ConversationRepository, messages *MessageRepository) *ContactExtensionRepository {
+	return &ContactExtensionRepository{db: db, inboxes: inboxes, conversations: conversations, messages: messages}
+}
+
+func (r *ContactExtensionRepository) findContact(accountID, contactID uint) (*domain.Contact, error) {
+	var contact domain.Contact
+	err := r.db.Where("account_id = ? AND id = ?", accountID, contactID).First(&contact).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &contact, err
+}
+
+func (r *ContactExtensionRepository) hydrateContactInboxes(accountID uint, list []domain.ContactInbox) ([]domain.ContactInbox, error) {
+	if len(list) == 0 {
+		return []domain.ContactInbox{}, nil
+	}
+	if r.inboxes == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	ids := make([]uint, 0, len(list))
+	for _, item := range list {
+		ids = append(ids, item.InboxID)
+	}
+	inboxes, err := r.inboxes.FindByIDs(accountID, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[uint]*domain.Inbox, len(inboxes))
+	for i := range inboxes {
+		byID[inboxes[i].ID] = &inboxes[i]
+	}
+	result := make([]domain.ContactInbox, 0, len(list))
+	for i := range list {
+		if inbox := byID[list[i].InboxID]; inbox != nil {
+			list[i].Inbox = inbox
+			result = append(result, list[i])
+		}
+	}
+	return result, nil
 }
 
 // ListContactAttachments retrieves all attachments associated with a contact's conversations
 func (r *ContactExtensionRepository) ListContactAttachments(accountID, contactID uint, filter ContactAttachmentFilter) ([]ContactAttachmentItem, int64, error) {
-	var items []ContactAttachmentItem
-	var total int64
-
-	baseQuery := r.db.Table("attachments").
-		Select("attachments.id, attachments.account_id, attachments.message_id, messages.conversation_id, attachments.file_type, attachments.data_url, attachments.file_size, messages.sender_type, messages.sender_id, messages.content AS message_content, attachments.created_at").
-		Joins("JOIN messages ON messages.id = attachments.message_id").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("conversations.account_id = ? AND conversations.contact_id = ?", accountID, contactID)
-
-	if filter.FileType != "" {
-		ft := "%" + strings.ToLower(filter.FileType) + "%"
-		baseQuery = baseQuery.Where("LOWER(attachments.file_type) LIKE ?", ft)
-	}
-
-	if filter.ConversationID != nil && *filter.ConversationID > 0 {
-		baseQuery = baseQuery.Where("messages.conversation_id = ?", *filter.ConversationID)
-	}
-
-	if filter.SenderType != "" {
-		baseQuery = baseQuery.Where("LOWER(messages.sender_type) = ?", strings.ToLower(filter.SenderType))
-	}
-
-	if filter.Search != "" {
-		s := "%" + strings.ToLower(filter.Search) + "%"
-		baseQuery = baseQuery.Where("(LOWER(messages.content) LIKE ? OR LOWER(attachments.data_url) LIKE ?)", s, s)
-	}
-
-	// Count total matching records
-	countQuery := r.db.Table("attachments").
-		Joins("JOIN messages ON messages.id = attachments.message_id").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("conversations.account_id = ? AND conversations.contact_id = ?", accountID, contactID)
-
-	if filter.FileType != "" {
-		ft := "%" + strings.ToLower(filter.FileType) + "%"
-		countQuery = countQuery.Where("LOWER(attachments.file_type) LIKE ?", ft)
-	}
-	if filter.ConversationID != nil && *filter.ConversationID > 0 {
-		countQuery = countQuery.Where("messages.conversation_id = ?", *filter.ConversationID)
-	}
-	if filter.SenderType != "" {
-		countQuery = countQuery.Where("LOWER(messages.sender_type) = ?", strings.ToLower(filter.SenderType))
-	}
-	if filter.Search != "" {
-		s := "%" + strings.ToLower(filter.Search) + "%"
-		countQuery = countQuery.Where("(LOWER(messages.content) LIKE ? OR LOWER(attachments.data_url) LIKE ?)", s, s)
-	}
-
-	if err := countQuery.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	page := filter.Page
-	if page < 1 {
-		page = 1
-	}
-	pageSize := filter.PageSize
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 25
-	}
-	offset := (page - 1) * pageSize
-
-	err := baseQuery.Order("attachments.id DESC").Offset(offset).Limit(pageSize).Scan(&items).Error
+	contact, err := r.findContact(accountID, contactID)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	return items, total, nil
+	if contact == nil {
+		return []ContactAttachmentItem{}, 0, nil
+	}
+	if r.conversations == nil || r.messages == nil {
+		return nil, 0, gorm.ErrInvalidData
+	}
+	conversationIDs, err := r.conversations.FindIDsByContactIDs(accountID, []uint{contactID})
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.messages.ListAttachmentsByConversationIDs(accountID, conversationIDs, CompanyAttachmentFilter{
+		FileType: filter.FileType, ConversationID: filter.ConversationID, SenderType: filter.SenderType,
+		Search: filter.Search, Page: filter.Page, PageSize: filter.PageSize,
+	})
 }
 
 // GetContactableInboxes returns inboxes that can contact this customer
 func (r *ContactExtensionRepository) GetContactableInboxes(accountID, contactID uint) ([]ContactableInboxItem, error) {
-	var contact domain.Contact
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, contactID).First(&contact).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
+	contact, err := r.findContact(accountID, contactID)
+	if err != nil || contact == nil {
 		return nil, err
 	}
-
-	var allInboxes []domain.Inbox
-	if err := r.db.Where("account_id = ?", accountID).Order("id ASC").Find(&allInboxes).Error; err != nil {
+	if r.inboxes == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	allInboxes, err := r.inboxes.ListByAccount(accountID)
+	if err != nil {
 		return nil, err
 	}
+	sort.Slice(allInboxes, func(i, j int) bool { return allInboxes[i].ID < allInboxes[j].ID })
 
 	var existingContactInboxes []domain.ContactInbox
-	if err := r.db.Preload("Inbox").Where("contact_id = ?", contactID).Find(&existingContactInboxes).Error; err != nil {
+	if err := r.db.Where("contact_id = ?", contactID).Find(&existingContactInboxes).Error; err != nil {
 		return nil, err
 	}
 
@@ -217,13 +213,18 @@ func (r *ContactExtensionRepository) GetContactableInboxes(accountID, contactID 
 
 // ListContactInboxes returns all linked ContactInboxes for a contact
 func (r *ContactExtensionRepository) ListContactInboxes(accountID, contactID uint) ([]domain.ContactInbox, error) {
+	contact, err := r.findContact(accountID, contactID)
+	if err != nil || contact == nil {
+		return nil, err
+	}
 	var list []domain.ContactInbox
-	err := r.db.Preload("Inbox").
-		Joins("JOIN inboxes ON inboxes.id = contact_inboxes.inbox_id").
-		Where("inboxes.account_id = ? AND contact_inboxes.contact_id = ?", accountID, contactID).
+	err = r.db.Where("contact_id = ?", contactID).
 		Order("contact_inboxes.id ASC").
 		Find(&list).Error
-	return list, err
+	if err != nil {
+		return nil, err
+	}
+	return r.hydrateContactInboxes(accountID, list)
 }
 
 // CreateContactInbox links an inbox identity to a contact
@@ -233,13 +234,19 @@ func (r *ContactExtensionRepository) CreateContactInbox(accountID, contactID, in
 		return nil, fmt.Errorf("contact not found: %w", err)
 	}
 
-	var inbox domain.Inbox
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, inboxID).First(&inbox).Error; err != nil {
+	if r.inboxes == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	inbox, err := r.inboxes.FindByID(accountID, inboxID)
+	if err != nil {
 		return nil, fmt.Errorf("inbox not found: %w", err)
+	}
+	if inbox == nil {
+		return nil, fmt.Errorf("inbox not found: %w", gorm.ErrRecordNotFound)
 	}
 
 	var existing domain.ContactInbox
-	err := r.db.Where("contact_id = ? AND inbox_id = ?", contactID, inboxID).First(&existing).Error
+	err = r.db.Where("contact_id = ? AND inbox_id = ?", contactID, inboxID).First(&existing).Error
 	if err == nil {
 		if sourceID != "" && existing.SourceID != sourceID {
 			existing.SourceID = sourceID
@@ -247,7 +254,7 @@ func (r *ContactExtensionRepository) CreateContactInbox(accountID, contactID, in
 				return nil, err
 			}
 		}
-		_ = r.db.Preload("Inbox").First(&existing, existing.ID)
+		existing.Inbox = inbox
 		return &existing, nil
 	}
 
@@ -275,89 +282,88 @@ func (r *ContactExtensionRepository) CreateContactInbox(accountID, contactID, in
 		SourceID:  sourceID,
 	}
 
-	if err := r.db.Create(&ci).Error; err != nil {
+	if err := r.db.Omit("Inbox", "Contact").Create(&ci).Error; err != nil {
 		return nil, err
 	}
 
-	_ = r.db.Preload("Inbox").First(&ci, ci.ID)
+	ci.Inbox = inbox
 	return &ci, nil
 }
 
 // DeleteContactInbox removes a specific ContactInbox record
 func (r *ContactExtensionRepository) DeleteContactInbox(accountID, contactID, contactInboxID uint) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var ci domain.ContactInbox
-		err := tx.Joins("JOIN inboxes ON inboxes.id = contact_inboxes.inbox_id").
-			Where("inboxes.account_id = ? AND contact_inboxes.contact_id = ? AND contact_inboxes.id = ?", accountID, contactID, contactInboxID).
-			First(&ci).Error
-		if err != nil {
-			return err
-		}
-		return tx.Delete(&ci).Error
-	})
+	contact, err := r.findContact(accountID, contactID)
+	if err != nil {
+		return err
+	}
+	if contact == nil {
+		return gorm.ErrRecordNotFound
+	}
+	var ci domain.ContactInbox
+	if err := r.db.Where("contact_id = ? AND id = ?", contactID, contactInboxID).First(&ci).Error; err != nil {
+		return err
+	}
+	if r.inboxes == nil {
+		return gorm.ErrInvalidData
+	}
+	exists, err := r.inboxes.Exists(accountID, ci.InboxID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	return r.db.Delete(&ci).Error
 }
 
 // DeleteContactInboxByInboxID removes a ContactInbox record by inbox_id
 func (r *ContactExtensionRepository) DeleteContactInboxByInboxID(accountID, contactID, inboxID uint) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var ci domain.ContactInbox
-		err := tx.Joins("JOIN inboxes ON inboxes.id = contact_inboxes.inbox_id").
-			Where("inboxes.account_id = ? AND contact_inboxes.contact_id = ? AND contact_inboxes.inbox_id = ?", accountID, contactID, inboxID).
-			First(&ci).Error
-		if err != nil {
-			return err
-		}
-		return tx.Delete(&ci).Error
-	})
+	contact, err := r.findContact(accountID, contactID)
+	if err != nil {
+		return err
+	}
+	if contact == nil {
+		return gorm.ErrRecordNotFound
+	}
+	if r.inboxes == nil {
+		return gorm.ErrInvalidData
+	}
+	exists, err := r.inboxes.Exists(accountID, inboxID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	result := r.db.Where("contact_id = ? AND inbox_id = ?", contactID, inboxID).Delete(&domain.ContactInbox{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // ListContactConversations lists all conversations belonging to a contact
 func (r *ContactExtensionRepository) ListContactConversations(accountID, contactID uint, status string, inboxID *uint, page, pageSize int) ([]domain.Conversation, int64, error) {
-	var conversations []domain.Conversation
-	var total int64
-
-	query := r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND contact_id = ?", accountID, contactID)
-
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-
-	if inboxID != nil && *inboxID > 0 {
-		query = query.Where("inbox_id = ?", *inboxID)
-	}
-
-	if err := query.Count(&total).Error; err != nil {
+	contact, err := r.findContact(accountID, contactID)
+	if err != nil {
 		return nil, 0, err
 	}
-
-	if page < 1 {
-		page = 1
+	if contact == nil {
+		return []domain.Conversation{}, 0, nil
 	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 25
+	if r.conversations == nil {
+		return nil, 0, gorm.ErrInvalidData
 	}
-	offset := (page - 1) * pageSize
-
-	err := query.Preload("Inbox").
-		Preload("Assignee").
-		Preload("Labels").
-		Preload("Team").
-		Offset(offset).
-		Limit(pageSize).
-		Order("last_activity_at DESC, id DESC").
-		Find(&conversations).Error
-
-	return conversations, total, err
+	return r.conversations.ListByContactIDs(accountID, []uint{contactID}, status, inboxID, &contactID, page, pageSize)
 }
 
 // GetContactStats gathers comprehensive interaction statistics for a contact
 func (r *ContactExtensionRepository) GetContactStats(accountID, contactID uint) (*ContactStats, error) {
-	var contact domain.Contact
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, contactID).First(&contact).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
+	contact, err := r.findContact(accountID, contactID)
+	if err != nil || contact == nil {
 		return nil, err
 	}
 
@@ -365,54 +371,35 @@ func (r *ContactExtensionRepository) GetContactStats(accountID, contactID uint) 
 		ContactID: contactID,
 	}
 
-	// 1. Conversations count & status breakdown
-	_ = r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND contact_id = ?", accountID, contactID).
-		Count(&stats.ConversationsCount).Error
-
-	_ = r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND contact_id = ? AND status = ?", accountID, contactID, domain.ConversationStatusOpen).
-		Count(&stats.OpenConversationsCount).Error
-
-	_ = r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND contact_id = ? AND status = ?", accountID, contactID, domain.ConversationStatusResolved).
-		Count(&stats.ResolvedConversationsCount).Error
-
-	// 2. Messages count
-	_ = r.db.Table("messages").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("conversations.account_id = ? AND conversations.contact_id = ?", accountID, contactID).
-		Count(&stats.MessagesCount).Error
-
-	// 3. Attachments count
-	_ = r.db.Table("attachments").
-		Joins("JOIN messages ON messages.id = attachments.message_id").
-		Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("conversations.account_id = ? AND conversations.contact_id = ?", accountID, contactID).
-		Count(&stats.AttachmentsCount).Error
+	if r.conversations == nil || r.messages == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	convStats, err := r.conversations.GetStatsByContactIDs(accountID, []uint{contactID})
+	if err != nil {
+		return nil, err
+	}
+	stats.ConversationsCount, stats.OpenConversationsCount, stats.ResolvedConversationsCount = convStats.Total, convStats.Open, convStats.Resolved
+	stats.MessagesCount, stats.AttachmentsCount, err = r.messages.CountActivityByConversationIDs(accountID, convStats.ConversationIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	// 4. Contact inboxes count
-	_ = r.db.Table("contact_inboxes").
-		Joins("JOIN inboxes ON inboxes.id = contact_inboxes.inbox_id").
-		Where("inboxes.account_id = ? AND contact_inboxes.contact_id = ?", accountID, contactID).
-		Count(&stats.ContactInboxesCount).Error
+	contactInboxes, err := r.ListContactInboxes(accountID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	stats.ContactInboxesCount = int64(len(contactInboxes))
 
 	// 5. First seen & last activity timestamps
-	var earliestConv domain.Conversation
-	if err := r.db.Where("account_id = ? AND contact_id = ?", accountID, contactID).
-		Order("created_at ASC").First(&earliestConv).Error; err == nil {
-		t := earliestConv.CreatedAt
-		stats.FirstSeenAt = &t
+	if convStats.FirstInteractionAt != nil {
+		stats.FirstSeenAt = convStats.FirstInteractionAt
 	} else {
 		t := contact.CreatedAt
 		stats.FirstSeenAt = &t
 	}
-
-	var latestConv domain.Conversation
-	if err := r.db.Where("account_id = ? AND contact_id = ?", accountID, contactID).
-		Order("last_activity_at DESC").First(&latestConv).Error; err == nil && !latestConv.LastActivityAt.IsZero() {
-		t := latestConv.LastActivityAt
-		stats.LastActivityAt = &t
+	if convStats.LastActivityAt != nil && !convStats.LastActivityAt.IsZero() {
+		stats.LastActivityAt = convStats.LastActivityAt
 	} else if stats.FirstSeenAt != nil {
 		stats.LastActivityAt = stats.FirstSeenAt
 	}
