@@ -3494,6 +3494,86 @@
     },
     {
       "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "AssignCapacityPolicy",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "ClearCapacityPolicy",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "CountCapacityPolicyMembers",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "GetMembership",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "ListCapacityPolicyMembers",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository",
+      "method": "RemoveCapacityPolicy",
+      "use": "write",
+      "contract": "ten.membership.add.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTE",
       "provider": "CON",
       "file": "internal/service/routing_service.go",
       "symbol": "ConversationRepository",

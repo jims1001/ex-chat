@@ -164,6 +164,71 @@ func (r *AccountRepository) UpdateMember(member *domain.AccountUser) error {
 	return r.db.Omit("User", "AgentCapacityPolicy").Save(member).Error
 }
 
+func (r *AccountRepository) ListCapacityPolicyMembers(accountID, policyID uint) ([]domain.AccountUser, error) {
+	var members []domain.AccountUser
+	if err := r.db.Where("account_id = ? AND agent_capacity_policy_id = ?", accountID, policyID).Order("user_id ASC").Find(&members).Error; err != nil {
+		return nil, err
+	}
+	if len(members) == 0 {
+		return members, nil
+	}
+	if r.users == nil {
+		return nil, gorm.ErrInvalidData
+	}
+	ids := make([]uint, len(members))
+	for i := range members {
+		ids[i] = members[i].UserID
+	}
+	users, err := r.users.FindByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[uint]*domain.User, len(users))
+	for i := range users {
+		byID[users[i].ID] = &users[i]
+	}
+	for i := range members {
+		members[i].User = byID[members[i].UserID]
+	}
+	return members, nil
+}
+
+func (r *AccountRepository) CountCapacityPolicyMembers(accountID, policyID uint) (int64, error) {
+	var count int64
+	err := r.db.Model(&domain.AccountUser{}).Where("account_id = ? AND agent_capacity_policy_id = ?", accountID, policyID).Count(&count).Error
+	return count, err
+}
+
+func (r *AccountRepository) AssignCapacityPolicy(accountID, userID, policyID uint) error {
+	result := r.db.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", accountID, userID).Update("agent_capacity_policy_id", policyID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *AccountRepository) RemoveCapacityPolicy(accountID, userID, policyID uint) error {
+	result := r.db.Model(&domain.AccountUser{}).
+		Where("account_id = ? AND user_id = ? AND agent_capacity_policy_id = ?", accountID, userID, policyID).
+		Update("agent_capacity_policy_id", nil)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *AccountRepository) ClearCapacityPolicy(accountID, policyID uint) error {
+	return r.db.Model(&domain.AccountUser{}).
+		Where("account_id = ? AND agent_capacity_policy_id = ?", accountID, policyID).
+		Update("agent_capacity_policy_id", nil).Error
+}
+
 func (r *AccountRepository) RemoveMember(accountID, userID uint) error {
 	return r.db.Where("account_id = ? AND user_id = ?", accountID, userID).Delete(&domain.AccountUser{}).Error
 }

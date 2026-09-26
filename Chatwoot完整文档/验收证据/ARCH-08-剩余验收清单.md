@@ -1,6 +1,6 @@
 # ARCH-08 剩余验收清单
 
-基线：E-ARCH-08-v17。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
+基线：E-ARCH-08-v18。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
 
 ## 必须完成的工作
 
@@ -61,4 +61,5 @@
 - 已完成并验证：RTE 策略详情和列表的 fallback 用户/团队由 TEN/IAM 所有者端口组合，关联对象不写入 RTE（E-ARCH-08-v15）。
 - 已完成并验证：RoutingService 自动分配和容量检查通过 CHN/TEN/IAM/CON/MSG 所有者查询，跨账号 fallback 与依赖故障明确失败（E-ARCH-08-v16）。
 - 已完成并验证：RoutingService 休眠扫描和条件恢复由 CON 所有者执行，重复调度不重复返回（E-ARCH-08-v17）。
-- 下一项：AgentCapacityPolicyRepository 的 TEN/CHN 预加载、成员写入与计数边界。
+- 已完成并验证：AgentCapacityPolicyRepository 只访问 RTE 权威数据，TEN 成员与 CHN 收件箱由 handler 通过所有者合同组合（E-ARCH-08-v18）。
+- 下一项：RPT AppliedSLARepository 的 CON 会话访问边界。

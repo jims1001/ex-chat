@@ -92,6 +92,8 @@
     {"consumer":"RTE","provider":"CHN","kind":"synchronous","file":"internal/handler/assignment_policy_handler.go","symbol":"InboxRepository"},
     {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/handler/assignment_policy_handler.go","symbol":"AccountRepository"},
     {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/handler/assignment_policy_handler.go","symbol":"TeamRepository"},
+    {"consumer":"RTE","provider":"CHN","kind":"synchronous","file":"internal/handler/agent_capacity_policy_handler.go","symbol":"InboxRepository"},
+    {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/handler/agent_capacity_policy_handler.go","symbol":"AccountRepository"},
     {"consumer":"RTE","provider":"CON","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"ConversationRepository"},
     {"consumer":"RTE","provider":"MSG","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"MessageRepository"},
     {"consumer":"RTE","provider":"CHN","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"InboxRepository"},

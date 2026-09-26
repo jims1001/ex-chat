@@ -12,10 +12,56 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type AgentCapacityPolicyHandler struct {
-	repo *repository.AgentCapacityPolicyRepository
+	repo        *repository.AgentCapacityPolicyRepository
+	accountRepo *repository.AccountRepository
+	inboxRepo   *repository.InboxRepository
+}
+
+func (h *AgentCapacityPolicyHandler) SetOwnerRepositories(accounts *repository.AccountRepository, inboxes *repository.InboxRepository) {
+	h.accountRepo = accounts
+	h.inboxRepo = inboxes
+}
+
+func (h *AgentCapacityPolicyHandler) hydratePolicy(accountID uint, policy *domain.AgentCapacityPolicy) error {
+	if h.accountRepo == nil || h.inboxRepo == nil {
+		return errors.New("capacity policy owner repositories are not configured")
+	}
+	limits, err := h.repo.ListInboxLimits(policy.ID)
+	if err != nil {
+		return err
+	}
+	ids := make([]uint, 0, len(limits))
+	for i := range limits {
+		ids = append(ids, limits[i].InboxID)
+	}
+	if len(ids) > 0 {
+		inboxes, err := h.inboxRepo.FindByIDs(accountID, ids)
+		if err != nil {
+			return err
+		}
+		byID := make(map[uint]*domain.Inbox, len(inboxes))
+		for i := range inboxes {
+			byID[inboxes[i].ID] = &inboxes[i]
+		}
+		for i := range limits {
+			inbox := byID[limits[i].InboxID]
+			if inbox == nil {
+				return gorm.ErrRecordNotFound
+			}
+			limits[i].Inbox = inbox
+		}
+	}
+	count, err := h.accountRepo.CountCapacityPolicyMembers(accountID, policy.ID)
+	if err != nil {
+		return err
+	}
+	policy.InboxCapacityLimits = limits
+	policy.UsersCount = int(count)
+	return nil
 }
 
 func NewAgentCapacityPolicyHandler(repo *repository.AgentCapacityPolicyRepository) *AgentCapacityPolicyHandler {
@@ -36,6 +82,12 @@ func (h *AgentCapacityPolicyHandler) List(c *gin.Context) {
 		)
 		response.InternalError(c, "Failed to list capacity policies: "+err.Error())
 		return
+	}
+	for i := range policies {
+		if err := h.hydratePolicy(accountID, &policies[i]); err != nil {
+			response.InternalError(c, "Failed to load capacity policy owners")
+			return
+		}
 	}
 
 	response.Success(c, policies)
@@ -59,6 +111,19 @@ func (h *AgentCapacityPolicyHandler) Create(c *gin.Context) {
 
 	// Graceful fallback for legacy payload: {"user_id": ..., "conversation_limit": ...}
 	if strings.TrimSpace(req.Name) == "" && req.UserID > 0 {
+		if h.accountRepo == nil {
+			response.InternalError(c, "Account repository is not configured")
+			return
+		}
+		membership, err := h.accountRepo.GetMembership(accountID, req.UserID)
+		if err != nil {
+			response.InternalError(c, "Failed to validate account member")
+			return
+		}
+		if membership == nil {
+			response.BadRequest(c, "User is not a member of this account")
+			return
+		}
 		legacyPolicy := domain.CapacityPolicy{
 			AccountID:         accountID,
 			UserID:            req.UserID,
@@ -134,6 +199,10 @@ func (h *AgentCapacityPolicyHandler) Show(c *gin.Context) {
 		response.NotFound(c, "Capacity policy not found")
 		return
 	}
+	if err := h.hydratePolicy(accountID, policy); err != nil {
+		response.InternalError(c, "Failed to load capacity policy owners")
+		return
+	}
 
 	response.Success(c, policy)
 }
@@ -148,7 +217,7 @@ func (h *AgentCapacityPolicyHandler) Update(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.repo.FindByID(accountID, uint(id))
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
 	if err != nil {
 		response.InternalError(c, "Failed to get capacity policy: "+err.Error())
 		return
@@ -191,6 +260,10 @@ func (h *AgentCapacityPolicyHandler) Update(c *gin.Context) {
 		response.InternalError(c, "Failed to update capacity policy: "+err.Error())
 		return
 	}
+	if err := h.hydratePolicy(accountID, policy); err != nil {
+		response.InternalError(c, "Failed to load capacity policy owners")
+		return
+	}
 
 	logger.WithComponent("capacity_policy").Info("capacity policy updated successfully",
 		"account_id", accountID,
@@ -211,7 +284,7 @@ func (h *AgentCapacityPolicyHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.repo.FindByID(accountID, uint(id))
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
 	if err != nil {
 		response.InternalError(c, "Failed to get capacity policy: "+err.Error())
 		return
@@ -221,6 +294,14 @@ func (h *AgentCapacityPolicyHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	if h.accountRepo == nil {
+		response.InternalError(c, "Account repository is not configured")
+		return
+	}
+	if err := h.accountRepo.ClearCapacityPolicy(accountID, uint(id)); err != nil {
+		response.InternalError(c, "Failed to clear capacity policy members")
+		return
+	}
 	if err := h.repo.Delete(accountID, uint(id)); err != nil {
 		logger.WithComponent("capacity_policy").Error("failed to delete capacity policy",
 			"account_id", accountID,
@@ -251,12 +332,22 @@ func (h *AgentCapacityPolicyHandler) ListUsers(c *gin.Context) {
 		return
 	}
 
-	users, err := h.repo.ListUsers(accountID, uint(id))
+	if h.accountRepo == nil {
+		response.InternalError(c, "Account repository is not configured")
+		return
+	}
+	members, err := h.accountRepo.ListCapacityPolicyMembers(accountID, uint(id))
 	if err != nil {
 		response.InternalError(c, "Failed to list policy members: "+err.Error())
 		return
 	}
 
+	users := make([]domain.User, 0, len(members))
+	for _, member := range members {
+		if member.User != nil {
+			users = append(users, *member.User)
+		}
+	}
 	response.Success(c, users)
 }
 
@@ -270,7 +361,7 @@ func (h *AgentCapacityPolicyHandler) AddUser(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.repo.FindByID(accountID, uint(id))
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
 	if err != nil || policy == nil {
 		response.NotFound(c, "Capacity policy not found")
 		return
@@ -284,8 +375,12 @@ func (h *AgentCapacityPolicyHandler) AddUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.AddUser(accountID, uint(id), req.UserID); err != nil {
-		if errors.Is(err, repository.ErrUserNotInAccount) {
+	if h.accountRepo == nil {
+		response.InternalError(c, "Account repository is not configured")
+		return
+	}
+	if err := h.accountRepo.AssignCapacityPolicy(accountID, req.UserID, uint(id)); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.BadRequest(c, "User is not a member of this account")
 			return
 		}
@@ -324,7 +419,11 @@ func (h *AgentCapacityPolicyHandler) RemoveUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.RemoveUser(accountID, uint(id), uint(userID)); err != nil {
+	if h.accountRepo == nil {
+		response.InternalError(c, "Account repository is not configured")
+		return
+	}
+	if err := h.accountRepo.RemoveCapacityPolicy(accountID, uint(userID), uint(id)); err != nil {
 		logger.WithComponent("capacity_policy").Warn("failed to remove user from capacity policy",
 			"account_id", accountID,
 			"policy_id", uint(id),
@@ -356,7 +455,7 @@ func (h *AgentCapacityPolicyHandler) CreateInboxLimit(c *gin.Context) {
 		return
 	}
 
-	policy, err := h.repo.FindByID(accountID, uint(id))
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
 	if err != nil || policy == nil {
 		response.NotFound(c, "Capacity policy not found")
 		return
@@ -376,7 +475,20 @@ func (h *AgentCapacityPolicyHandler) CreateInboxLimit(c *gin.Context) {
 		return
 	}
 
-	limit, err := h.repo.CreateInboxLimit(accountID, uint(id), req.InboxID, *req.ConversationLimit)
+	if h.inboxRepo == nil {
+		response.InternalError(c, "Inbox repository is not configured")
+		return
+	}
+	inbox, err := h.inboxRepo.FindSummaryByID(accountID, req.InboxID)
+	if err != nil {
+		response.InternalError(c, "Failed to validate inbox")
+		return
+	}
+	if inbox == nil {
+		response.BadRequest(c, "Inbox does not belong to this account")
+		return
+	}
+	limit, err := h.repo.CreateInboxLimit(uint(id), req.InboxID, *req.ConversationLimit)
 	if err != nil {
 		if errors.Is(err, repository.ErrDuplicateInboxLimit) {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{
@@ -394,6 +506,7 @@ func (h *AgentCapacityPolicyHandler) CreateInboxLimit(c *gin.Context) {
 		response.BadRequest(c, "Failed to create inbox limit: "+err.Error())
 		return
 	}
+	limit.Inbox = inbox
 
 	logger.WithComponent("capacity_policy").Info("created inbox capacity limit",
 		"account_id", accountID,
@@ -433,8 +546,31 @@ func (h *AgentCapacityPolicyHandler) UpdateInboxLimit(c *gin.Context) {
 		response.BadRequest(c, "Conversation limit cannot be negative")
 		return
 	}
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
+	if err != nil || policy == nil {
+		response.NotFound(c, "Capacity policy not found")
+		return
+	}
+	current, err := h.repo.FindInboxLimitByID(uint(id), uint(limitID))
+	if err != nil || current == nil {
+		response.NotFound(c, "Inbox capacity limit not found for this policy")
+		return
+	}
+	if h.inboxRepo == nil {
+		response.InternalError(c, "Inbox repository is not configured")
+		return
+	}
+	inbox, err := h.inboxRepo.FindSummaryByID(accountID, current.InboxID)
+	if err != nil {
+		response.InternalError(c, "Failed to validate inbox")
+		return
+	}
+	if inbox == nil {
+		response.NotFound(c, "Inbox capacity limit not found for this account")
+		return
+	}
 
-	limit, err := h.repo.UpdateInboxLimit(accountID, uint(id), uint(limitID), req.ConversationLimit)
+	limit, err := h.repo.UpdateInboxLimit(uint(id), uint(limitID), req.ConversationLimit)
 	if err != nil {
 		logger.WithComponent("capacity_policy").Warn("inbox capacity limit not found for policy update",
 			"account_id", accountID,
@@ -444,6 +580,7 @@ func (h *AgentCapacityPolicyHandler) UpdateInboxLimit(c *gin.Context) {
 		response.NotFound(c, "Inbox capacity limit not found for this policy")
 		return
 	}
+	limit.Inbox = inbox
 
 	logger.WithComponent("capacity_policy").Info("updated inbox capacity limit",
 		"account_id", accountID,
@@ -471,7 +608,12 @@ func (h *AgentCapacityPolicyHandler) DeleteInboxLimit(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.DeleteInboxLimit(accountID, uint(id), uint(limitID)); err != nil {
+	policy, err := h.repo.FindSummaryByID(accountID, uint(id))
+	if err != nil || policy == nil {
+		response.NotFound(c, "Capacity policy not found")
+		return
+	}
+	if err := h.repo.DeleteInboxLimit(uint(id), uint(limitID)); err != nil {
 		logger.WithComponent("capacity_policy").Warn("inbox capacity limit not found for deletion",
 			"account_id", accountID,
 			"policy_id", uint(id),

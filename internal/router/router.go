@@ -200,6 +200,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	assignmentPolicyHandler := handler.NewAssignmentPolicyHandler(assignmentPolicyRepo, inboxRepo)
 	assignmentPolicyHandler.SetFallbackRepositories(accountRepo, teamRepo)
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
+	agentCapacityPolicyHandler.SetOwnerRepositories(accountRepo, inboxRepo)
 	csatHandler := handler.NewCSATHandler(csatExtensionRepo, msgRepo, convRepo, inboxRepo, contactRepo, accountRepo)
 	csatHandler.SetJWTSecret(cfg.JWTSecret)
 	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService, convRepo)
