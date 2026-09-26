@@ -1,6 +1,6 @@
 # ARCH-08 剩余验收清单
 
-基线：E-ARCH-08-v29。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
+基线：E-ARCH-08-v30。整体状态：REWORK。此清单是下一轮实现与验收的入口，不能以阶段分库用例替代全模块业务验收。
 
 ## 必须完成的工作
 
@@ -73,4 +73,5 @@
 - 已完成并验证：原 crm_ops_advanced_repository.go 中四个仓储已按 CUS/RPT/EXT/MSG 物理拆分；AttachmentRepository 修正为 MSG 所有者，并校验消息账号归属（E-ARCH-08-v27）。
 - 已完成并验证：OpsRepository 已拆为 OPS/NTF/QLT 所有者文件；Macro 通过 CON/TEN/CUS/MSG 所有者命令完成会话、成员团队、标签、消息和附件操作（E-ARCH-08-v28）。
 - 已完成并验证：PlatformRepository 通过 TEN/IAM 所有者合同处理账号、成员和用户生命周期，EXT 不再保存或查询外部权威表（E-ARCH-08-v29）。
-- 下一项：PublicRepository 的 CHN/CUS/CON/MSG 跨所有者访问边界。
+- 已完成并验证：PublicRepository 通过 CHN/CUS/CON/MSG 所有者合同组合公开视图，并由 MSG 强制过滤私密消息（E-ARCH-08-v30）。
+- 下一项：QARepository 的 TKT/CON 跨所有者访问边界。

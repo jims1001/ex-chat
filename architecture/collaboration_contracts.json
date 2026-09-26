@@ -4286,6 +4286,106 @@
       "use": "write",
       "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindByGlobalID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindByWebsiteToken",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ContactRepository",
+      "method": "ResolvePublic",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ContactRepository",
+      "method": "UpdatePublic",
+      "use": "write",
+      "contract": "cus.contact.update.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ListByContactIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindForInbox",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "UpdateStatus",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "UpdateCustomAttributes",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "MessageRepository",
+      "method": "ListPublicByConversation",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
     }
   ]
 }

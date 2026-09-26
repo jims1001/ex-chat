@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("MSG_attachments_validate_message_owner", func(t *testing.T) { testAttachmentRepositoryMessageBoundary(t, openStore) })
 	t.Run("OPS_macros_use_CON_TEN_CUS_MSG_owner_commands", func(t *testing.T) { testMacroRepositoryOwnerBoundary(t, openStore) })
 	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
+	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -862,6 +864,77 @@ func testPlatformRepositoryOwnerBoundary(t *testing.T, openStore func(string) *g
 	}{
 		"EXT-account": {extDB, &domain.Account{}}, "EXT-user": {extDB, &domain.User{}}, "EXT-member": {extDB, &domain.AccountUser{}},
 		"TEN-user": {tenDB, &domain.User{}}, "IAM-account": {iamDB, &domain.Account{}},
+	} {
+		if check.db.Migrator().HasTable(check.model) {
+			t.Fatalf("%s contains a foreign authority table", name)
+		}
+	}
+}
+
+func testPublicRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	chnDB, cusDB, conDB, msgDB := openStore("CHN"), openStore("CUS"), openStore("CON"), openStore("MSG")
+	inbox := domain.Inbox{AccountID: 71, Name: "Public Inbox", WebsiteToken: "public-owner-token", ChannelType: "Channel::WebWidget"}
+	contact := domain.Contact{AccountID: 71, Name: "Public Contact", Identifier: "public-contact", CustomAttributes: `{"tier":"basic"}`}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	relation := domain.ContactInbox{ContactID: contact.ID, InboxID: inbox.ID, SourceID: "public-source"}
+	if err := cusDB.Create(&relation).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 71, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	publicMessage := domain.Message{AccountID: 71, ConversationID: conversation.ID, Content: "visible", Private: false}
+	privateMessage := domain.Message{AccountID: 71, ConversationID: conversation.ID, Content: "hidden", Private: true}
+	if err := msgDB.Create(&publicMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := msgDB.Create(&privateMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+	inboxes, contacts := repository.NewInboxRepository(chnDB), repository.NewContactRepository(cusDB)
+	messages := repository.NewMessageRepositoryWithConversationPort(msgDB, nil)
+	conversations := repository.NewConversationRepositoryWithReadPorts(conDB, messages, nil, inboxes, contacts, nil, nil, nil)
+	repo := repository.NewPublicRepositoryWithOwnerPorts(inboxes, contacts, conversations, messages)
+	gotInbox, err := repo.FindInboxByIdentifier(context.Background(), inbox.WebsiteToken)
+	if err != nil || gotInbox == nil || gotInbox.ID != inbox.ID {
+		t.Fatalf("inbox=%+v err=%v", gotInbox, err)
+	}
+	gotContact, gotRelation, err := repo.ResolveContact(context.Background(), inbox.ID, 71, relation.SourceID)
+	if err != nil || gotContact == nil || gotContact.ID != contact.ID || gotRelation == nil {
+		t.Fatalf("contact=%+v relation=%+v err=%v", gotContact, gotRelation, err)
+	}
+	updatedContact, err := repo.UpdateContact(context.Background(), 71, contact.ID, map[string]any{"name": "Updated Public Contact"}, map[string]any{"tier": "gold"})
+	if err != nil || updatedContact.Name != "Updated Public Contact" || !strings.Contains(updatedContact.CustomAttributes, "gold") {
+		t.Fatalf("updated contact=%+v err=%v", updatedContact, err)
+	}
+	listed, total, err := repo.ListContactConversations(context.Background(), 71, inbox.ID, contact.ID, "all", 1, 10)
+	if err != nil || total != 1 || len(listed) != 1 || len(listed[0].Messages) != 1 || listed[0].Messages[0].Content != "visible" {
+		t.Fatalf("conversations=%+v total=%d err=%v", listed, total, err)
+	}
+	detail, err := repo.GetContactConversation(context.Background(), 71, inbox.ID, contact.ID, conversation.ID)
+	if err != nil || detail == nil || len(detail.Messages) != 1 {
+		t.Fatalf("detail=%+v err=%v", detail, err)
+	}
+	updatedConversation, err := repo.UpdateConversationStatus(context.Background(), 71, conversation.ID, domain.ConversationStatusResolved)
+	if err != nil || updatedConversation.Status != domain.ConversationStatusResolved {
+		t.Fatalf("conversation=%+v err=%v", updatedConversation, err)
+	}
+	attributes, err := repo.MergeConversationCustomAttributes(context.Background(), 71, conversation.ID, map[string]any{"source": "public"})
+	if err != nil || attributes["source"] != "public" {
+		t.Fatalf("attributes=%+v err=%v", attributes, err)
+	}
+	for name, check := range map[string]struct {
+		db    *gorm.DB
+		model any
+	}{
+		"CHN-contact": {chnDB, &domain.Contact{}}, "CUS-conversation": {cusDB, &domain.Conversation{}},
+		"CON-message": {conDB, &domain.Message{}}, "MSG-conversation": {msgDB, &domain.Conversation{}},
 	} {
 		if check.db.Migrator().HasTable(check.model) {
 			t.Fatalf("%s contains a foreign authority table", name)

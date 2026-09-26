@@ -381,6 +381,29 @@ func (r *MessageRepository) ListByConversation(accountID, conversationID uint, i
 	return messages, total, err
 }
 
+func (r *MessageRepository) ListPublicByConversation(accountID, conversationID, beforeID, afterID uint, page, pageSize int) ([]domain.Message, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 25
+	}
+	query := r.db.Model(&domain.Message{}).Where("account_id = ? AND conversation_id = ? AND private = false", accountID, conversationID)
+	if beforeID > 0 {
+		query = query.Where("id < ?", beforeID)
+	}
+	if afterID > 0 {
+		query = query.Where("id > ?", afterID)
+	}
+	var messages []domain.Message
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Order("id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&messages).Error
+	return messages, total, err
+}
+
 func (r *MessageRepository) FindCaptainConversationIDs(accountID, assistantID uint, start, end time.Time) ([]uint, error) {
 	var ids []uint
 	err := r.db.Model(&domain.Message{}).

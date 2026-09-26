@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +100,80 @@ func (r *ContactRepository) FindByIdentifier(accountID uint, identifier string) 
 		return nil, err
 	}
 	return &contact, nil
+}
+
+func (r *ContactRepository) ResolvePublic(accountID, inboxID uint, idOrSourceID string) (*domain.Contact, *domain.ContactInbox, error) {
+	value := strings.TrimSpace(idOrSourceID)
+	if value == "" {
+		return nil, nil, nil
+	}
+	if numericID, err := strconv.ParseUint(value, 10, 64); err == nil && numericID > 0 {
+		contact, err := r.FindByID(accountID, uint(numericID))
+		if err != nil {
+			return nil, nil, err
+		}
+		if contact != nil {
+			var relation domain.ContactInbox
+			result := r.db.Where("contact_id = ? AND inbox_id = ?", contact.ID, inboxID).First(&relation)
+			if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, nil, result.Error
+			}
+			return contact, &relation, nil
+		}
+	}
+	var relation domain.ContactInbox
+	if err := r.db.Where("inbox_id = ? AND source_id = ?", inboxID, value).First(&relation).Error; err == nil {
+		contact, err := r.FindByID(accountID, relation.ContactID)
+		return contact, &relation, err
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, err
+	}
+	contact, err := r.FindByIdentifier(accountID, value)
+	if err != nil || contact == nil {
+		return contact, nil, err
+	}
+	result := r.db.Where("contact_id = ? AND inbox_id = ?", contact.ID, inboxID).First(&relation)
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, nil, result.Error
+	}
+	return contact, &relation, nil
+}
+
+func (r *ContactRepository) UpdatePublic(accountID, contactID uint, updates, customAttrs map[string]any) (*domain.Contact, error) {
+	contact, err := r.FindByID(accountID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	if contact == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if updates == nil {
+		updates = make(map[string]any)
+	}
+	if customAttrs != nil {
+		existing := make(map[string]any)
+		if strings.TrimSpace(contact.CustomAttributes) != "" {
+			_ = json.Unmarshal([]byte(contact.CustomAttributes), &existing)
+		}
+		for key, value := range customAttrs {
+			if value == nil {
+				delete(existing, key)
+			} else {
+				existing[key] = value
+			}
+		}
+		encoded, err := json.Marshal(existing)
+		if err != nil {
+			return nil, err
+		}
+		updates["custom_attributes"] = string(encoded)
+	}
+	if len(updates) > 0 {
+		if err := r.db.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", accountID, contactID).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+	return r.FindByID(accountID, contactID)
 }
 
 func (r *ContactRepository) List(accountID uint, page, pageSize int, search string) ([]domain.Contact, int64, error) {
