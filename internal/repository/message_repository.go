@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -402,6 +403,38 @@ func (r *MessageRepository) ListPublicByConversation(accountID, conversationID, 
 	}
 	err := query.Order("id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&messages).Error
 	return messages, total, err
+}
+
+func (r *MessageRepository) UpdateWidgetSubmittedValues(messageID, conversationID uint, submittedValues map[string]any, content string) (*domain.Message, error) {
+	var message domain.Message
+	if err := r.db.Where("id = ? AND conversation_id = ?", messageID, conversationID).First(&message).Error; err != nil {
+		return nil, err
+	}
+	updates := map[string]any{}
+	if strings.TrimSpace(content) != "" {
+		updates["content"] = content
+	}
+	if submittedValues != nil {
+		attributes := map[string]any{}
+		if strings.TrimSpace(message.ContentAttributes) != "" {
+			_ = json.Unmarshal([]byte(message.ContentAttributes), &attributes)
+		}
+		attributes["submitted_values"] = submittedValues
+		encoded, err := json.Marshal(attributes)
+		if err != nil {
+			return nil, err
+		}
+		updates["content_attributes"] = string(encoded)
+	}
+	if len(updates) > 0 {
+		if err := r.db.Model(&domain.Message{}).Where("id = ? AND conversation_id = ?", messageID, conversationID).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+	}
+	if err := r.db.Where("id = ? AND conversation_id = ?", messageID, conversationID).First(&message).Error; err != nil {
+		return nil, err
+	}
+	return &message, nil
 }
 
 func (r *MessageRepository) FindCaptainConversationIDs(accountID, assistantID uint, start, end time.Time) ([]uint, error) {

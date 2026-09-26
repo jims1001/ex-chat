@@ -59,7 +59,8 @@
     {"consumer":"OPS","file":"internal/repository/macro_repository.go"},
     {"consumer":"EXT","file":"internal/repository/platform_repository.go"},
     {"consumer":"API","file":"internal/repository/public_repository.go"},
-    {"consumer":"QLT","file":"internal/repository/qa_repository.go"}
+    {"consumer":"QLT","file":"internal/repository/qa_repository.go"},
+    {"consumer":"API","file":"internal/repository/widget_repository.go"}
   ],
   "modules": [
     {"name":"IAM","synchronous":[],"events":[],"shared":[],"startup":[]},
@@ -214,6 +215,12 @@
     {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"ConversationRepository"},
     {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"MessageRepository"},
     {"consumer":"QLT","provider":"TKT","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"TicketRepository"},
-    {"consumer":"QLT","provider":"CON","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"ConversationRepository"}
+    {"consumer":"QLT","provider":"CON","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"ConversationRepository"},
+    {"consumer":"API","provider":"CHN","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"InboxRepository"},
+    {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"ContactRepository"},
+    {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"ConversationRepository"},
+    {"consumer":"API","provider":"OPS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"CampaignRepository"},
+    {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"LabelRepository"},
+    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"MessageRepository"}
   ]
 }

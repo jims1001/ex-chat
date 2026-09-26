@@ -4406,6 +4406,196 @@
       "use": "read",
       "contract": "con.conversation.get.v1",
       "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "InboxRepository",
+      "method": "FindByWebsiteToken",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ContactRepository",
+      "method": "FindContactBySourceID",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ContactRepository",
+      "method": "UpdatePublic",
+      "use": "write",
+      "contract": "cus.contact.update.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ContactRepository",
+      "method": "DestroyCustomAttributes",
+      "use": "write",
+      "contract": "cus.contact.update.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ContactRepository",
+      "method": "SetWidgetUser",
+      "use": "write",
+      "contract": "cus.contact.update.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "ListForWidget",
+      "use": "read",
+      "contract": "con.conversations.list.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "FindForInbox",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ConversationRepository",
+      "method": "UpdateCustomAttributes",
+      "use": "write",
+      "contract": "con.conversation.update.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "OPS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "CampaignRepository",
+      "method": "ListActiveOngoing",
+      "use": "read",
+      "contract": "ops.campaign.get.v1",
+      "replicaEvent": "ops.campaign.started.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "FindOrCreateByTitle",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "AttachToContact",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "AttachToConversation",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "FindByTitle",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "DetachFromContact",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "DetachFromConversation",
+      "use": "write",
+      "contract": "cus.label.manage.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "GetConversationLabels",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository",
+      "method": "GetContactLabels",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "MessageRepository",
+      "method": "ListPublicByConversation",
+      "use": "read",
+      "contract": "msg.messages.list.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "MessageRepository",
+      "method": "UpdateWidgetSubmittedValues",
+      "use": "write",
+      "contract": "msg.message.update.v1",
+      "replicaEvent": "msg.message.changed.v1"
     }
   ]
 }

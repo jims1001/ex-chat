@@ -283,6 +283,109 @@ func (r *ContactRepository) FindContactBySourceID(inboxID uint, sourceID string)
 	return ci.Contact, nil
 }
 
+// SetWidgetUser resolves or creates a CUS-owned contact and its ContactInbox mapping.
+func (r *ContactRepository) SetWidgetUser(accountID, inboxID uint, identifier, name, email, phone, avatarURL string, customAttrs map[string]any, sourceID string) (*domain.Contact, error) {
+	identifier = strings.TrimSpace(identifier)
+	email = strings.ToLower(strings.TrimSpace(email))
+	phone = strings.TrimSpace(phone)
+	name = strings.TrimSpace(name)
+	avatarURL = strings.TrimSpace(avatarURL)
+	sourceID = strings.TrimSpace(sourceID)
+
+	var contact *domain.Contact
+	var err error
+	if identifier != "" {
+		contact, err = r.FindByIdentifier(accountID, identifier)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if contact == nil && email != "" {
+		var found domain.Contact
+		err = r.db.Where("account_id = ? AND email = ?", accountID, email).First(&found).Error
+		if err == nil {
+			contact = &found
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if contact == nil && sourceID != "" {
+		contact, err = r.FindContactBySourceID(inboxID, sourceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if contact == nil {
+		displayName := name
+		if displayName == "" {
+			switch {
+			case email != "":
+				displayName = strings.Split(email, "@")[0]
+			case identifier != "":
+				displayName = "User " + identifier
+			default:
+				displayName = "Visitor"
+			}
+		}
+		contact = &domain.Contact{AccountID: accountID, Name: displayName, Email: email, PhoneNumber: phone, Identifier: identifier, AvatarURL: avatarURL}
+		if customAttrs != nil {
+			encoded, marshalErr := json.Marshal(customAttrs)
+			if marshalErr != nil {
+				return nil, marshalErr
+			}
+			contact.CustomAttributes = string(encoded)
+		}
+		if err := r.db.Create(contact).Error; err != nil {
+			return nil, err
+		}
+	} else {
+		updates := map[string]any{}
+		if name != "" {
+			updates["name"] = name
+		}
+		if email != "" {
+			updates["email"] = email
+		}
+		if phone != "" {
+			updates["phone_number"] = phone
+		}
+		if identifier != "" {
+			updates["identifier"] = identifier
+		}
+		if avatarURL != "" {
+			updates["avatar_url"] = avatarURL
+		}
+		contact, err = r.UpdatePublic(accountID, contact.ID, updates, customAttrs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	effectiveSourceID := sourceID
+	if effectiveSourceID == "" {
+		if identifier != "" {
+			effectiveSourceID = identifier
+		} else {
+			effectiveSourceID = fmt.Sprintf("src_%d_%d", inboxID, contact.ID)
+		}
+	}
+	var relation domain.ContactInbox
+	err = r.db.Where("inbox_id = ? AND contact_id = ?", inboxID, contact.ID).First(&relation).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		relation = domain.ContactInbox{InboxID: inboxID, ContactID: contact.ID, SourceID: effectiveSourceID}
+		if err := r.db.Create(&relation).Error; err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	} else if effectiveSourceID != "" && relation.SourceID != effectiveSourceID {
+		if err := r.db.Model(&relation).Update("source_id", effectiveSourceID).Error; err != nil {
+			return nil, err
+		}
+	}
+	return contact, nil
+}
+
 func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) error {
 	if baseID == mergeeID {
 		return gorm.ErrInvalidData

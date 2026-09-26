@@ -99,6 +99,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
+	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("MSG_create_uses_CON_public_contract", func(t *testing.T) {
 		conDB, msgDB := openStore("CON"), openStore("MSG")
 		conversation := domain.Conversation{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
@@ -810,6 +811,85 @@ func testQARepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB
 	}
 	if tktDB.Migrator().HasTable(&domain.QATask{}) || conDB.Migrator().HasTable(&domain.QATask{}) {
 		t.Fatal("TKT/CON store contains QLT authority table")
+	}
+}
+
+func testWidgetRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	apiDB, chnDB, cusDB := openStore("API"), openStore("CHN"), openStore("CUS")
+	conDB, opsDB, msgDB := openStore("CON"), openStore("OPS"), openStore("MSG")
+	inbox := domain.Inbox{AccountID: 91, Name: "widget", ChannelType: "Channel::WebWidget", WebsiteToken: "widget-owner-token"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	contact := domain.Contact{AccountID: 91, Name: "visitor", Identifier: "visitor-91"}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&domain.ContactInbox{ContactID: contact.ID, InboxID: inbox.ID, SourceID: "source-91"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	label := domain.Label{AccountID: 91, Title: "visitor-label"}
+	if err := cusDB.Create(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&domain.ContactLabel{ContactID: contact.ID, LabelID: label.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 91, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&domain.ConversationLabel{ConversationID: conversation.ID, LabelID: label.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	campaign := domain.Campaign{AccountID: 91, InboxID: inbox.ID, Title: "ongoing", Status: "active", CampaignType: "ongoing"}
+	if err := opsDB.Create(&campaign).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := domain.Message{AccountID: 91, ConversationID: conversation.ID, Content: "widget message", MessageType: domain.MessageTypeIncoming}
+	if err := msgDB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversations := &repository.ConversationRepository{}
+	// Public constructors preserve the owner boundary while each repository uses its own store.
+	conversations = repository.NewConversationRepository(conDB)
+	contacts := repository.NewContactRepository(cusDB)
+	messages := repository.NewMessageRepositoryWithConversationPort(msgDB, conversations)
+	labels := repository.NewLabelRepositoryWithConversationPort(cusDB, conversations)
+	repo := repository.NewWidgetRepositoryWithOwnerPorts(apiDB, repository.NewInboxRepository(chnDB), contacts, conversations, repository.NewCampaignRepository(opsDB), labels, messages)
+
+	gotInbox, err := repo.GetInboxByWebsiteToken(context.Background(), inbox.WebsiteToken)
+	if err != nil || gotInbox == nil || gotInbox.ID != inbox.ID {
+		t.Fatalf("CHN widget inbox failed: inbox=%+v err=%v", gotInbox, err)
+	}
+	gotContact, err := repo.FindContactBySourceID(context.Background(), inbox.ID, "source-91")
+	if err != nil || gotContact == nil || gotContact.ID != contact.ID {
+		t.Fatalf("CUS widget contact failed: contact=%+v err=%v", gotContact, err)
+	}
+	rows, total, err := repo.ListContactConversations(context.Background(), 91, inbox.ID, contact.ID, 1, 25)
+	if err != nil || total != 1 || len(rows) != 1 || len(rows[0].Messages) != 1 || len(rows[0].Labels) != 1 {
+		t.Fatalf("CON/MSG/CUS widget view failed: rows=%+v total=%d err=%v", rows, total, err)
+	}
+	campaigns, err := repo.ListActiveCampaigns(context.Background(), 91, inbox.ID)
+	if err != nil || len(campaigns) != 1 || campaigns[0].ID != campaign.ID {
+		t.Fatalf("OPS widget campaign failed: campaigns=%+v err=%v", campaigns, err)
+	}
+	updated, err := repo.UpdateMessageSubmittedValues(context.Background(), message.ID, conversation.ID, map[string]any{"choice": "yes"}, "submitted")
+	if err != nil || updated.Content != "submitted" || !strings.Contains(updated.ContentAttributes, "submitted_values") {
+		t.Fatalf("MSG widget update failed: message=%+v err=%v", updated, err)
+	}
+	event := domain.WidgetEvent{AccountID: 91, InboxID: inbox.ID, ContactID: &contact.ID, ConversationID: &conversation.ID, Name: domain.WidgetEventOpened}
+	if err := repo.RecordWidgetEvent(context.Background(), &event); err != nil {
+		t.Fatal(err)
+	}
+	if apiDB.Migrator().HasTable(&domain.Inbox{}) || apiDB.Migrator().HasTable(&domain.Contact{}) || apiDB.Migrator().HasTable(&domain.Conversation{}) || apiDB.Migrator().HasTable(&domain.Campaign{}) || apiDB.Migrator().HasTable(&domain.Message{}) || apiDB.Migrator().HasTable(&domain.Label{}) {
+		t.Fatal("API store contains widget foreign authority tables")
+	}
+	for name, db := range map[string]*gorm.DB{"CHN": chnDB, "CUS": cusDB, "CON": conDB, "OPS": opsDB, "MSG": msgDB} {
+		if db.Migrator().HasTable(&domain.WidgetEvent{}) {
+			t.Fatalf("%s store contains API WidgetEvent table", name)
+		}
 	}
 }
 

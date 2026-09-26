@@ -235,7 +235,7 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ARCH-04 remains REOPENED; E-ARCH-08-v30 records public API owner-port orchestration.
-	const approvedCollaborationSHA = "fc8f2af789272aaa0fc1d1cf2035fefda049802f10e160c389beecf01bb8b829"
+	const approvedCollaborationSHA = "728065c09c9f8243484b21fccc0f54c23f4babdc8c0b6d1ed0119c69c1027b6d"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -392,6 +392,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/repository/platform_repository.go":              {"Model(&domain.Account", "Create(&domain.Account", "Delete(&domain.Account", "Model(&domain.User", "Create(&domain.User", "Delete(&domain.User", "Model(&domain.AccountUser", "Preload(\"User\")", "Preload(\"Account\")"},
 		"../internal/repository/public_repository.go":                {"Model(&domain.Inbox", "Model(&domain.Contact", "Model(&domain.ContactInbox", "Model(&domain.Conversation", "Model(&domain.Message", "Preload(\"Messages\")", "Preload(\"Assignee\")", "Preload(\"Labels\")"},
 		"../internal/repository/qa_repository.go":                    {"domain.Ticket", "Model(&domain.Ticket", "domain.Conversation", "Model(&domain.Conversation"},
+		"../internal/repository/widget_repository.go":                {"Model(&domain.Inbox", "Model(&domain.Contact", "Model(&domain.ContactInbox", "Model(&domain.Conversation", "Model(&domain.Campaign", "Model(&domain.Message", "Model(&domain.Label", "Model(&domain.ContactLabel", "Model(&domain.ConversationLabel"},
 		"../internal/repository/channel_auth_iam_repository.go":      {"domain.Call", "domain.Conference", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
 		"../internal/repository/channel_auth_rtm_repository.go":      {"domain.SAMLSetting", "domain.UserSession", "domain.DataImport", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},
 		"../internal/repository/channel_auth_mig_repository.go":      {"domain.Call", "domain.SAMLSetting", "domain.ReportingEvent", "domain.AccountLimit", "domain.AccountBilling", "domain.Onboarding"},

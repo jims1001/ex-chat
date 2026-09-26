@@ -315,6 +315,23 @@ func (r *ConversationRepository) FindForInbox(accountID, inboxID, conversationID
 	return &conversation, nil
 }
 
+func (r *ConversationRepository) ListForWidget(accountID, inboxID, contactID uint, page, pageSize int) ([]domain.Conversation, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 25
+	}
+	query := r.db.Model(&domain.Conversation{}).Where("account_id = ? AND inbox_id = ? AND contact_id = ?", accountID, inboxID, contactID)
+	var conversations []domain.Conversation
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&conversations).Error
+	return conversations, total, err
+}
+
 func (r *ConversationRepository) FindOpenByContactAndInbox(accountID, contactID, inboxID uint) (*domain.Conversation, error) {
 	var conv domain.Conversation
 	err := r.db.
