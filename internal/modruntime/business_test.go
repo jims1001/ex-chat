@@ -572,6 +572,89 @@ func TestMSGConsumesContactMergeEventForContactSendersOnly(t *testing.T) {
 	}
 }
 
+func TestTKTBILAndOPSConsumeContactMergeWithinOwnerStores(t *testing.T) {
+	baseID, mergedID := uint(101), uint(202)
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "contact-merged-projections-1", EventType: "cus.contact.merged.v1", EventVersion: "v1", SourceModule: "CUS", AccountID: 91, AggregateType: "Contact", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "merge-projections-correlation", CausationID: "contact-merge-1", ChangedFields: []string{"merged"}, Payload: map[string]any{"base_contact_id": baseID, "merged_contact_id": mergedID}, DataClassification: "internal"}
+	deliver := func(module string, db *gorm.DB) {
+		t.Helper()
+		cfg := businessConfig(module)
+		cfg.AllowedCallers["CUS"] = true
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry(module)}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			response := deliverEvent(runtime.Handler(), event, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "CUS")
+			})
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s merge event status=%d body=%s", module, response.Code, response.Body.String())
+			}
+		}
+		var receipts int64
+		_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND source_type = ?", "event_consumed", "CUS").Count(&receipts).Error
+		if receipts != 1 || db.Migrator().HasTable(&domain.Contact{}) {
+			t.Fatalf("%s receipts=%d contact_table=%v", module, receipts, db.Migrator().HasTable(&domain.Contact{}))
+		}
+	}
+
+	t.Run("TKT", func(t *testing.T) {
+		db := newModuleTestDB(t, "TKT")
+		foreignContact := mergedID
+		tickets := []domain.Ticket{{AccountID: 91, TicketNumber: "T-1", Title: "Owned", ContactID: &foreignContact}, {AccountID: 92, TicketNumber: "T-2", Title: "Foreign", ContactID: &foreignContact}}
+		if err := db.Create(&tickets).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&domain.TicketComment{AccountID: 91, TicketID: tickets[0].ID, ContactID: &foreignContact, Content: "contact comment"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		deliver("TKT", db)
+		var ticketUpdated, commentUpdated, foreignUntouched int64
+		_ = db.Model(&domain.Ticket{}).Where("account_id = ? AND contact_id = ?", 91, baseID).Count(&ticketUpdated).Error
+		_ = db.Model(&domain.TicketComment{}).Where("account_id = ? AND contact_id = ?", 91, baseID).Count(&commentUpdated).Error
+		_ = db.Model(&domain.Ticket{}).Where("account_id = ? AND contact_id = ?", 92, mergedID).Count(&foreignUntouched).Error
+		if ticketUpdated != 1 || commentUpdated != 1 || foreignUntouched != 1 {
+			t.Fatalf("ticket=%d comment=%d foreign=%d", ticketUpdated, commentUpdated, foreignUntouched)
+		}
+	})
+
+	t.Run("BIL", func(t *testing.T) {
+		db := newModuleTestDB(t, "BIL")
+		orders := []domain.Order{{AccountID: 91, OrderID: "O-1", ContactID: &mergedID}, {AccountID: 92, OrderID: "O-2", ContactID: &mergedID}}
+		if err := db.Create(&orders).Error; err != nil {
+			t.Fatal(err)
+		}
+		deliver("BIL", db)
+		var updated, foreign int64
+		_ = db.Model(&domain.Order{}).Where("account_id = ? AND contact_id = ?", 91, baseID).Count(&updated).Error
+		_ = db.Model(&domain.Order{}).Where("account_id = ? AND contact_id = ?", 92, mergedID).Count(&foreign).Error
+		if updated != 1 || foreign != 1 {
+			t.Fatalf("orders updated=%d foreign=%d", updated, foreign)
+		}
+	})
+
+	t.Run("OPS", func(t *testing.T) {
+		db := newModuleTestDB(t, "OPS")
+		campaigns := []domain.Campaign{{AccountID: 91, InboxID: 1, Title: "Owned", Message: "Hi"}, {AccountID: 92, InboxID: 2, Title: "Foreign", Message: "Hi"}}
+		if err := db.Create(&campaigns).Error; err != nil {
+			t.Fatal(err)
+		}
+		deliveries := []domain.CampaignDelivery{{AccountID: 91, CampaignID: campaigns[0].ID, ContactID: mergedID}, {AccountID: 92, CampaignID: campaigns[1].ID, ContactID: mergedID}}
+		if err := db.Create(&deliveries).Error; err != nil {
+			t.Fatal(err)
+		}
+		deliver("OPS", db)
+		var updated, foreign int64
+		_ = db.Model(&domain.CampaignDelivery{}).Where("account_id = ? AND contact_id = ?", 91, baseID).Count(&updated).Error
+		_ = db.Model(&domain.CampaignDelivery{}).Where("account_id = ? AND contact_id = ?", 92, mergedID).Count(&foreign).Error
+		if updated != 1 || foreign != 1 {
+			t.Fatalf("deliveries updated=%d foreign=%d", updated, foreign)
+		}
+	})
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

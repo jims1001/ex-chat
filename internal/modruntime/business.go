@@ -675,6 +675,42 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return nil
 		})
+	case "TKT":
+		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
+			baseID, mergedID, failure := contactMergeEventIDs(event)
+			if failure != nil {
+				return failure
+			}
+			tickets := repository.NewTicketRepositoryWithOwnerPorts(Transaction(ctx, r.DB), nil, nil, nil, nil)
+			if err := tickets.ReassignContact(event.AccountID, mergedID, baseID); err != nil {
+				return &ContractFailure{Type: "state_conflict", Message: "ticket contact projection could not be reassigned"}
+			}
+			return nil
+		})
+	case "BIL":
+		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
+			baseID, mergedID, failure := contactMergeEventIDs(event)
+			if failure != nil {
+				return failure
+			}
+			orders := repository.NewOrderRepositoryWithConversationPort(Transaction(ctx, r.DB), nil)
+			if err := orders.ReassignContact(event.AccountID, mergedID, baseID); err != nil {
+				return &ContractFailure{Type: "state_conflict", Message: "order contact projection could not be reassigned"}
+			}
+			return nil
+		})
+	case "OPS":
+		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
+			baseID, mergedID, failure := contactMergeEventIDs(event)
+			if failure != nil {
+				return failure
+			}
+			campaigns := repository.NewCampaignRepository(Transaction(ctx, r.DB))
+			if err := campaigns.ReassignContact(ctx, event.AccountID, mergedID, baseID); err != nil {
+				return &ContractFailure{Type: "state_conflict", Message: "campaign contact projection could not be reassigned"}
+			}
+			return nil
+		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
 		if err := r.Contracts.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
@@ -1116,6 +1152,18 @@ func contactDeletionStatus(db *gorm.DB, accountID uint) (contactDeletionStatusVi
 	}
 	status.Ready = status.PIIContactCount == 0 && status.IdentityLinkCount == 0
 	return status, nil
+}
+
+func contactMergeEventIDs(event foundation.EventEnvelope) (uint, uint, *ContractFailure) {
+	baseID, err := uintFilter(event.Payload, "base_contact_id")
+	if err != nil {
+		return 0, 0, &ContractFailure{Type: "validation_failed", Message: "base_contact_id is required"}
+	}
+	mergedID, err := uintFilter(event.Payload, "merged_contact_id")
+	if err != nil || baseID == mergedID {
+		return 0, 0, &ContractFailure{Type: "validation_failed", Message: "merged_contact_id is invalid"}
+	}
+	return baseID, mergedID, nil
 }
 
 func accountFromModel(account *domain.Account) *accountView {

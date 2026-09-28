@@ -425,9 +425,12 @@
         "recovery": "关联事件补读"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "partial-contact-merge-consumer",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedConsumedEvents": [
+        "cus.contact.merged.v1"
+      ]
     },
     {
       "module": "QLT",
@@ -516,9 +519,12 @@
         "recovery": "支付回调补读和对账"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "partial-contact-merge-consumer",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedConsumedEvents": [
+        "cus.contact.merged.v1"
+      ]
     },
     {
       "module": "EXT",
@@ -658,9 +664,12 @@
         "recovery": "恢复计划和逐目标状态"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "partial-contact-merge-consumer",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedConsumedEvents": [
+        "cus.contact.merged.v1"
+      ]
     },
     {
       "module": "AIC",
