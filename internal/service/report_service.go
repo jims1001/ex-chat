@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -18,6 +19,7 @@ type ReportService struct {
 	accounts      reportAccountPort
 	teams         reportTeamPort
 	users         reportUserPort
+	bots          reportAgentBotPort
 }
 
 type reportConversationPort interface {
@@ -45,9 +47,12 @@ type reportTeamPort interface {
 type reportUserPort interface {
 	FindByIDs([]uint) ([]domain.User, error)
 }
+type reportAgentBotPort interface {
+	ListBoundInboxIDs(context.Context, uint) ([]uint, error)
+}
 
 func NewReportService(db *gorm.DB) *ReportService {
-	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db), accounts: repository.NewAccountRepository(db), teams: repository.NewTeamRepository(db), users: repository.NewUserRepository(db)}
+	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db), accounts: repository.NewAccountRepository(db), teams: repository.NewTeamRepository(db), users: repository.NewUserRepository(db), bots: repository.NewAgentBotRepository(db)}
 }
 
 func (s *ReportService) SetOwnerRepositories(conversations reportConversationPort, inboxes reportInboxPort, messages reportMessagePort, contacts reportContactPort, labels reportLabelPort) {
@@ -56,6 +61,10 @@ func (s *ReportService) SetOwnerRepositories(conversations reportConversationPor
 
 func (s *ReportService) SetWorkforceRepositories(accounts reportAccountPort, teams reportTeamPort, users reportUserPort) {
 	s.accounts, s.teams, s.users = accounts, teams, users
+}
+
+func (s *ReportService) SetBotOwner(bots reportAgentBotPort) {
+	s.bots = bots
 }
 
 func applyBaseTimeFilter(tx *gorm.DB, filter ReportFilter, timeCol string) *gorm.DB {

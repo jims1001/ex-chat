@@ -1110,7 +1110,7 @@ func testSLAServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) 
 }
 
 func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
-	rptDB, conDB, chnDB, msgDB, cusDB, tenDB, iamDB := openStore("RPT"), openStore("CON"), openStore("CHN"), openStore("MSG"), openStore("CUS"), openStore("TEN"), openStore("IAM")
+	rptDB, conDB, chnDB, msgDB, cusDB, tenDB, iamDB, extDB := openStore("RPT"), openStore("CON"), openStore("CHN"), openStore("MSG"), openStore("CUS"), openStore("TEN"), openStore("IAM"), openStore("EXT")
 	inbox := domain.Inbox{AccountID: 192, Name: "Report Inbox", ChannelType: "Channel::WebWidget"}
 	contact := domain.Contact{AccountID: 192, Name: "Report Contact"}
 	label := domain.Label{AccountID: 192, Title: "priority", Color: "red"}
@@ -1137,6 +1137,9 @@ func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	if err := tenDB.Create(&domain.TeamMember{TeamID: team.ID, UserID: user.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := extDB.Create(&domain.AgentBotInbox{AccountID: 192, AgentBotID: 1, InboxID: inbox.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
 	createdAt := time.Now().UTC().Add(-time.Hour)
 	conversation := domain.Conversation{AccountID: 192, InboxID: inbox.ID, ContactID: contact.ID, DisplayID: 1, Status: domain.ConversationStatusResolved, AssigneeID: &user.ID, TeamID: &team.ID, CreatedAt: createdAt, UpdatedAt: createdAt.Add(30 * time.Minute)}
 	if err := conDB.Create(&conversation).Error; err != nil {
@@ -1155,6 +1158,7 @@ func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	reports.SetOwnerRepositories(repository.NewConversationRepository(conDB), repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB), repository.NewContactRepository(cusDB), repository.NewLabelRepositoryWithConversationPort(cusDB, repository.NewConversationRepository(conDB)))
 	userRepo := repository.NewUserRepository(iamDB)
 	reports.SetWorkforceRepositories(repository.NewAccountRepositoryWithUserPort(tenDB, userRepo), repository.NewTeamRepositoryWithUserPort(tenDB, userRepo), userRepo)
+	reports.SetBotOwner(repository.NewAgentBotRepository(extDB))
 	summary, err := reports.GetAccountSummary(192)
 	if err != nil {
 		t.Fatal(err)
@@ -1179,10 +1183,14 @@ func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.TotalConversations != 1 || summary.TotalMessages != 2 || summary.TotalContacts != 1 || len(labels) != 1 || labels[0].ConversationCount != 1 || channels["Channel::WebWidget"].Resolved != 1 || len(agents) != 1 || agents[0].Name != user.Name || len(teams) != 1 || teams[0].MemberCount != 1 || len(outgoing) != 1 || outgoing[0].Name != user.Name {
+	botMetrics, err := reports.GetBotMetrics(192, service.ReportFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalConversations != 1 || summary.TotalMessages != 2 || summary.TotalContacts != 1 || len(labels) != 1 || labels[0].ConversationCount != 1 || channels["Channel::WebWidget"].Resolved != 1 || len(agents) != 1 || agents[0].Name != user.Name || len(teams) != 1 || teams[0].MemberCount != 1 || len(outgoing) != 1 || outgoing[0].Name != user.Name || botMetrics.ConversationCount != 1 || botMetrics.MessageCount != 1 {
 		t.Fatalf("unexpected owner-composed report: summary=%+v labels=%+v channels=%+v", summary, labels, channels)
 	}
-	for name, model := range map[string]any{"IAM": &domain.User{}, "TEN": &domain.AccountUser{}, "CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}, "CUS": &domain.Contact{}} {
+	for name, model := range map[string]any{"EXT": &domain.AgentBotInbox{}, "IAM": &domain.User{}, "TEN": &domain.AccountUser{}, "CHN": &domain.Inbox{}, "CON": &domain.Conversation{}, "MSG": &domain.Message{}, "CUS": &domain.Contact{}} {
 		if rptDB.Migrator().HasTable(model) {
 			t.Fatalf("RPT store contains %s authority table", name)
 		}

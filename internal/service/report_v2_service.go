@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -109,10 +110,12 @@ func (s *ReportService) GetBotMetrics(accountID uint, filter ReportFilter) (*Bot
 	for _, inbox := range inboxes {
 		inboxIDs = append(inboxIDs, inbox.ID)
 	}
-	var botInboxes []uint
-	if len(inboxIDs) > 0 {
-		_ = s.db.Model(&domain.AgentBotInbox{}).Where("inbox_id IN ?", inboxIDs).Pluck("inbox_id", &botInboxes).Error
+	botInboxes, err := s.bots.ListBoundInboxIDs(context.Background(), accountID)
+	if err != nil {
+		return nil, err
 	}
+	owned := uintSet(inboxIDs)
+	botInboxes = filterUintIDs(botInboxes, owned)
 	allowed := uintSet(botInboxes)
 	conversations, err := s.conversations.ListForReport(accountID, filter.Since, filter.Until)
 	if err != nil {
@@ -164,6 +167,16 @@ func (s *ReportService) GetBotMetrics(accountID uint, filter ReportFilter) (*Bot
 		hr = RoundToOneDecimal(float64(botHandoffs) / float64(total) * 100)
 	}
 	return &BotMetricsReport{ConversationCount: total, MessageCount: msgCount, ResolutionRate: rr, HandoffRate: hr}, nil
+}
+
+func filterUintIDs(ids []uint, allowed map[uint]bool) []uint {
+	result := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if allowed[id] {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 // GetBotSummary provides current vs previous period comparison for bot resolutions and handoffs

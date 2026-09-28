@@ -109,6 +109,14 @@ func (r *AgentBotRepository) ListInboxIDs(ctx context.Context, accountID, botID 
 	return ids, err
 }
 
+func (r *AgentBotRepository) ListBoundInboxIDs(ctx context.Context, accountID uint) ([]uint, error) {
+	var ids []uint
+	err := r.db.WithContext(ctx).Model(&domain.AgentBotInbox{}).
+		Where("account_id = ?", accountID).
+		Distinct().Order("inbox_id ASC").Pluck("inbox_id", &ids).Error
+	return ids, err
+}
+
 func (r *AgentBotRepository) BindInbox(ctx context.Context, accountID, botID, inboxID uint) error {
 	// Verify bot belongs to account
 	bot, err := r.GetByID(ctx, accountID, botID)

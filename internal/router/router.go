@@ -119,6 +119,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	reportService := service.NewReportService(db)
 	reportService.SetOwnerRepositories(convRepo, inboxRepo, msgRepo, contactRepo, labelRepo)
 	reportService.SetWorkforceRepositories(accountRepo, teamRepo, userRepo)
+	reportService.SetBotOwner(agentBotRepo)
 	pushService := service.NewPushService(db, deviceRepo)
 	automationService := service.NewAutomationServiceWithOwnerPorts(db, convRepo, msgRepo, labelRepo, accountRepo, teamRepo, contactRepo)
 	webhookService := service.NewWebhookService(db, webhookRepo)

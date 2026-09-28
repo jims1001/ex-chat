@@ -91,4 +91,5 @@
 - 已完成并验证：SLAService.ProcessAllBreaches 通过 TEN 最小账号 ID 查询驱动周期检查，RPT 不再直接读取 Account 表（E-ARCH-08-v45）。
 - 已完成并验证：ReportService 的基础、维度和 v2 报表通过 CON/CHN/MSG/CUS 所有者查询获取事实，RPT 不再查询或联表四个所有者的权威表（E-ARCH-08-v46）。
 - 已完成并验证：ReportService 通过 TEN 获取账号成员和团队、通过 IAM 补齐用户资料，RPT 不再读取 AccountUser/User/Team/TeamMember（E-ARCH-08-v47）。
-- 下一项：ReportService 的 EXT AgentBotInbox 绑定读取边界。
+- 已完成并验证：ReportService 通过 EXT 获取账号范围内的 AgentBotInbox 绑定，并与 CHN 收件箱归属交叉校验，RPT 不再读取 AgentBotInbox（E-ARCH-08-v48）。
+- 下一项：DataImportService 的 CUS 联系人存在性访问边界。
