@@ -1159,6 +1159,26 @@
     },
     {
       "consumer": "API",
+      "provider": "CHN",
+      "file": "internal/handler/widget_handler.go",
+      "symbol": "InboxRepository",
+      "method": "ListMemberIDs",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/widget_handler.go",
+      "symbol": "UserRepository",
+      "method": "FindByIDs",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
       "provider": "EXT",
       "file": "internal/handler/conversation_handler.go",
       "symbol": "WebhookService",

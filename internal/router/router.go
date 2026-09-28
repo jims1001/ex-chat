@@ -214,7 +214,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		TicketRepo:  ticketRepo,
 		MessageRepo: msgRepo,
 	})
-	widgetHandler := handler.NewWidgetHandler(db, widgetRepo, convRepo, contactRepo, msgRepo)
+	widgetHandler := handler.NewWidgetHandler(db, widgetRepo, convRepo, contactRepo, msgRepo, inboxRepo, userRepo)
 	widgetHandler.SetJWTSecret(cfg.JWTSecret)
 	widgetHandler.SetHub(hub)
 	dashboardAppHandler := handler.NewDashboardAppHandler(dashboardAppRepo)

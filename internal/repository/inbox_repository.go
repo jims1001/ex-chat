@@ -184,6 +184,13 @@ func (r *InboxRepository) RemoveMember(inboxID, userID uint) error {
 	return r.db.Where("inbox_id = ? AND user_id = ?", inboxID, userID).Delete(&domain.InboxMember{}).Error
 }
 
+func (r *InboxRepository) ListMemberIDs(accountID, inboxID uint) ([]uint, error) {
+	ids := make([]uint, 0)
+	ownedInbox := r.db.Model(&domain.Inbox{}).Select("id").Where("account_id = ? AND id = ?", accountID, inboxID)
+	err := r.db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", ownedInbox).Order("user_id ASC").Pluck("user_id", &ids).Error
+	return ids, err
+}
+
 func (r *InboxRepository) ListMembers(inboxID uint) ([]domain.User, error) {
 	var inbox domain.Inbox
 	if err := r.db.First(&inbox, inboxID).Error; err != nil {

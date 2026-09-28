@@ -33,6 +33,8 @@ type WidgetHandler struct {
 	convRepo    *repository.ConversationRepository
 	contactRepo *repository.ContactRepository
 	messageRepo *repository.MessageRepository
+	inboxRepo   *repository.InboxRepository
+	userRepo    *repository.UserRepository
 	hub         *ws.Hub
 	jwtSecret   string
 }
@@ -44,6 +46,8 @@ func NewWidgetHandler(
 	convRepo *repository.ConversationRepository,
 	contactRepo *repository.ContactRepository,
 	messageRepo *repository.MessageRepository,
+	inboxRepo *repository.InboxRepository,
+	userRepo *repository.UserRepository,
 ) *WidgetHandler {
 	return &WidgetHandler{
 		db:          db,
@@ -51,6 +55,8 @@ func NewWidgetHandler(
 		convRepo:    convRepo,
 		contactRepo: contactRepo,
 		messageRepo: messageRepo,
+		inboxRepo:   inboxRepo,
+		userRepo:    userRepo,
 	}
 }
 
@@ -1413,10 +1419,12 @@ func (h *WidgetHandler) ListInboxMembers(c *gin.Context) {
 		return
 	}
 
-	var members []domain.User
-	err = h.db.Joins("JOIN inbox_members ON inbox_members.user_id = users.id").
-		Where("inbox_members.inbox_id = ?", inbox.ID).
-		Find(&members).Error
+	memberIDs, err := h.inboxRepo.ListMemberIDs(inbox.AccountID, inbox.ID)
+	if err != nil {
+		response.InternalError(c, "Failed to list inbox members: "+err.Error())
+		return
+	}
+	members, err := h.userRepo.FindByIDs(memberIDs)
 	if err != nil {
 		response.InternalError(c, "Failed to list inbox members: "+err.Error())
 		return

@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v54 records WidgetHandler message reads through CON/MSG.
-	const approvedCollaborationSHA = "44b1a6cfeb79ebeecb0842eb859ce0af56029d311f23427bd8452c5ec4aa6f0e"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v55 records WidgetHandler members through CHN/IAM.
+	const approvedCollaborationSHA = "1185ba58fc15048e909901c05d4f378cfd4c55c634b3157761194731096331fe"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -413,7 +413,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},
-		"../internal/handler/widget_handler.go":                      {"JOIN conversations ON conversations.id = messages.conversation_id", "messages.id = ? AND conversations.inbox_id"},
+		"../internal/handler/widget_handler.go":                      {"JOIN conversations ON conversations.id = messages.conversation_id", "messages.id = ? AND conversations.inbox_id", "JOIN inbox_members ON inbox_members.user_id = users.id", "inbox_members.inbox_id = ?"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

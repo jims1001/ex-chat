@@ -118,6 +118,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("AUT_label_conditions_use_CON_CUS_owner_queries", func(t *testing.T) { testAutomationLabelOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_widget_message_read_uses_CON_MSG_owner_queries", func(t *testing.T) { testWidgetMessageReadOwnerBoundary(t, openStore) })
+	t.Run("API_widget_members_use_CHN_IAM_owner_queries", func(t *testing.T) { testWidgetInboxMemberOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1319,6 +1320,49 @@ func testWidgetMessageReadOwnerBoundary(t *testing.T, openStore func(string) *go
 	}
 	if conDB.Migrator().HasTable(&domain.Message{}) || msgDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CON/MSG isolated stores contain a foreign authority table")
+	}
+}
+
+func testWidgetInboxMemberOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	chnDB, iamDB := openStore("CHN"), openStore("IAM")
+	inbox := domain.Inbox{AccountID: 93, Name: "widget members", ChannelType: "Channel::WebWidget", WebsiteToken: "widget-members-token"}
+	otherInbox := domain.Inbox{AccountID: 94, Name: "other widget", ChannelType: "Channel::WebWidget", WebsiteToken: "other-widget-members-token"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := chnDB.Create(&otherInbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	member := domain.User{Name: "Widget Member", DisplayName: "Public Member", Email: "widget-member@example.test", Role: domain.RoleAgent, AvailabilityStatus: domain.AvailabilityOnline}
+	otherMember := domain.User{Name: "Other Member", Email: "other-widget-member@example.test", Role: domain.RoleAgent}
+	if err := iamDB.Create(&member).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := iamDB.Create(&otherMember).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := chnDB.Create(&domain.InboxMember{InboxID: inbox.ID, UserID: member.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := chnDB.Create(&domain.InboxMember{InboxID: otherInbox.ID, UserID: otherMember.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	inboxes := repository.NewInboxRepository(chnDB)
+	users := repository.NewUserRepository(iamDB)
+	memberIDs, err := inboxes.ListMemberIDs(93, inbox.ID)
+	if err != nil || len(memberIDs) != 1 || memberIDs[0] != member.ID {
+		t.Fatalf("CHN widget member IDs failed: ids=%v err=%v", memberIDs, err)
+	}
+	members, err := users.FindByIDs(memberIDs)
+	if err != nil || len(members) != 1 || members[0].DisplayName != "Public Member" {
+		t.Fatalf("IAM widget member hydration failed: members=%+v err=%v", members, err)
+	}
+	if ids, err := inboxes.ListMemberIDs(93, otherInbox.ID); err != nil || len(ids) != 0 {
+		t.Fatalf("CHN exposed another account inbox members: ids=%v err=%v", ids, err)
+	}
+	if chnDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.Inbox{}) || iamDB.Migrator().HasTable(&domain.InboxMember{}) {
+		t.Fatal("CHN/IAM isolated stores contain a foreign authority table")
 	}
 }
 
