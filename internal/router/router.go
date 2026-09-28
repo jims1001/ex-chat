@@ -153,7 +153,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	inboxHandler.SetAssignmentPolicyRepo(assignmentPolicyRepo)
 	inboxHandler.SetContactRepo(contactRepo)
 	contactHandler := handler.NewContactHandler(contactRepo, inboxRepo)
-	contactHandler.SetExtraRepos(labelRepo, companyRepo, db)
+	contactHandler.SetExtraRepos(labelRepo, companyRepo)
 	contactExtensionHandler := handler.NewContactExtensionHandler(contactRepo, contactExtensionRepo)
 	companyExtensionHandler := handler.NewCompanyExtensionHandler(companyRepo, companyExtensionRepo)
 	convHandler := handler.NewConversationHandler(convRepo, msgRepo, inboxRepo, contactRepo, routingService, hub)

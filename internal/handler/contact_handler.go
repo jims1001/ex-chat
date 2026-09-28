@@ -18,7 +18,6 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/security"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type ContactHandler struct {
@@ -26,7 +25,6 @@ type ContactHandler struct {
 	inboxRepo   *repository.InboxRepository
 	labelRepo   *repository.LabelRepository
 	companyRepo *repository.CompanyRepository
-	db          *gorm.DB
 }
 
 func NewContactHandler(contactRepo *repository.ContactRepository, inboxRepo *repository.InboxRepository) *ContactHandler {
@@ -36,10 +34,9 @@ func NewContactHandler(contactRepo *repository.ContactRepository, inboxRepo *rep
 	}
 }
 
-func (h *ContactHandler) SetExtraRepos(labelRepo *repository.LabelRepository, companyRepo *repository.CompanyRepository, db *gorm.DB) {
+func (h *ContactHandler) SetExtraRepos(labelRepo *repository.LabelRepository, companyRepo *repository.CompanyRepository) {
 	h.labelRepo = labelRepo
 	h.companyRepo = companyRepo
-	h.db = db
 }
 
 type CreateContactRequest struct {
@@ -367,24 +364,6 @@ func (h *ContactHandler) MergeContact(c *gin.Context) {
 		"base_contact_id", req.BaseContactID,
 		"mergee_contact_id", req.MergeeContactID,
 	)
-
-	if h.db != nil {
-		userID := c.GetUint(middleware.ContextUserID)
-		_ = repository.NewJournalRepository(h.db).RecordChange(h.db, &domain.LocalChangeJournal{
-			AccountID:     accountID,
-			EntityType:    "Contact",
-			EntityID:      req.BaseContactID,
-			ObjectType:    "Contact",
-			ObjectID:      req.BaseContactID,
-			Action:        "contact_merge",
-			ActorType:     "User",
-			ActorID:       userID,
-			Reason:        fmt.Sprintf("Merged contact #%d into #%d", req.MergeeContactID, req.BaseContactID),
-			ChangedFields: fmt.Sprintf(`{"mergee_contact_id":%d,"base_contact_id":%d}`, req.MergeeContactID, req.BaseContactID),
-			Result:        "applied",
-			OccurredAt:    time.Now().UTC(),
-		})
-	}
 
 	updatedBase, err := h.contactRepo.FindByID(accountID, req.BaseContactID)
 	if err == nil && updatedBase != nil {

@@ -616,8 +616,9 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 		changeID := foundation.GenerateUUID()
 		return NewJournalRepository(tx).RecordLocalChange(tx, &domain.LocalChangeJournal{
 			ChangeID: changeID, SourceModule: "CUS", AccountID: accountID,
-			ObjectType: "Contact", ObjectID: baseID, Action: "merge",
+			ObjectType: "Contact", ObjectID: baseID, Action: "contact_merge",
 			ChangedFields: fmt.Sprintf("merged_contact_id:%d", mergeeID), ActorType: "system",
+			Reason:     fmt.Sprintf("Merged contact #%d into #%d", mergeeID, baseID),
 			SourceType: "cus.contact.merged.v1", CommandID: changeID, CorrelationID: changeID,
 			Status: "pending", OccurredAt: time.Now().UTC(),
 		})

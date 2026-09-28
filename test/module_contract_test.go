@@ -415,6 +415,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/migration_service.go":                   {"s.db", "query := s.db.Where(\"account_id = ?\", accountID)", "s.db.Where(\"account_id = ? AND email = ?\", accountID, item.ContactEmail)", "s.db.Where(\"account_id = ? AND identifier = ?\", accountID, item.ContactIdentifier)"},
 		"../internal/handler/copilot_handler.go":                     {"h.db.Where(\"account_id = ? AND (order_id = ? OR tracking_number = ?)\"", "h.db.Where(\"account_id = ? AND order_id = ?\"", "h.db.Where(\"account_id = ? AND (tracking_number = ? OR order_id = ?)\""},
 		"../internal/handler/ai_custom_tool_handler.go":              {"h.db.Where(\"account_id = ? AND (order_id = ? OR tracking_number = ?)\"", "h.db.Where(\"account_id = ? AND order_id = ?\"", "h.db.Where(\"account_id = ? AND (tracking_number = ? OR order_id = ?)\""},
+		"../internal/handler/contact_handler.go":                     {"db          *gorm.DB", "h.db", "NewJournalRepository(h.db)"},
 		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},

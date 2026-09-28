@@ -145,6 +145,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_participants_use_CON_owner_commands", func(t *testing.T) { testAdvancedParticipantOwnerBoundary(t, openStore) })
 	t.Run("ORC_custom_filters_use_SRH_owner_commands", func(t *testing.T) { testAdvancedCustomFilterOwnerBoundary(t, openStore) })
 	t.Run("ORC_advanced_handler_has_no_shared_storage_handle", func(t *testing.T) { testAdvancedHandlerNoStorageHandle(t, openStore) })
+	t.Run("CUS_contact_handler_has_no_shared_storage_handle", func(t *testing.T) { testContactHandlerNoStorageHandle(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -2683,6 +2684,19 @@ func testAdvancedHandlerNoStorageHandle(t *testing.T, openStore func(string) *go
 		field := typeOfHandler.Field(i)
 		if field.Type == dbType {
 			t.Fatalf("AdvancedHandler retains shared storage field %s", field.Name)
+		}
+	}
+}
+
+func testContactHandlerNoStorageHandle(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, chnDB := openStore("CUS"), openStore("CHN")
+	h := handler.NewContactHandler(repository.NewContactRepository(cusDB), repository.NewInboxRepository(chnDB))
+	typeOfHandler := reflect.TypeOf(h).Elem()
+	dbType := reflect.TypeOf((*gorm.DB)(nil))
+	for i := 0; i < typeOfHandler.NumField(); i++ {
+		field := typeOfHandler.Field(i)
+		if field.Type == dbType {
+			t.Fatalf("ContactHandler retains shared storage field %s", field.Name)
 		}
 	}
 }
