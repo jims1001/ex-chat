@@ -51,6 +51,12 @@ func (r *AgentCapacityPolicyRepository) FindLegacyCapacityPolicy(accountID, user
 	return &policy, err
 }
 
+func (r *AgentCapacityPolicyRepository) ListLegacyCapacityPolicies(accountID uint) ([]domain.CapacityPolicy, error) {
+	policies := make([]domain.CapacityPolicy, 0)
+	err := r.db.Where("account_id = ?", accountID).Order("id ASC").Find(&policies).Error
+	return policies, err
+}
+
 func (r *AgentCapacityPolicyRepository) FindByID(accountID, id uint) (*domain.AgentCapacityPolicy, error) {
 	return r.FindSummaryByID(accountID, id)
 }

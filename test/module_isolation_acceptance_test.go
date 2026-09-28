@@ -129,6 +129,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_attachment_targets_use_CON_MSG_owner_queries", func(t *testing.T) { testAdvancedAttachmentTargetOwnerBoundary(t, openStore) })
 	t.Run("ORC_draft_reads_use_MSG_owner_query", func(t *testing.T) { testAdvancedDraftOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_notes_use_CUS_IAM_owner_queries", func(t *testing.T) { testAdvancedContactNoteOwnerBoundary(t, openStore) })
+	t.Run("ORC_legacy_capacity_uses_RTE_owner_queries", func(t *testing.T) { testAdvancedLegacyCapacityOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1740,6 +1741,29 @@ func testAdvancedContactNoteOwnerBoundary(t *testing.T, openStore func(string) *
 	}
 	if cusDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.ContactNote{}) {
 		t.Fatal("CUS/IAM isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedLegacyCapacityOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	rteDB := openStore("RTE")
+	repo := repository.NewAgentCapacityPolicyRepository(rteDB)
+	policy := domain.CapacityPolicy{AccountID: 701, UserID: 31, ConversationLimit: 5}
+	if err := repo.SaveLegacyCapacityPolicy(&policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.ConversationLimit = 8
+	if err := repo.SaveLegacyCapacityPolicy(&policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveLegacyCapacityPolicy(&domain.CapacityPolicy{AccountID: 702, UserID: 32, ConversationLimit: 99}); err != nil {
+		t.Fatal(err)
+	}
+	policies, err := repo.ListLegacyCapacityPolicies(701)
+	if err != nil || len(policies) != 1 || policies[0].ConversationLimit != 8 {
+		t.Fatalf("RTE legacy capacity lookup failed: policies=%+v err=%v", policies, err)
+	}
+	if rteDB.Migrator().HasTable(&domain.User{}) || rteDB.Migrator().HasTable(&domain.Account{}) {
+		t.Fatal("RTE store contains IAM/TEN authority table")
 	}
 }
 

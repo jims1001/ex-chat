@@ -3481,6 +3481,26 @@
       "consumer": "ORC",
       "provider": "RTE",
       "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AgentCapacityPolicyRepository",
+      "method": "ListLegacyCapacityPolicies",
+      "use": "read",
+      "contract": "rte.assignment.get.v1",
+      "replicaEvent": "rte.assignment.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "RTE",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AgentCapacityPolicyRepository",
+      "method": "SaveLegacyCapacityPolicy",
+      "use": "write",
+      "contract": "rte.capacity.manage.v1",
+      "replicaEvent": "rte.capacity.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "RTE",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "RoutingService",
       "method": "CheckAgentCapacity",
       "use": "read",

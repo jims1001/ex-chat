@@ -28,31 +28,32 @@ import (
 )
 
 type AdvancedHandler struct {
-	db                *gorm.DB
-	companyRepo       *repository.CompanyRepository
-	campaignRepo      *repository.CampaignRepository
-	slaRepo           *repository.SLARepository
-	agentBotRepo      *repository.AgentBotRepository
-	inboxRepo         *repository.InboxRepository
-	accountRepo       *repository.AccountRepository
-	userRepo          *repository.UserRepository
-	teamRepo          *repository.TeamRepository
-	attachmentRepo    *repository.AttachmentRepository
-	labelRepo         *repository.LabelRepository
-	messageRepo       *repository.MessageRepository
-	contactRepo       *repository.ContactRepository
-	integrationRepo   *repository.IntegrationRepository
-	campaignService   *service.CampaignService
-	slaService        *service.SLAService
-	httpClient        *http.Client
-	convRepo          *repository.ConversationRepository
-	routingService    *service.RoutingService
-	automationService *service.AutomationService
-	webhookService    *service.WebhookService
-	pushService       *service.PushService
-	notificationRepo  *repository.NotificationRepository
-	storageService    service.StorageService
-	hub               *ws.Hub
+	db                 *gorm.DB
+	companyRepo        *repository.CompanyRepository
+	campaignRepo       *repository.CampaignRepository
+	slaRepo            *repository.SLARepository
+	agentBotRepo       *repository.AgentBotRepository
+	inboxRepo          *repository.InboxRepository
+	accountRepo        *repository.AccountRepository
+	userRepo           *repository.UserRepository
+	teamRepo           *repository.TeamRepository
+	capacityPolicyRepo *repository.AgentCapacityPolicyRepository
+	attachmentRepo     *repository.AttachmentRepository
+	labelRepo          *repository.LabelRepository
+	messageRepo        *repository.MessageRepository
+	contactRepo        *repository.ContactRepository
+	integrationRepo    *repository.IntegrationRepository
+	campaignService    *service.CampaignService
+	slaService         *service.SLAService
+	httpClient         *http.Client
+	convRepo           *repository.ConversationRepository
+	routingService     *service.RoutingService
+	automationService  *service.AutomationService
+	webhookService     *service.WebhookService
+	pushService        *service.PushService
+	notificationRepo   *repository.NotificationRepository
+	storageService     service.StorageService
+	hub                *ws.Hub
 }
 
 func NewAdvancedHandler(
@@ -64,17 +65,18 @@ func NewAdvancedHandler(
 	att *repository.AttachmentRepository,
 ) *AdvancedHandler {
 	return &AdvancedHandler{
-		db:              db,
-		companyRepo:     c,
-		campaignRepo:    cp,
-		slaRepo:         s,
-		agentBotRepo:    b,
-		attachmentRepo:  att,
-		labelRepo:       repository.NewLabelRepository(db),
-		messageRepo:     repository.NewMessageRepository(db),
-		contactRepo:     repository.NewContactRepository(db),
-		integrationRepo: repository.NewIntegrationRepository(db),
-		convRepo:        repository.NewConversationRepository(db),
+		db:                 db,
+		companyRepo:        c,
+		campaignRepo:       cp,
+		slaRepo:            s,
+		agentBotRepo:       b,
+		capacityPolicyRepo: repository.NewAgentCapacityPolicyRepository(db),
+		attachmentRepo:     att,
+		labelRepo:          repository.NewLabelRepository(db),
+		messageRepo:        repository.NewMessageRepository(db),
+		contactRepo:        repository.NewContactRepository(db),
+		integrationRepo:    repository.NewIntegrationRepository(db),
+		convRepo:           repository.NewConversationRepository(db),
 	}
 }
 
@@ -123,6 +125,10 @@ func (h *AdvancedHandler) SetUserRepo(repo *repository.UserRepository) {
 
 func (h *AdvancedHandler) SetTeamRepo(repo *repository.TeamRepository) {
 	h.teamRepo = repo
+}
+
+func (h *AdvancedHandler) SetCapacityPolicyRepo(repo *repository.AgentCapacityPolicyRepository) {
+	h.capacityPolicyRepo = repo
 }
 
 func (h *AdvancedHandler) SetMessageRepo(repo *repository.MessageRepository) {
@@ -1693,18 +1699,21 @@ func (h *AdvancedHandler) SetCapacityPolicy(c *gin.Context) {
 		ConversationLimit: req.ConversationLimit,
 	}
 
-	h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND user_id = ?", accID, req.UserID).
-		Assign(domain.CapacityPolicy{ConversationLimit: req.ConversationLimit}).
-		FirstOrCreate(&policy)
+	if err := h.capacityPolicyRepo.SaveLegacyCapacityPolicy(&policy); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 
 	response.Success(c, policy)
 }
 
 func (h *AdvancedHandler) ListCapacityPolicies(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	var policies []domain.CapacityPolicy
-	h.db.WithContext(c.Request.Context()).Where("account_id = ?", accID).Find(&policies)
+	policies, err := h.capacityPolicyRepo.ListLegacyCapacityPolicies(uint(accID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 	response.Success(c, policies)
 }
 

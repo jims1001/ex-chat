@@ -109,4 +109,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler.UploadAttachment 的会话存在性由 CON 校验，multipart/JSON 消息归属由 MSG 校验并显式注入 MSG 仓储，ORC 不再直接查询 Conversation/Message（E-ARCH-08-v63）。
 - 已完成并验证：CRMOpsAdvancedHandler.GetDraft 通过 MSG 按账号、会话和用户精确读取草稿，ORC 不再直接查询 DraftMessage（E-ARCH-08-v64）。
 - 已完成并验证：CRMOpsAdvancedHandler 联系人备注通过 CUS 执行归属及增删改查，并由 IAM 批量组合作者，ORC 不再直接查询 Contact/ContactNote 或预加载 User（E-ARCH-08-v65）。
-- 下一项：CRMOpsAdvancedHandler 旧版坐席容量策略的 RTE 访问边界。
+- 已完成并验证：CRMOpsAdvancedHandler 旧版坐席容量策略通过 RTE AgentCapacityPolicyRepository 保存、更新和按账号列表，ORC 不再直接读写 CapacityPolicy（E-ARCH-08-v66）。
+- 下一项：CRMOpsAdvancedHandler 集成安装列表与 Shopify/Dialogflow 配置读取的 EXT 访问边界。
