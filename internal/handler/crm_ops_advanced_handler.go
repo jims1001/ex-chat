@@ -843,8 +843,8 @@ func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
 		return
 	}
 
-	var conv domain.Conversation
-	if err := h.db.Preload("Inbox").Where("account_id = ? AND id = ?", accID, convID).First(&conv).Error; err != nil {
+	conv, err := h.convRepo.FindByID(uint(accID), uint(convID))
+	if err != nil || conv == nil {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -857,7 +857,7 @@ func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
 		return
 	}
 
-	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(&conv)
+	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(conv)
 	now := time.Now().UTC()
 
 	var frtRemainingSec, nrtRemainingSec, resRemainingSec *int

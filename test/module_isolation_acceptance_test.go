@@ -125,6 +125,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_bulk_team_assignment_uses_TEN_CON_owner_queries", func(t *testing.T) { testAdvancedBulkTeamOwnerBoundary(t, openStore) })
 	t.Run("ORC_bulk_labels_use_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedBulkLabelOwnerBoundary(t, openStore) })
 	t.Run("ORC_company_contact_links_use_CUS_owner_queries", func(t *testing.T) { testAdvancedCompanyContactOwnerBoundary(t, openStore) })
+	t.Run("ORC_conversation_SLA_uses_CON_CHN_owner_queries", func(t *testing.T) { testAdvancedConversationSLAOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1584,6 +1585,39 @@ func testAdvancedCompanyContactOwnerBoundary(t *testing.T, openStore func(string
 	}
 	if cusDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CUS isolated store contains CON authority table")
+	}
+}
+
+func testAdvancedConversationSLAOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, chnDB := openStore("CON"), openStore("CHN")
+	inbox := domain.Inbox{AccountID: 301, Name: "SLA Inbox", ChannelType: "Channel::WebWidget", Timezone: "UTC", WebsiteToken: "orc-sla-owner"}
+	foreignInbox := domain.Inbox{AccountID: 302, Name: "Foreign SLA Inbox", ChannelType: "Channel::WebWidget", Timezone: "UTC", WebsiteToken: "orc-sla-foreign"}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := chnDB.Create(&foreignInbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 301, InboxID: inbox.ID, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen, SLAStatus: "active"}
+	foreignConversation := domain.Conversation{AccountID: 302, InboxID: foreignInbox.ID, ContactID: 2, DisplayID: 1, Status: domain.ConversationStatusOpen, SLAStatus: "breached"}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&foreignConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversations := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, repository.NewInboxRepository(chnDB), nil, nil, nil, nil)
+	owned, err := conversations.FindByID(301, conversation.ID)
+	if err != nil || owned == nil || owned.SLAStatus != "active" || owned.Inbox == nil || owned.Inbox.ID != inbox.ID {
+		t.Fatalf("CON/CHN conversation SLA lookup failed: conversation=%+v err=%v", owned, err)
+	}
+	foreign, err := conversations.FindByID(301, foreignConversation.ID)
+	if err != nil || foreign != nil {
+		t.Fatalf("CON exposed cross-account SLA conversation: conversation=%+v err=%v", foreign, err)
+	}
+	if conDB.Migrator().HasTable(&domain.Inbox{}) || chnDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CON/CHN isolated stores contain a foreign authority table")
 	}
 }
 
