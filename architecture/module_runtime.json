@@ -99,7 +99,8 @@
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "ten.members.list.v1",
-        "ten.account.get.v1"
+        "ten.account.get.v1",
+        "ten.permissions.check.v1"
       ],
       "dependencyStopRecoveryVerified": true,
       "implementedIndependentCommands": [
@@ -200,7 +201,8 @@
       ],
       "implementedIndependentCommands": [
         "chn.inbox.create.v1",
-        "chn.inbox.update.v1"
+        "chn.inbox.update.v1",
+        "chn.member.bind.v1"
       ],
       "dependencyStopRecoveryVerified": true
     },

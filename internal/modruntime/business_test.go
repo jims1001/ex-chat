@@ -273,6 +273,99 @@ func TestCHNInboxUpdateBoundsFieldsAccountAndReplay(t *testing.T) {
 	}
 }
 
+func TestCHNMemberBindUsesTENMembershipAndRollsBackFailures(t *testing.T) {
+	iamDB := newModuleTestDB(t, "IAM")
+	user := domain.User{Name: "Agent", Email: "chn-member@example.test", PasswordHash: "secret", Role: domain.RoleAgent}
+	if err := repository.NewUserRepository(iamDB).Create(&user); err != nil {
+		t.Fatal(err)
+	}
+	iamCfg := businessConfig("IAM")
+	iamRuntime := Runtime{Config: iamCfg, DB: iamDB, Contracts: NewContractRegistry("IAM")}
+	if err := iamRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	iamServer, iamAddress := startHTTPServer(t, "127.0.0.1:0", iamRuntime.Handler())
+	defer iamServer.Shutdown(context.Background())
+
+	tenDB := newModuleTestDB(t, "TEN")
+	if err := tenDB.Create(&domain.Account{ID: 91, Name: "Tenant"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tenDB.Create(&domain.AccountUser{AccountID: 91, UserID: user.ID, Role: domain.RoleAgent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["CHN"] = true
+	tenCfg.Dependencies["IAM"] = DependencyConfig{URL: "http://" + iamAddress, Token: iamCfg.AuthToken}
+	tenRuntime := Runtime{Config: tenCfg, DB: tenDB, Contracts: NewContractRegistry("TEN")}
+	if err := tenRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", tenRuntime.Handler())
+
+	chnDB := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "Support", ChannelType: "Channel::WebWidget", WebsiteToken: "token"}
+	if err := repository.NewInboxRepositoryWithAccountPort(chnDB, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	chnCfg := businessConfig("CHN")
+	chnCfg.Dependencies["TEN"] = DependencyConfig{URL: "http://" + tenAddress, Token: tenCfg.AuthToken}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: chnCfg, DB: chnDB, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "bind-1", CommandType: "chn.member.bind.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"user_id": user.ID, "operation": "bind"}, IdempotencyKey: "bind-91-1", CorrelationID: "correlation-1", CausationID: "inbox-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/chn.member.bind.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+chnCfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := call(command); response.Code != http.StatusOK {
+		t.Fatalf("bind status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(command); response.Code != http.StatusOK {
+		t.Fatalf("bind replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	var bindings int64
+	_ = chnDB.Model(&domain.InboxMember{}).Count(&bindings).Error
+	if bindings != 1 {
+		t.Fatalf("binding count=%d", bindings)
+	}
+
+	nonmember := command
+	nonmember.CommandID, nonmember.IdempotencyKey, nonmember.Input = "bind-2", "bind-91-999", map[string]any{"user_id": 999, "operation": "bind"}
+	if response := call(nonmember); response.Code != http.StatusNotFound {
+		t.Fatalf("nonmember status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := tenServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := command
+	unavailable.CommandID, unavailable.IdempotencyKey = "bind-3", "bind-unavailable"
+	if response := call(unavailable); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("TEN down status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Restart TEN at the same address, then unbind through the same dependency configuration.
+	tenServer, _ = startHTTPServer(t, tenAddress, tenRuntime.Handler())
+	defer tenServer.Shutdown(context.Background())
+	unbind := command
+	unbind.CommandID, unbind.IdempotencyKey, unbind.Input = "unbind-1", "unbind-91-1", map[string]any{"user_id": user.ID, "operation": "unbind"}
+	if response := call(unbind); response.Code != http.StatusOK {
+		t.Fatalf("unbind status=%d body=%s", response.Code, response.Body.String())
+	}
+	_ = chnDB.Model(&domain.InboxMember{}).Count(&bindings).Error
+	var receipts int64
+	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if bindings != 0 || receipts != 2 {
+		t.Fatalf("bindings=%d receipts=%d", bindings, receipts)
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {
