@@ -67,7 +67,7 @@ func TestModuleContractRegistryIsCompleteAndFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedSHA = "76772e4a573bdafc1ac609469ac2fd774eb6505e24d3fa0fdafff99b0eb7699a"
+	const approvedSHA = "cd93e0bfb4e03917b569edb9e5ba48535474f3455552265d29ec89ed4181476a"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedSHA {
 		t.Fatalf("module contracts changed (%s); reopen ARCH-04 and approve a new fingerprint", got)
 	}

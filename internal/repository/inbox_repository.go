@@ -457,6 +457,14 @@ func (r *InboxRepository) ListMessageTemplates(accountID, inboxID uint, nameFilt
 	return templates, nil
 }
 
+// ListStoredMessageTemplates returns only owner-local persisted templates. It
+// never performs provider synchronization, which belongs to a separate command.
+func (r *InboxRepository) ListStoredMessageTemplates(accountID, inboxID uint) ([]domain.InboxMessageTemplate, error) {
+	var templates []domain.InboxMessageTemplate
+	err := r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Order("id ASC").Find(&templates).Error
+	return templates, err
+}
+
 // GetMessageTemplate finds a message template by ID
 func (r *InboxRepository) GetMessageTemplate(accountID, inboxID, templateID uint) (*domain.InboxMessageTemplate, error) {
 	var t domain.InboxMessageTemplate

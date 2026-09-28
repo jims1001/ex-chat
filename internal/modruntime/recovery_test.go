@@ -1,6 +1,7 @@
 package modruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
@@ -134,6 +137,61 @@ func TestModuleSnapshotRejectsTamperIdentityAndForeignTablesAtomically(t *testin
 	file.Checksum = sum
 	foreign, _ := json.Marshal(file)
 	assertUnchanged("foreign-table", foreign, "TEN", "gen-1")
+}
+
+func TestCHNSnapshotRestoresInboxTemplateJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "Recovered channel", ChannelType: "Channel::Whatsapp", WebsiteToken: "channel-token"}
+	if err := source.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CHN")
+	runtime := Runtime{Config: cfg, DB: source, Contracts: NewContractRegistry("CHN")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "snapshot-template", CommandType: "chn.template.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"action": "upsert", "name": "restore_me", "components": `[{"type":"BODY","text":"Restore"}]`}, IdempotencyKey: "snapshot-template-91", CorrelationID: "snapshot-correlation", CausationID: "snapshot-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.templates.list.v1"}}
+	body, _ := json.Marshal(command)
+	request := httptest.NewRequest(http.MethodPost, "/contracts/commands/chn.template.manage.v1", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	request.Header.Set(headerCaller, "API")
+	request.Header.Set(headerContractVersion, "v1")
+	request.Header.Set(headerCorrelationID, command.CorrelationID)
+	response := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("template command status=%d body=%s", response.Code, response.Body.String())
+	}
+	path := filepath.Join(t.TempDir(), "chn.snapshot.json")
+	if err := CreateSnapshot(source, "CHN", "chn-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "CHN")
+	targetCfg := businessConfig("CHN")
+	targetCfg.RecoveryGeneration = "chn-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("CHN target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "CHN", "chn-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("CHN target not ready after restore: %v", err)
+	}
+	var inboxes, templates, receipts, events int64
+	_ = target.Model(&domain.Inbox{}).Count(&inboxes).Error
+	_ = target.Model(&domain.InboxMessageTemplate{}).Count(&templates).Error
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if inboxes != 1 || templates != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("restored inboxes=%d templates=%d receipts=%d events=%d", inboxes, templates, receipts, events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Conversation{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("CHN restore created foreign table %T", foreign)
+		}
+	}
 }
 
 func sha256Bytes(payload []byte) string {

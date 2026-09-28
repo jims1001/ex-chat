@@ -89,6 +89,17 @@ type connectionStatusView struct {
 	CheckedAt   time.Time `json:"checked_at,omitempty"`
 }
 
+type templateView struct {
+	ID         uint   `json:"id"`
+	AccountID  uint   `json:"account_id"`
+	InboxID    uint   `json:"inbox_id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Category   string `json:"category"`
+	Language   string `json:"language"`
+	Components string `json:"components"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -297,6 +308,86 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "channel deletion status is unavailable"}
 			}
 			return status, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("chn.templates.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			inboxID, err := uintFilter(query.Filter, "inbox_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox_id is required"}
+			}
+			inbox, err := inboxes.FindSummaryByID(query.AccountID, inboxID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			templates, err := inboxes.ListStoredMessageTemplates(query.AccountID, inboxID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "template store is unavailable"}
+			}
+			views := make([]templateView, 0, len(templates))
+			for i := range templates {
+				views = append(views, templateFromModel(&templates[i]))
+			}
+			return views, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("chn.template.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "inbox" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is required"}
+			}
+			parsedInboxID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsedInboxID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is invalid"}
+			}
+			inboxID := uint(parsedInboxID)
+			txRepo := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil)
+			inbox, err := txRepo.FindSummaryByID(command.AccountID, inboxID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			action, _ := command.Input["action"].(string)
+			if action == "delete" {
+				templateID, err := uintFilter(command.Input, "template_id")
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "template_id is required"}
+				}
+				if _, err := txRepo.GetMessageTemplate(command.AccountID, inboxID, templateID); err != nil {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "template was not found"}
+				}
+				if err := txRepo.DeleteMessageTemplate(command.AccountID, inboxID, templateID); err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "template could not be deleted"}
+				}
+				if err := r.appendBusinessEvent(ctx, command, "chn.template.changed.v1", "InboxMessageTemplate", strconv.FormatUint(uint64(templateID), 10), []string{"deleted"}, map[string]any{"inbox_id": inbox.ID, "template_id": templateID, "operation": "deleted"}); err != nil {
+					return nil, err
+				}
+				return map[string]any{"inbox_id": inbox.ID, "template_id": templateID, "deleted": true}, nil
+			}
+			if action != "upsert" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "template action must be upsert or delete"}
+			}
+			name, _ := command.Input["name"].(string)
+			components, _ := command.Input["components"].(string)
+			if strings.TrimSpace(name) == "" || !json.Valid([]byte(components)) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "template name and JSON components are required"}
+			}
+			template := &domain.InboxMessageTemplate{AccountID: command.AccountID, InboxID: inbox.ID, Name: strings.TrimSpace(name), Components: components}
+			template.Status, _ = command.Input["status"].(string)
+			template.Category, _ = command.Input["category"].(string)
+			template.Language, _ = command.Input["language"].(string)
+			if err := txRepo.CreateMessageTemplate(template); err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "template could not be saved"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.template.changed.v1", "InboxMessageTemplate", strconv.FormatUint(uint64(template.ID), 10), []string{"template"}, map[string]any{"inbox_id": inbox.ID, "template_id": template.ID, "operation": "upserted", "name": template.Name}); err != nil {
+				return nil, err
+			}
+			return templateFromModel(template), nil
 		}); err != nil {
 			return err
 		}
@@ -557,6 +648,10 @@ func (r *Runtime) appendBusinessEvent(ctx context.Context, command foundation.Co
 
 func inboxFromModel(inbox *domain.Inbox) *inboxView {
 	return &inboxView{ID: inbox.ID, AccountID: inbox.AccountID, Name: inbox.Name, ChannelType: inbox.ChannelType, AvatarURL: inbox.AvatarURL, GreetingMessage: inbox.GreetingMessage, GreetingEnabled: inbox.GreetingEnabled, WorkingHoursEnabled: inbox.WorkingHoursEnabled, OutOfOfficeMessage: inbox.OutOfOfficeMessage, Timezone: inbox.Timezone, WorkingHours: inbox.WorkingHours, CSATSurveyEnabled: inbox.CSATSurveyEnabled}
+}
+
+func templateFromModel(template *domain.InboxMessageTemplate) templateView {
+	return templateView{ID: template.ID, AccountID: template.AccountID, InboxID: template.InboxID, Name: template.Name, Status: template.Status, Category: template.Category, Language: template.Language, Components: template.Components}
 }
 
 func identityFromUser(user *domain.User) *identityView {

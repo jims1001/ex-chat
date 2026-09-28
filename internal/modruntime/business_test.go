@@ -567,6 +567,98 @@ func TestCHNHealthAndAccountRevokeStayWithinOwnerBoundary(t *testing.T) {
 	}
 }
 
+func TestCHNTemplateManageListAndEventsAreOwnerLocal(t *testing.T) {
+	db := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "WhatsApp", ChannelType: "Channel::Whatsapp", WebsiteToken: "token"}
+	if err := repository.NewInboxRepositoryWithAccountPort(db, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CHN")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/chn.template.manage.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "template-upsert-1", CommandType: "chn.template.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"action": "upsert", "name": "order_ready", "status": "APPROVED", "category": "UTILITY", "language": "en_US", "components": `[{"type":"BODY","text":"Order {{1}} is ready"}]`}, IdempotencyKey: "template-upsert-91", CorrelationID: "correlation-1", CausationID: "inbox-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.templates.list.v1"}}
+	first := call(command)
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), "order_ready") {
+		t.Fatalf("template upsert status=%d body=%s", first.Code, first.Body.String())
+	}
+	if replay := call(command); replay.Code != http.StatusOK {
+		t.Fatalf("template replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var template domain.InboxMessageTemplate
+	if err := db.Where("account_id = ? AND inbox_id = ? AND name = ?", 91, inbox.ID, "order_ready").First(&template).Error; err != nil {
+		t.Fatal(err)
+	}
+	queryEnvelope := foundation.QueryEnvelope{QueryType: "chn.templates.list.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"inbox_id": inbox.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	query := func(accountID uint) *httptest.ResponseRecorder {
+		queryEnvelope.AccountID = accountID
+		return performContractRequest(newRuntime().Handler(), "/contracts/queries/chn.templates.list.v1", queryEnvelope, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := query(91); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "order_ready") {
+		t.Fatalf("template list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := query(92); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account list status=%d body=%s", response.Code, response.Body.String())
+	}
+	deleteCommand := command
+	deleteCommand.CommandID, deleteCommand.IdempotencyKey, deleteCommand.Input = "template-delete-1", "template-delete-91", map[string]any{"action": "delete", "template_id": template.ID}
+	if response := call(deleteCommand); response.Code != http.StatusOK {
+		t.Fatalf("template delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	var templates, receipts int64
+	_ = db.Model(&domain.InboxMessageTemplate{}).Count(&templates).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	var events []domain.LocalChangeJournal
+	if err := db.Where("action = ? AND event_id <> ''", "event_outbox").Order("object_version_after ASC").Find(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if templates != 0 || receipts != 2 || len(events) != 2 || events[0].ObjectVersionAfter != 1 || events[1].ObjectVersionAfter != 2 {
+		t.Fatalf("templates=%d receipts=%d events=%+v", templates, receipts, events)
+	}
+	for _, event := range events {
+		if strings.Contains(event.AfterState, "access_token") {
+			t.Fatalf("template event leaked credential: %s", event.AfterState)
+		}
+	}
+}
+
+func TestCHNIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "CHN")
+	cfg := businessConfig("CHN")
+	cfg.Dependencies["TEN"] = DependencyConfig{URL: "http://127.0.0.1:1", Token: "ten"}
+	cfg.Dependencies["ENT"] = DependencyConfig{URL: "http://127.0.0.1:2", Token: "ent"}
+	registry := NewContractRegistry("CHN")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	// module_contracts.json declares seven commands and five queries for CHN.
+	if registry.Count() != 12 {
+		t.Fatalf("CHN registered contracts=%d want=12", registry.Count())
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("CHN runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.AccountFeature{}, &domain.User{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("CHN runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

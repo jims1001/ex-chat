@@ -107,13 +107,15 @@
         "chn.member.bind.v1",
         "chn.channel.authorize.v1",
         "chn.health.update.v1",
-        "chn.account_channels.revoke.v1"
+        "chn.account_channels.revoke.v1",
+        "chn.template.manage.v1"
       ],
       "queries": [
         "chn.inbox.get.v1",
         "chn.capabilities.get.v1",
         "chn.connection.status.v1",
-        "chn.account_deletion_status.get.v1"
+        "chn.account_deletion_status.get.v1",
+        "chn.templates.list.v1"
       ],
       "events": [
         "chn.inbox.changed.v1",
