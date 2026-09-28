@@ -1016,6 +1016,58 @@ type Attachment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// MediaAsset owns file metadata and the private storage locator in MED.
+type MediaAsset struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	AccountID     uint      `gorm:"index;not null" json:"account_id"`
+	FileName      string    `gorm:"size:255;not null" json:"file_name"`
+	ContentType   string    `gorm:"size:255;not null" json:"content_type"`
+	FileSize      int64     `gorm:"not null" json:"file_size"`
+	Checksum      string    `gorm:"size:128" json:"checksum"`
+	StorageKey    string    `gorm:"size:1024;not null" json:"-"`
+	Status        string    `gorm:"size:32;index;not null" json:"status"`
+	SecurityState string    `gorm:"size:32;index;not null" json:"security_state"`
+	ObjectVersion int       `gorm:"default:1" json:"object_version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// UploadSession grants a short-lived, one-time upload confirmation for an asset.
+type UploadSession struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	AccountID uint      `gorm:"index;not null" json:"account_id"`
+	AssetID   uint      `gorm:"index;not null" json:"asset_id"`
+	TokenHash string    `gorm:"size:64;not null" json:"-"`
+	Status    string    `gorm:"size:32;index;not null" json:"status"`
+	ExpiresAt time.Time `gorm:"index;not null" json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SecurityScan stores the immutable result of one MED security scan attempt.
+type SecurityScan struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	AccountID uint      `gorm:"index;not null" json:"account_id"`
+	AssetID   uint      `gorm:"index;not null" json:"asset_id"`
+	Status    string    `gorm:"size:32;index;not null" json:"status"`
+	Threat    string    `gorm:"size:255" json:"threat,omitempty"`
+	ScannedAt time.Time `gorm:"index;not null" json:"scanned_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AccessGrant is MED's authoritative decision input for private asset access.
+type AccessGrant struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	AccountID   uint       `gorm:"index;not null" json:"account_id"`
+	AssetID     uint       `gorm:"index;not null" json:"asset_id"`
+	SubjectType string     `gorm:"size:32;index;not null" json:"subject_type"`
+	SubjectID   string     `gorm:"size:128;index;not null" json:"subject_id"`
+	Scope       string     `gorm:"size:32;not null" json:"scope"`
+	ExpiresAt   *time.Time `gorm:"index" json:"expires_at,omitempty"`
+	RevokedAt   *time.Time `gorm:"index" json:"revoked_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
 // ----------------- OPS 自定义筛选器与草稿 -----------------
 
 // CustomFilter saves user search and filter criteria

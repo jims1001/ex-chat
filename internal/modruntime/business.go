@@ -3,6 +3,8 @@ package modruntime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,27 @@ type memberView struct {
 	Role         string        `json:"role"`
 	Availability string        `json:"availability"`
 	Identity     *identityView `json:"identity"`
+}
+
+type mediaAssetView struct {
+	ID            uint      `json:"id"`
+	AccountID     uint      `json:"account_id"`
+	FileName      string    `json:"file_name"`
+	ContentType   string    `json:"content_type"`
+	FileSize      int64     `json:"file_size"`
+	Checksum      string    `json:"checksum,omitempty"`
+	Status        string    `json:"status"`
+	SecurityState string    `json:"security_state"`
+	ObjectVersion int       `json:"object_version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type mediaUploadView struct {
+	Asset       mediaAssetView `json:"asset"`
+	UploadID    uint           `json:"upload_id"`
+	UploadToken string         `json:"upload_token"`
+	ExpiresAt   time.Time      `json:"expires_at"`
 }
 
 type accountView struct {
@@ -682,6 +705,52 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return contactFromModel(base), nil
 		})
+	case "MED":
+		if err := r.Contracts.RegisterQuery("med.asset.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			assetID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "asset id is required"}
+			}
+			var asset domain.MediaAsset
+			if err := r.DB.Where("account_id = ? AND id = ?", query.AccountID, assetID).First(&asset).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "asset was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			return mediaAssetFromModel(&asset), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("med.upload.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			fileName, _ := command.Input["file_name"].(string)
+			contentType, _ := command.Input["content_type"].(string)
+			checksum, _ := command.Input["checksum"].(string)
+			fileSize, err := int64Filter(command.Input, "file_size")
+			fileName, contentType, checksum = strings.TrimSpace(fileName), strings.TrimSpace(contentType), strings.TrimSpace(checksum)
+			if fileName == "" || contentType == "" || err != nil || fileSize <= 0 || fileSize > 30<<20 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "valid file metadata is required"}
+			}
+			now := time.Now().UTC()
+			token := foundation.GenerateUUID()
+			tokenDigest := sha256.Sum256([]byte(token))
+			asset := domain.MediaAsset{AccountID: command.AccountID, FileName: fileName, ContentType: contentType, FileSize: fileSize, Checksum: checksum, StorageKey: strconv.FormatUint(uint64(command.AccountID), 10) + "/" + foundation.GenerateUUID(), Status: "pending_upload", SecurityState: "pending", ObjectVersion: 1, CreatedAt: now, UpdatedAt: now}
+			tx := Transaction(ctx, r.DB)
+			if err := tx.Create(&asset).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "media asset could not be created"}
+			}
+			upload := domain.UploadSession{AccountID: command.AccountID, AssetID: asset.ID, TokenHash: hex.EncodeToString(tokenDigest[:]), Status: "pending", ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&upload).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "upload session could not be created"}
+			}
+			return mediaUploadView{Asset: *mediaAssetFromModel(&asset), UploadID: upload.ID, UploadToken: token, ExpiresAt: upload.ExpiresAt}, nil
+		}); err != nil {
+			return err
+		}
+		// The remaining MED commands and queries are registered in subsequent owner-state handlers.
+		return nil
 	case "CON":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
@@ -1232,6 +1301,35 @@ func templateFromModel(template *domain.InboxMessageTemplate) templateView {
 
 func identityFromUser(user *domain.User) *identityView {
 	return &identityView{ID: user.ID, Name: user.Name, DisplayName: user.DisplayName, Email: user.Email, Role: user.Role, Type: user.Type, Availability: user.Availability, AvailabilityStatus: user.AvailabilityStatus, AvatarURL: user.AvatarURL, Timezone: user.Timezone}
+}
+
+func mediaAssetFromModel(asset *domain.MediaAsset) *mediaAssetView {
+	return &mediaAssetView{ID: asset.ID, AccountID: asset.AccountID, FileName: asset.FileName, ContentType: asset.ContentType, FileSize: asset.FileSize, Checksum: asset.Checksum, Status: asset.Status, SecurityState: asset.SecurityState, ObjectVersion: asset.ObjectVersion, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt}
+}
+
+func int64Filter(filter map[string]any, key string) (int64, error) {
+	value, ok := filter[key]
+	if !ok {
+		return 0, errors.New("filter is missing")
+	}
+	switch typed := value.(type) {
+	case float64:
+		if typed != float64(int64(typed)) {
+			return 0, errors.New("filter is invalid")
+		}
+		return int64(typed), nil
+	case int64:
+		return typed, nil
+	case int:
+		return int64(typed), nil
+	case uint:
+		if uint64(typed) > uint64(^uint64(0)>>1) {
+			return 0, errors.New("filter is invalid")
+		}
+		return int64(typed), nil
+	default:
+		return 0, errors.New("filter is invalid")
+	}
 }
 
 func uintFilter(filter map[string]any, key string) (uint, error) {

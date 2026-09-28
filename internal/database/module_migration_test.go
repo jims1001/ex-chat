@@ -182,4 +182,8 @@ func ExampleModuleModels() {
 	}
 	// Output:
 	// LocalChangeJournal
+	// MediaAsset
+	// UploadSession
+	// SecurityScan
+	// AccessGrant
 }

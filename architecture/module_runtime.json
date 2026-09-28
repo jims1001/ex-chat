@@ -306,16 +306,27 @@
         "TEN"
       ],
       "asynchronousDependencies": [],
-      "storedModels": [],
+      "storedModels": [
+        "AccessGrant",
+        "MediaAsset",
+        "SecurityScan",
+        "UploadSession"
+      ],
       "localJournal": "LocalChangeJournal",
       "failurePolicy": {
         "whenStopped": "新附件暂停，纯文本消息仍可运行",
         "recovery": "补传和孤立引用清理"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "partial-upload-create-and-asset-query",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "med.asset.get.v1"
+      ],
+      "implementedIndependentCommands": [
+        "med.upload.create.v1"
+      ]
     },
     {
       "module": "CON",

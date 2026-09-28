@@ -116,12 +116,16 @@
 | 110 | Webhook | models.go:613 | EXT | 权威 | Webhook 订阅定义 |
 | 111 | WidgetEvent | models.go:1716 | API | 日志 | Widget 接入事件 |
 | 112 | WorkingHourConfig | models.go:1666 | CHN | 权威 | 渠道工作时间规则 |
+| 113 | MediaAsset | models.go | MED | 权威 | 媒体文件元数据、私有存储定位和安全终态 |
+| 114 | UploadSession | models.go | MED | 权威 | 短期一次性上传确认会话 |
+| 115 | SecurityScan | models.go | MED | 日志 | 媒体安全扫描结果 |
+| 116 | AccessGrant | models.go | MED | 权威 | 私有媒体访问授权 |
 
 ## 完整性校验
 
 - 源码基线：`rg '^type [A-Za-z0-9_]+ struct' internal/domain`。
-- 源码对象数：112。
-- 索引对象数：112；其中 111 个静态归属 26 个模块，1 个为明确排除的 L0 共享机制。
+- 源码对象数：116。
+- 索引对象数：116；其中 115 个静态归属 26 个模块，1 个为明确排除的 L0 共享机制。
 - 重复对象：0。
 - 缺失对象：0。
 - 多重静态所有者：0；`LocalChangeJournal` 不计入静态所有者分母，其记录按 `source_module` 动态归属。

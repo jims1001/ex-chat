@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,6 +181,81 @@ func TestCUSContactQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
 	for _, foreign := range []any{&domain.Inbox{}, &domain.Conversation{}, &domain.Message{}} {
 		if db.Migrator().HasTable(foreign) {
 			t.Fatalf("CUS runtime created foreign table %T", foreign)
+		}
+	}
+}
+
+func TestMEDUploadCreateAndAssetQueryOwnMetadata(t *testing.T) {
+	db := newModuleTestDB(t, "MED")
+	cfg := businessConfig("MED")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MED")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "media-upload-1", CommandType: "med.upload.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"file_name": "invoice.pdf", "content_type": "application/pdf", "file_size": 4096, "checksum": "sha256:abc"}, IdempotencyKey: "media-upload-91", CorrelationID: "media-correlation", CausationID: "media-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "med.asset.get.v1"}}
+	callCommand := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/med.upload.create.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	var firstBody string
+	var firstEnvelope map[string]any
+	for i := 0; i < 2; i++ {
+		response := callCommand(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "invoice.pdf") || !strings.Contains(response.Body.String(), "upload_token") {
+			t.Fatalf("upload create status=%d body=%s", response.Code, response.Body.String())
+		}
+		if i == 0 {
+			firstBody = response.Body.String()
+			if err := json.Unmarshal(response.Body.Bytes(), &firstEnvelope); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			var replayEnvelope map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &replayEnvelope); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(firstEnvelope["data"], replayEnvelope["data"]) {
+				t.Fatalf("upload replay changed response first=%s second=%s", firstBody, response.Body.String())
+			}
+		}
+	}
+	var asset domain.MediaAsset
+	if err := db.Where("account_id = ?", 91).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(firstBody, asset.StorageKey) || strings.Contains(firstBody, "token_hash") {
+		t.Fatalf("upload response leaked private metadata: %s", firstBody)
+	}
+	query := foundation.QueryEnvelope{QueryType: "med.asset.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"id": asset.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "status"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	callQuery := func(accountID uint) *httptest.ResponseRecorder {
+		query.AccountID = accountID
+		return performContractRequest(newRuntime().Handler(), "/contracts/queries/med.asset.get.v1", query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := callQuery(91); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "pending_upload") || strings.Contains(response.Body.String(), asset.StorageKey) {
+		t.Fatalf("asset query status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := callQuery(92); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account asset query status=%d body=%s", response.Code, response.Body.String())
+	}
+	var assets, sessions, receipts int64
+	_ = db.Model(&domain.MediaAsset{}).Count(&assets).Error
+	_ = db.Model(&domain.UploadSession{}).Count(&sessions).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if assets != 1 || sessions != 1 || receipts != 1 {
+		t.Fatalf("assets=%d sessions=%d receipts=%d", assets, sessions, receipts)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Attachment{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("MED runtime contains foreign table %T", foreign)
 		}
 	}
 }

@@ -27,7 +27,7 @@
 | SYS | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | CHN | 声明合同运行面已验证 | 启停与依赖恢复通过 | PostgreSQL 8 实例同命令单写通过 | v1/v2 并存及回退事实保留通过 | 所有者备份恢复通过 |
 | CUS | 7 Command、5 Query、6 Event 声明面已接入 | 合并事件自动扇出及停机恢复补投通过 | PostgreSQL 8 实例同命令单写通过 | v1/v2 并存及回退事实保留通过 | 所有者备份恢复与就绪门禁通过 |
-| MED | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
+| MED | 上传会话创建和安全资产查询已接入 | 待验收 | 重启幂等单写通过 | 待验收 | 待验收 |
 | CON | 合并事件消费已接入 | 待验收 | 事件去重与顺序门禁通过 | 待验收 | 待验收 |
 | MSG | 合并事件消费已接入 | 待验收 | 事件去重通过 | 待验收 | 待验收 |
 | RTE | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
@@ -160,4 +160,5 @@
 - 已完成并验证：CUS `cus.contact.delete.v1` 在 CON 已完成活跃会话检查与历史会话分离后，原子删除联系人及所有者关系数据，并发布 `cus.contact.deleted.v1`（E-ARCH-08-v115）。
 - 已完成并验证：CUS 7 个 Command 和 5 个 Query 全部注册，6 个 Event 全部由业务命令发布；`module-server` 按 `MODULE_EVENT_TARGETS_JSON` 和轮询间隔自动投递 outbox（E-ARCH-08-v116）。
 - 已完成并验证：CUS PostgreSQL 8 实例并发同命令单写、v2 写入后回退 v1 的收据重放与事实读取、所有者快照恢复和就绪门禁均通过；快照已支持复合主键表（E-ARCH-08-v117）。
-- 下一项：MED 公开合同与独立运行能力接入。
+- 已完成并验证：MED 新增 MediaAsset、UploadSession、SecurityScan 和 AccessGrant 权威表；`med.upload.create.v1` 原子创建资产与短期上传会话，`med.asset.get.v1` 只返回安全摘要（E-ARCH-08-v118）。
+- 下一项：MED 上传确认与安全扫描状态机。
