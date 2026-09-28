@@ -486,6 +486,49 @@ func TestCUSContactMergeOwnsLocalFactsAndPublishesProjectionEvent(t *testing.T) 
 	}
 }
 
+func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}
+	if err := db.Create(&conversations).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	cfg.AllowedCallers["CUS"] = true
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "contact-merged-con-1", EventType: "cus.contact.merged.v1", EventVersion: "v1", SourceModule: "CUS", AccountID: 91, AggregateType: "Contact", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "merge-event-correlation", CausationID: "contact-merge-1", ChangedFields: []string{"merged"}, Payload: map[string]any{"base_contact_id": 101, "merged_contact_id": 202}, DataClassification: "internal"}
+	deliver := func(payload foundation.EventEnvelope) *httptest.ResponseRecorder {
+		return deliverEvent(runtime.Handler(), payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "CUS")
+		})
+	}
+	for i := 0; i < 2; i++ {
+		if response := deliver(event); response.Code != http.StatusOK {
+			t.Fatalf("merge event status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var reassigned, foreign, receipts int64
+	_ = db.Model(&domain.Conversation{}).Where("account_id = ? AND contact_id = ?", 91, 101).Count(&reassigned).Error
+	_ = db.Model(&domain.Conversation{}).Where("account_id = ? AND contact_id = ?", 92, 202).Count(&foreign).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND source_type = ?", "event_consumed", "CUS").Count(&receipts).Error
+	if reassigned != 2 || foreign != 1 || receipts != 1 {
+		t.Fatalf("reassigned=%d foreign=%d receipts=%d", reassigned, foreign, receipts)
+	}
+	if db.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("CON merge consumer created CUS Contact table")
+	}
+	gap := event
+	gap.EventID, gap.AggregateID, gap.AggregateVersion = "contact-merged-con-gap", "303", 2
+	gap.Payload = map[string]any{"base_contact_id": 303, "merged_contact_id": 404}
+	if response := deliver(gap); response.Code != http.StatusConflict {
+		t.Fatalf("gap merge event status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

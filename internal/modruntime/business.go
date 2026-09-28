@@ -644,6 +644,21 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return contactFromModel(base), nil
 		})
+	case "CON":
+		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
+			baseID, err := uintFilter(event.Payload, "base_contact_id")
+			if err != nil {
+				return &ContractFailure{Type: "validation_failed", Message: "base_contact_id is required"}
+			}
+			mergedID, err := uintFilter(event.Payload, "merged_contact_id")
+			if err != nil || baseID == mergedID {
+				return &ContractFailure{Type: "validation_failed", Message: "merged_contact_id is invalid"}
+			}
+			if err := repository.NewConversationRepositoryWithReadPorts(Transaction(ctx, r.DB), nil, nil, nil, nil, nil, nil, nil).ReassignContact(event.AccountID, mergedID, baseID); err != nil {
+				return &ContractFailure{Type: "state_conflict", Message: "conversation contact projection could not be reassigned"}
+			}
+			return nil
+		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
 		if err := r.Contracts.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {

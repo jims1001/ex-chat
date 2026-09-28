@@ -28,7 +28,7 @@
 | CHN | 声明合同运行面已验证 | 启停与依赖恢复通过 | PostgreSQL 8 实例同命令单写通过 | v1/v2 并存及回退事实保留通过 | 所有者备份恢复通过 |
 | CUS | 联系人与公司基础合同已接入 | 待验收 | 重启幂等单写通过 | 待验收 | 待验收 |
 | MED | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
-| CON | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
+| CON | 合并事件消费已接入 | 待验收 | 事件去重与顺序门禁通过 | 待验收 | 待验收 |
 | MSG | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | RTE | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | TKT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
@@ -153,4 +153,5 @@
 - 已完成并验证：CUS `cus.label.get.v1` 与 `cus.label.manage.v1` 支持账号范围查询、显式创建/更新和 `cus.label.changed.v1` 原子事件（E-ARCH-08-v108）。
 - 已完成并验证：CUS `cus.account_contacts.anonymize.v1` 清除账号联系人 PII、身份映射、标签和备注；删除状态查询给出残留计数且不影响其他账号（E-ARCH-08-v109）。
 - 已完成并验证：CUS `cus.contact.merge.v1` 只合并所有者本地事实并原子发布 `cus.contact.merged.v1`，不创建 CON/MSG/TKT/BIL/OPS 外部表（E-ARCH-08-v110）。
-- 下一项：CON 消费 `cus.contact.merged.v1` 重分配会话联系人投影。
+- 已完成并验证：CON 消费 `cus.contact.merged.v1` 后只重分配本账号 Conversation.ContactID，重复事件去重、版本缺口拒绝且不创建 Contact 表（E-ARCH-08-v111）。
+- 下一项：MSG 消费 `cus.contact.merged.v1` 重分配联系人发送者投影。
