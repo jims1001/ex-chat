@@ -117,6 +117,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("AUT_conditions_use_CUS_contact_company_query", func(t *testing.T) { testAutomationContactOwnerBoundary(t, openStore) })
 	t.Run("AUT_label_conditions_use_CON_CUS_owner_queries", func(t *testing.T) { testAutomationLabelOwnerBoundary(t, openStore) })
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
+	t.Run("API_widget_message_read_uses_CON_MSG_owner_queries", func(t *testing.T) { testWidgetMessageReadOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1281,6 +1282,43 @@ func testWidgetRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gor
 		if db.Migrator().HasTable(&domain.WidgetEvent{}) {
 			t.Fatalf("%s store contains API WidgetEvent table", name)
 		}
+	}
+}
+
+func testWidgetMessageReadOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, msgDB := openStore("CON"), openStore("MSG")
+	conversation := domain.Conversation{AccountID: 92, InboxID: 21, ContactID: 31, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := domain.Message{AccountID: 92, ConversationID: conversation.ID, Content: "widget boundary", MessageType: domain.MessageTypeIncoming, SenderType: domain.SenderTypeContact}
+	if err := msgDB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversations := repository.NewConversationRepository(conDB)
+	messages := repository.NewMessageRepositoryWithConversationPort(msgDB, conversations)
+	gotMessage, err := messages.FindByID(92, message.ID)
+	if err != nil || gotMessage == nil || gotMessage.ConversationID != conversation.ID {
+		t.Fatalf("MSG widget message lookup failed: message=%+v err=%v", gotMessage, err)
+	}
+	contactID := uint(31)
+	gotConversation, err := conversations.FindWidgetMessageScope(92, 21, gotMessage.ConversationID, &contactID)
+	if err != nil || gotConversation == nil || gotConversation.ID != conversation.ID {
+		t.Fatalf("CON widget scope lookup failed: conversation=%+v err=%v", gotConversation, err)
+	}
+	wrongContactID := uint(32)
+	if got, err := conversations.FindWidgetMessageScope(92, 21, gotMessage.ConversationID, &wrongContactID); err != nil || got != nil {
+		t.Fatalf("CON exposed another visitor conversation: conversation=%+v err=%v", got, err)
+	}
+	if got, err := conversations.FindWidgetMessageScope(92, 22, gotMessage.ConversationID, nil); err != nil || got != nil {
+		t.Fatalf("CON exposed another inbox conversation: conversation=%+v err=%v", got, err)
+	}
+	if got, err := messages.FindByID(93, message.ID); err != nil || got != nil {
+		t.Fatalf("MSG exposed another account message: message=%+v err=%v", got, err)
+	}
+	if conDB.Migrator().HasTable(&domain.Message{}) || msgDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CON/MSG isolated stores contain a foreign authority table")
 	}
 }
 

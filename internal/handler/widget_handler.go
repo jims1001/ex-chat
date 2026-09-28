@@ -32,6 +32,7 @@ type WidgetHandler struct {
 	widgetRepo  *repository.WidgetRepository
 	convRepo    *repository.ConversationRepository
 	contactRepo *repository.ContactRepository
+	messageRepo *repository.MessageRepository
 	hub         *ws.Hub
 	jwtSecret   string
 }
@@ -42,12 +43,14 @@ func NewWidgetHandler(
 	widgetRepo *repository.WidgetRepository,
 	convRepo *repository.ConversationRepository,
 	contactRepo *repository.ContactRepository,
+	messageRepo *repository.MessageRepository,
 ) *WidgetHandler {
 	return &WidgetHandler{
 		db:          db,
 		widgetRepo:  widgetRepo,
 		convRepo:    convRepo,
 		contactRepo: contactRepo,
+		messageRepo: messageRepo,
 	}
 }
 
@@ -1346,22 +1349,23 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
-	var msg domain.Message
+	msg, err := h.messageRepo.FindByID(inbox.AccountID, uint(msgID))
+	if err != nil || msg == nil {
+		response.NotFound(c, "Message not found")
+		return
+	}
+
+	var contactID *uint
 	if sourceID != "" {
 		contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
 		if err != nil || contact == nil {
 			response.NotFound(c, "Visitor profile not found")
 			return
 		}
-		if err := h.db.Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-			Where("messages.id = ? AND conversations.inbox_id = ? AND conversations.account_id = ? AND conversations.contact_id = ?", msgID, inbox.ID, inbox.AccountID, contact.ID).
-			First(&msg).Error; err != nil {
-			response.NotFound(c, "Message not found")
-			return
-		}
-	} else if err := h.db.Joins("JOIN conversations ON conversations.id = messages.conversation_id").
-		Where("messages.id = ? AND conversations.inbox_id = ? AND conversations.account_id = ?", msgID, inbox.ID, inbox.AccountID).
-		First(&msg).Error; err != nil {
+		contactID = &contact.ID
+	}
+	conversation, err := h.convRepo.FindWidgetMessageScope(inbox.AccountID, inbox.ID, msg.ConversationID, contactID)
+	if err != nil || conversation == nil {
 		response.NotFound(c, "Message not found")
 		return
 	}
@@ -1377,7 +1381,7 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.widgetRepo.UpdateMessageSubmittedValues(c.Request.Context(), uint(msgID), msg.ConversationID, req.SubmittedValues, req.Content)
+	updated, err := h.widgetRepo.UpdateMessageSubmittedValues(c.Request.Context(), uint(msgID), conversation.ID, req.SubmittedValues, req.Content)
 	if err != nil {
 		response.InternalError(c, "Failed to update message: "+err.Error())
 		return

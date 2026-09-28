@@ -97,4 +97,5 @@
 - 已完成并验证：CampaignService 通过 CON 按账号、联系人和收件箱查找既有会话，只在明确未找到时创建，OPS 不再直接读取 Conversation（E-ARCH-08-v51）。
 - 已完成并验证：SearchHandler 的全局及专项入口分别通过 CUS/CON/MSG 所有者执行联系人、会话和消息搜索，SRH 不再读取三类外部权威表（E-ARCH-08-v52）。
 - 已完成并验证：SearchHandler 的全局及文章专项入口通过 KB 所有者执行账号范围内的文章搜索，SRH 不再读取 Article（E-ARCH-08-v53）。
-- 下一项：WidgetHandler 的 CON/MSG 消息读取边界。
+- 已完成并验证：WidgetHandler 更新消息时通过 MSG 按账号读取消息，并由 CON 校验账号、收件箱及访客会话归属，API 不再联表读取 Message/Conversation（E-ARCH-08-v54）。
+- 下一项：WidgetHandler 的 CHN/IAM 收件箱成员读取边界。

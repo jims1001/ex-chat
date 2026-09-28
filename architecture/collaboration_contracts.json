@@ -1139,6 +1139,26 @@
     },
     {
       "consumer": "API",
+      "provider": "CON",
+      "file": "internal/handler/widget_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindWidgetMessageScope",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/widget_handler.go",
+      "symbol": "MessageRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.changed.v1"
+    },
+    {
+      "consumer": "API",
       "provider": "EXT",
       "file": "internal/handler/conversation_handler.go",
       "symbol": "WebhookService",

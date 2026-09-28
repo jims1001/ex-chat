@@ -315,6 +315,21 @@ func (r *ConversationRepository) FindForInbox(accountID, inboxID, conversationID
 	return &conversation, nil
 }
 
+// FindWidgetMessageScope validates that a widget message's conversation belongs
+// to the requested account, inbox, and optional visitor contact.
+func (r *ConversationRepository) FindWidgetMessageScope(accountID, inboxID, conversationID uint, contactID *uint) (*domain.Conversation, error) {
+	query := r.db.Where("id = ? AND inbox_id = ? AND account_id = ?", conversationID, inboxID, accountID)
+	if contactID != nil {
+		query = query.Where("contact_id = ?", *contactID)
+	}
+	var conversation domain.Conversation
+	err := query.First(&conversation).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &conversation, err
+}
+
 func (r *ConversationRepository) FindSummaryByID(accountID, conversationID uint) (*domain.Conversation, error) {
 	var conversation domain.Conversation
 	if err := r.db.Where("account_id = ? AND id = ?", accountID, conversationID).First(&conversation).Error; err != nil {
