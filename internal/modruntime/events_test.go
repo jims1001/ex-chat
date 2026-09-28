@@ -162,3 +162,57 @@ func TestEventDispatcherRetainsPendingUntilConsumerRecovers(t *testing.T) {
 		t.Fatalf("recovered status=%s", status)
 	}
 }
+
+func TestEventFanoutPersistsPerTargetProgressAndRecovers(t *testing.T) {
+	sourceDB := newModuleTestDB(t, "CUS")
+	event := foundation.EventEnvelope{EventID: "fanout-contact-merge-1", EventType: "cus.contact.merged.v1", EventVersion: "v1", SourceModule: "CUS", AccountID: 91, AggregateType: "Contact", AggregateID: "101", AggregateVersion: 1, OccurredAt: time.Now().UTC(), PublishedAt: time.Now().UTC(), Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "fanout-correlation", CausationID: "fanout-command", ChangedFields: []string{"merged"}, Payload: map[string]any{"base_contact_id": 101, "merged_contact_id": 202}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "CUS").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+
+	startConsumer := func(module, address string, applied *atomic.Int64) (*http.Server, string) {
+		db := newModuleTestDB(t, module)
+		registry := NewContractRegistry(module)
+		if err := registry.RegisterEvent(event.EventType, func(context.Context, foundation.EventEnvelope) error { applied.Add(1); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		cfg := businessConfig(module)
+		cfg.AllowedCallers["CUS"] = true
+		return startHTTPServer(t, address, Runtime{Config: cfg, DB: db, Contracts: registry}.Handler())
+	}
+	var conApplied, msgApplied atomic.Int64
+	conServer, conAddress := startConsumer("CON", "127.0.0.1:0", &conApplied)
+	defer conServer.Shutdown(context.Background())
+	msgServer, msgAddress := startConsumer("MSG", "127.0.0.1:0", &msgApplied)
+	if err := msgServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	targets := map[string]EventFanoutTarget{
+		"CON": {Dependency: DependencyConfig{URL: "http://" + conAddress, Token: businessConfig("CON").AuthToken}, EventTypes: map[string]bool{event.EventType: true}},
+		"MSG": {Dependency: DependencyConfig{URL: "http://" + msgAddress, Token: businessConfig("MSG").AuthToken}, EventTypes: map[string]bool{event.EventType: true}},
+	}
+	dispatcher := NewEventFanoutDispatcher(sourceDB, "CUS", targets, "v1", time.Second)
+	if delivered, err := dispatcher.DeliverPending(context.Background(), 10); err == nil || delivered != 0 {
+		t.Fatalf("partial fanout delivered=%d err=%v", delivered, err)
+	}
+	var pending, deliveryReceipts int64
+	_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "pending").Count(&pending).Error
+	_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&deliveryReceipts).Error
+	if conApplied.Load() != 1 || msgApplied.Load() != 0 || pending != 1 || deliveryReceipts != 1 {
+		t.Fatalf("partial con=%d msg=%d pending=%d receipts=%d", conApplied.Load(), msgApplied.Load(), pending, deliveryReceipts)
+	}
+	msgServer, _ = startConsumer("MSG", msgAddress, &msgApplied)
+	defer msgServer.Shutdown(context.Background())
+	if delivered, err := dispatcher.DeliverPending(context.Background(), 10); err != nil || delivered != 1 {
+		t.Fatalf("recovered fanout delivered=%d err=%v", delivered, err)
+	}
+	var deliveredOutbox int64
+	_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&deliveredOutbox).Error
+	_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&deliveryReceipts).Error
+	if conApplied.Load() != 1 || msgApplied.Load() != 1 || deliveredOutbox != 1 || deliveryReceipts != 2 {
+		t.Fatalf("recovered con=%d msg=%d outbox=%d receipts=%d", conApplied.Load(), msgApplied.Load(), deliveredOutbox, deliveryReceipts)
+	}
+	if delivered, err := dispatcher.DeliverPending(context.Background(), 10); err != nil || delivered != 0 {
+		t.Fatalf("completed fanout replay delivered=%d err=%v", delivered, err)
+	}
+}

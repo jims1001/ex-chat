@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -99,6 +100,83 @@ func (d *EventDispatcher) deliver(ctx context.Context, event foundation.EventEnv
 		return &ContractFailure{Type: "dependency_unavailable", Message: "event consumer returned an invalid response"}
 	}
 	return nil
+}
+
+type EventFanoutTarget struct {
+	Dependency DependencyConfig
+	EventTypes map[string]bool
+}
+
+type EventFanoutDispatcher struct {
+	outbox  *EventOutbox
+	targets map[string]EventFanoutTarget
+	version string
+	timeout time.Duration
+}
+
+func NewEventFanoutDispatcher(db *gorm.DB, sourceModule string, targets map[string]EventFanoutTarget, version string, timeout time.Duration) *EventFanoutDispatcher {
+	normalized := make(map[string]EventFanoutTarget, len(targets))
+	for name, target := range targets {
+		normalized[strings.ToUpper(strings.TrimSpace(name))] = target
+	}
+	return &EventFanoutDispatcher{outbox: NewEventOutbox(db, sourceModule), targets: normalized, version: version, timeout: timeout}
+}
+
+func (d *EventFanoutDispatcher) DeliverPending(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var records []domain.LocalChangeJournal
+	if err := d.outbox.db.Where("source_module = ? AND action = ? AND status = ?", d.outbox.moduleID, "event_outbox", "pending").Order("id ASC").Limit(limit).Find(&records).Error; err != nil {
+		return 0, err
+	}
+	delivered := 0
+	for _, record := range records {
+		var event foundation.EventEnvelope
+		if err := json.Unmarshal([]byte(record.AfterState), &event); err != nil {
+			return delivered, err
+		}
+		targetNames := make([]string, 0, len(d.targets))
+		for name, target := range d.targets {
+			if target.EventTypes[event.EventType] {
+				targetNames = append(targetNames, strings.ToUpper(name))
+			}
+		}
+		sort.Strings(targetNames)
+		if len(targetNames) == 0 {
+			return delivered, &ContractFailure{Type: "dependency_unavailable", Message: "event has no configured consumers"}
+		}
+		for _, targetName := range targetNames {
+			receiptID := eventDeliveryReceiptID(event.EventID, targetName)
+			var exists int64
+			if err := d.outbox.db.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", receiptID).Count(&exists).Error; err != nil {
+				return delivered, err
+			}
+			if exists > 0 {
+				continue
+			}
+			target := d.targets[targetName]
+			dispatcher := NewEventDispatcher(d.outbox.db, d.outbox.moduleID, target.Dependency, d.version, d.timeout)
+			if err := dispatcher.deliver(ctx, event); err != nil {
+				return delivered, err
+			}
+			now := time.Now().UTC()
+			receipt := domain.LocalChangeJournal{ChangeID: receiptID, SourceModule: d.outbox.moduleID, SourceType: targetName, AccountID: event.AccountID, ObjectType: event.AggregateType, ObjectDisplayID: event.AggregateID, ObjectVersionAfter: int(event.AggregateVersion), Action: "event_delivery", ActorType: "System", EventID: event.EventID, CorrelationID: event.CorrelationID, CausationID: event.CausationID, OccurredAt: event.OccurredAt, RecordedAt: now, IngestedAt: now, CreatedAt: now, Result: "applied", Status: "delivered"}
+			if err := d.outbox.db.Create(&receipt).Error; err != nil && !isUniqueConflict(err) {
+				return delivered, err
+			}
+		}
+		if err := d.outbox.MarkDelivered(event.EventID); err != nil {
+			return delivered, err
+		}
+		delivered++
+	}
+	return delivered, nil
+}
+
+func eventDeliveryReceiptID(eventID, target string) string {
+	digest := sha256.Sum256([]byte(eventID + "|" + strings.ToUpper(target)))
+	return "out-" + hex.EncodeToString(digest[:])[:48]
 }
 
 type EventInbox struct {

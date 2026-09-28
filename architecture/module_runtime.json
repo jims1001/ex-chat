@@ -254,7 +254,7 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-contact-merge-producer",
+      "acceptanceStatus": "partial-contact-merge-fanout-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -279,7 +279,15 @@
         "cus.company.changed.v1",
         "cus.label.changed.v1"
       ],
-      "outboxAtomicWithCommands": true
+      "outboxAtomicWithCommands": true,
+      "eventFanoutDeliveryVerified": true,
+      "contactMergeFanoutTargets": [
+        "CON",
+        "MSG",
+        "TKT",
+        "BIL",
+        "OPS"
+      ]
     },
     {
       "module": "MED",

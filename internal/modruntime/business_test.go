@@ -655,6 +655,81 @@ func TestTKTBILAndOPSConsumeContactMergeWithinOwnerStores(t *testing.T) {
 	})
 }
 
+func TestCUSContactMergeEventFansOutToAllProjectionOwners(t *testing.T) {
+	baseID, mergedID := uint(101), uint(202)
+	sourceDB := newModuleTestDB(t, "CUS")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "contact-merge-five-targets", EventType: "cus.contact.merged.v1", EventVersion: "v1", SourceModule: "CUS", AccountID: 91, AggregateType: "Contact", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "five-target-correlation", CausationID: "contact-merge-command", ChangedFields: []string{"merged"}, Payload: map[string]any{"base_contact_id": baseID, "merged_contact_id": mergedID}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "CUS").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	type consumer struct {
+		db      *gorm.DB
+		address string
+		server  *http.Server
+	}
+	consumers := map[string]consumer{}
+	start := func(module string, db *gorm.DB) {
+		cfg := businessConfig(module)
+		cfg.AllowedCallers["CUS"] = true
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry(module)}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		server, address := startHTTPServer(t, "127.0.0.1:0", runtime.Handler())
+		consumers[module] = consumer{db: db, address: address, server: server}
+	}
+	conDB := newModuleTestDB(t, "CON")
+	_ = conDB.Create(&domain.Conversation{AccountID: 91, InboxID: 1, ContactID: mergedID, DisplayID: 1}).Error
+	start("CON", conDB)
+	msgDB := newModuleTestDB(t, "MSG")
+	_ = msgDB.Create(&domain.Message{AccountID: 91, ConversationID: 1, SenderType: domain.SenderTypeContact, SenderID: mergedID, MessageType: domain.MessageTypeIncoming, ContentType: domain.ContentTypeText}).Error
+	start("MSG", msgDB)
+	tktDB := newModuleTestDB(t, "TKT")
+	_ = tktDB.Create(&domain.Ticket{AccountID: 91, TicketNumber: "FAN-1", Title: "Fanout", ContactID: &mergedID}).Error
+	start("TKT", tktDB)
+	bilDB := newModuleTestDB(t, "BIL")
+	_ = bilDB.Create(&domain.Order{AccountID: 91, OrderID: "FAN-1", ContactID: &mergedID}).Error
+	start("BIL", bilDB)
+	opsDB := newModuleTestDB(t, "OPS")
+	campaign := domain.Campaign{AccountID: 91, InboxID: 1, Title: "Fanout", Message: "Hello"}
+	_ = opsDB.Create(&campaign).Error
+	_ = opsDB.Create(&domain.CampaignDelivery{AccountID: 91, CampaignID: campaign.ID, ContactID: mergedID}).Error
+	start("OPS", opsDB)
+	for _, item := range consumers {
+		defer item.server.Shutdown(context.Background())
+	}
+	targets := map[string]EventFanoutTarget{}
+	for module, item := range consumers {
+		targets[module] = EventFanoutTarget{Dependency: DependencyConfig{URL: "http://" + item.address, Token: businessConfig(module).AuthToken}, EventTypes: map[string]bool{event.EventType: true}}
+	}
+	if delivered, err := NewEventFanoutDispatcher(sourceDB, "CUS", targets, "v1", time.Second).DeliverPending(context.Background(), 10); err != nil || delivered != 1 {
+		t.Fatalf("five-target fanout delivered=%d err=%v", delivered, err)
+	}
+	checks := []struct {
+		db    *gorm.DB
+		model any
+	}{
+		{conDB, &domain.Conversation{}}, {tktDB, &domain.Ticket{}}, {bilDB, &domain.Order{}}, {opsDB, &domain.CampaignDelivery{}},
+	}
+	for _, check := range checks {
+		var count int64
+		if err := check.db.Model(check.model).Where("account_id = ? AND contact_id = ?", 91, baseID).Count(&count).Error; err != nil || count != 1 {
+			t.Fatalf("fanout model=%T count=%d err=%v", check.model, count, err)
+		}
+	}
+	var messageCount int64
+	if err := msgDB.Model(&domain.Message{}).Where("account_id = ? AND sender_type = ? AND sender_id = ?", 91, domain.SenderTypeContact, baseID).Count(&messageCount).Error; err != nil || messageCount != 1 {
+		t.Fatalf("fanout messages=%d err=%v", messageCount, err)
+	}
+	var receipts, deliveredOutbox int64
+	_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+	_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&deliveredOutbox).Error
+	if receipts != 5 || deliveredOutbox != 1 {
+		t.Fatalf("delivery receipts=%d outbox=%d", receipts, deliveredOutbox)
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")
