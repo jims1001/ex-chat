@@ -122,6 +122,30 @@ func (r *ContactRepository) FindByIdentifier(accountID uint, identifier string) 
 	return &contact, nil
 }
 
+func (r *ContactRepository) FindImportMatch(accountID uint, email, identifier, phone, name string) (*domain.Contact, error) {
+	var contact domain.Contact
+	query := r.db.Where("account_id = ?", accountID)
+	switch {
+	case email != "" && identifier != "":
+		query = query.Where("email = ? OR identifier = ?", email, identifier)
+	case email != "":
+		query = query.Where("email = ?", email)
+	case identifier != "":
+		query = query.Where("identifier = ?", identifier)
+	case phone != "":
+		query = query.Where("phone_number = ?", phone)
+	default:
+		query = query.Where("name = ?", name)
+	}
+	if err := query.First(&contact).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &contact, nil
+}
+
 func (r *ContactRepository) ResolvePublic(accountID, inboxID uint, idOrSourceID string) (*domain.Contact, *domain.ContactInbox, error) {
 	value := strings.TrimSpace(idOrSourceID)
 	if value == "" {

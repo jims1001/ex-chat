@@ -223,18 +223,10 @@ func (s *MigrationService) importContacts(accountID uint, contacts []MigrationCo
 			name = "Imported Contact"
 		}
 
-		var contact domain.Contact
-		query := s.db.Where("account_id = ?", accountID)
-		if email != "" && identifier != "" {
-			query = query.Where("email = ? OR identifier = ?", email, identifier)
-		} else if email != "" {
-			query = query.Where("email = ?", email)
-		} else if identifier != "" {
-			query = query.Where("identifier = ?", identifier)
-		} else if phone != "" {
-			query = query.Where("phone_number = ?", phone)
-		} else {
-			query = query.Where("name = ?", name)
+		contact, err := s.contactRepo.FindImportMatch(accountID, email, identifier, phone, name)
+		if err != nil {
+			stats.Errors = append(stats.Errors, "failed to match imported contact: "+err.Error())
+			continue
 		}
 
 		createdAt := time.Now().UTC()
@@ -242,8 +234,8 @@ func (s *MigrationService) importContacts(accountID uint, contacts []MigrationCo
 			createdAt = *item.CreatedAt
 		}
 
-		if err := query.First(&contact).Error; err != nil {
-			contact = domain.Contact{
+		if contact == nil {
+			contact = &domain.Contact{
 				AccountID:        accountID,
 				Name:             name,
 				Email:            email,
@@ -252,7 +244,7 @@ func (s *MigrationService) importContacts(accountID uint, contacts []MigrationCo
 				CustomAttributes: item.CustomAttributes,
 				CreatedAt:        createdAt,
 			}
-			if err := s.contactRepo.Create(&contact); err == nil {
+			if err := s.contactRepo.Create(contact); err == nil {
 				stats.ContactsCount++
 			} else {
 				stats.Errors = append(stats.Errors, err.Error())
@@ -266,7 +258,10 @@ func (s *MigrationService) importContacts(accountID uint, contacts []MigrationCo
 			if item.CustomAttributes != "" {
 				contact.CustomAttributes = item.CustomAttributes
 			}
-			_ = s.contactRepo.Update(&contact)
+			if err := s.contactRepo.Update(contact); err != nil {
+				stats.Errors = append(stats.Errors, err.Error())
+				continue
+			}
 			stats.ContactsCount++
 		}
 

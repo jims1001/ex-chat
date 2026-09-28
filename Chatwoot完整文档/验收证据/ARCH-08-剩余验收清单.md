@@ -120,4 +120,5 @@
 - 已完成并验证：PushService 通过 IAM UserRepository 获取用户时区，NTF 静默时段判断不再直接读取 User（E-ARCH-08-v74）。
 - 已完成并验证：EmailService 通过 ENT ChannelENTRepository 读取 BrandedEmailLayout，MSG 不再直接访问品牌配置权威表（E-ARCH-08-v75）。
 - 已完成并验证：MigrationService 导入会话时通过 CUS 按账号匹配联系人邮箱及标识，MIG 不再直接读取 Contact（E-ARCH-08-v76）。
-- 下一项：MigrationService.importContacts 导入联系人时的 CUS 邮箱、标识、电话及姓名查重边界。
+- 已完成并验证：MigrationService.importContacts 通过 CUS 按账号执行邮箱、标识、电话及姓名查重，MIG 不再直接读取 Contact（E-ARCH-08-v77）。
+- 下一项：MigrationService.ensureDefaultInbox 的 CHN 默认收件箱读取边界。

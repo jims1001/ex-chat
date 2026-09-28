@@ -96,6 +96,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RPT_reports_use_CHN_CON_MSG_CUS_owner_queries", func(t *testing.T) { testReportServiceOwnerBoundary(t, openStore) })
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
 	t.Run("MIG_conversation_contact_matching_uses_CUS_owner", func(t *testing.T) { testMigrationConversationContactOwnerBoundary(t, openStore) })
+	t.Run("MIG_contact_import_matching_uses_CUS_owner", func(t *testing.T) { testMigrationContactImportOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
 	t.Run("SRH_search_uses_CUS_CON_MSG_KB_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
@@ -2523,6 +2524,57 @@ func testMigrationConversationContactOwnerBoundary(t *testing.T, openStore func(
 	}
 	if migDB.Migrator().HasTable(&domain.Contact{}) || migDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || chnDB.Migrator().HasTable(&domain.Contact{}) || conDB.Migrator().HasTable(&domain.Contact{}) {
 		t.Fatal("MIG/CUS/CHN/CON conversation matching boundary contains a foreign authority table")
+	}
+}
+
+func testMigrationContactImportOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	migDB, cusDB := openStore("MIG"), openStore("CUS")
+	contacts := repository.NewContactRepository(cusDB)
+	existing := []*domain.Contact{
+		{AccountID: 811, Name: "Email original", Email: "import-email@example.test"},
+		{AccountID: 811, Name: "Identifier original", Identifier: "import-identifier"},
+		{AccountID: 811, Name: "Phone original", PhoneNumber: "+61000000001"},
+		{AccountID: 811, Name: "Name original"},
+		{AccountID: 812, Name: "Foreign", Email: "foreign-import@example.test"},
+	}
+	for _, contact := range existing {
+		if err := contacts.Create(contact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migration := service.NewMigrationService(migDB)
+	migration.SetOwnerRepositories(contacts, nil, nil, nil, nil)
+	payload := `[
+		{"id":"email","name":"Email updated","email":"import-email@example.test","custom_attributes":"{\"matched\":\"email\"}"},
+		{"id":"identifier","name":"Identifier updated","identifier":"import-identifier","custom_attributes":"{\"matched\":\"identifier\"}"},
+		{"id":"phone","name":"Phone updated","phone_number":"+61000000001","custom_attributes":"{\"matched\":\"phone\"}"},
+		{"id":"name","name":"Name original","custom_attributes":"{\"matched\":\"name\"}"},
+		{"id":"foreign","name":"Account local","email":"foreign-import@example.test"}
+	]`
+	stats, err := migration.Migrate(context.Background(), 811, "contacts", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ContactsCount != 5 || len(stats.Errors) != 0 {
+		t.Fatalf("MIG contact import stats=%+v", stats)
+	}
+	var accountContacts []domain.Contact
+	if err := cusDB.Where("account_id = ?", 811).Order("id ASC").Find(&accountContacts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(accountContacts) != 5 {
+		t.Fatalf("CUS import matching created duplicates: %+v", accountContacts)
+	}
+	for i, marker := range []string{"email", "identifier", "phone", "name"} {
+		if !strings.Contains(accountContacts[i].CustomAttributes, marker) {
+			t.Fatalf("CUS %s match did not update existing contact: %+v", marker, accountContacts[i])
+		}
+	}
+	if accountContacts[4].Email != "foreign-import@example.test" || accountContacts[4].ID == existing[4].ID {
+		t.Fatalf("cross-account contact leaked into import: %+v", accountContacts[4])
+	}
+	if migDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("MIG contact import boundary contains the CUS authority table")
 	}
 }
 
