@@ -65,8 +65,8 @@ func (s *ReportService) GetAgentMetrics(accountID uint, filters ...ReportFilter)
 		return nil, err
 	}
 
-	var members []domain.AccountUser
-	if err := s.db.Preload("User").Where("account_id = ?", accountID).Find(&members).Error; err != nil {
+	members, err := s.accounts.ListMembers(accountID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -166,15 +166,17 @@ func (s *ReportService) GetTeamMetrics(accountID uint, filters ...ReportFilter) 
 		return nil, err
 	}
 
-	var teams []domain.Team
-	if err := s.db.Where("account_id = ?", accountID).Find(&teams).Error; err != nil {
+	teams, err := s.teams.List(accountID)
+	if err != nil {
 		return nil, err
 	}
 
 	metrics := make([]TeamMetric, 0, len(teams))
 	for _, t := range teams {
-		var memberIDs []uint
-		_ = s.db.Model(&domain.TeamMember{}).Where("team_id = ?", t.ID).Pluck("user_id", &memberIDs)
+		memberIDs := make([]uint, 0, len(t.Members))
+		for _, member := range t.Members {
+			memberIDs = append(memberIDs, member.ID)
+		}
 		memberSet := make(map[uint]bool, len(memberIDs))
 		for _, mid := range memberIDs {
 			memberSet[mid] = true

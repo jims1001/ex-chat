@@ -15,6 +15,9 @@ type ReportService struct {
 	messages      reportMessagePort
 	contacts      reportContactPort
 	labels        reportLabelPort
+	accounts      reportAccountPort
+	teams         reportTeamPort
+	users         reportUserPort
 }
 
 type reportConversationPort interface {
@@ -33,13 +36,26 @@ type reportContactPort interface {
 type reportLabelPort interface {
 	List(uint) ([]domain.Label, error)
 }
+type reportAccountPort interface {
+	ListMembers(uint) ([]domain.AccountUser, error)
+}
+type reportTeamPort interface {
+	List(uint) ([]domain.Team, error)
+}
+type reportUserPort interface {
+	FindByIDs([]uint) ([]domain.User, error)
+}
 
 func NewReportService(db *gorm.DB) *ReportService {
-	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db)}
+	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db), accounts: repository.NewAccountRepository(db), teams: repository.NewTeamRepository(db), users: repository.NewUserRepository(db)}
 }
 
 func (s *ReportService) SetOwnerRepositories(conversations reportConversationPort, inboxes reportInboxPort, messages reportMessagePort, contacts reportContactPort, labels reportLabelPort) {
 	s.conversations, s.inboxes, s.messages, s.contacts, s.labels = conversations, inboxes, messages, contacts, labels
+}
+
+func (s *ReportService) SetWorkforceRepositories(accounts reportAccountPort, teams reportTeamPort, users reportUserPort) {
+	s.accounts, s.teams, s.users = accounts, teams, users
 }
 
 func applyBaseTimeFilter(tx *gorm.DB, filter ReportFilter, timeCol string) *gorm.DB {

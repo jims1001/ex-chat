@@ -90,4 +90,5 @@
 - 已完成并验证：SLAService 通过 CHN/CON/MSG 所有者合同读取收件箱、SLA 候选会话和消息时间线，RPT 不再访问三类外部权威表（E-ARCH-08-v44）。
 - 已完成并验证：SLAService.ProcessAllBreaches 通过 TEN 最小账号 ID 查询驱动周期检查，RPT 不再直接读取 Account 表（E-ARCH-08-v45）。
 - 已完成并验证：ReportService 的基础、维度和 v2 报表通过 CON/CHN/MSG/CUS 所有者查询获取事实，RPT 不再查询或联表四个所有者的权威表（E-ARCH-08-v46）。
-- 下一项：ReportService 的 TEN/IAM 坐席及团队报表读取边界。
+- 已完成并验证：ReportService 通过 TEN 获取账号成员和团队、通过 IAM 补齐用户资料，RPT 不再读取 AccountUser/User/Team/TeamMember（E-ARCH-08-v47）。
+- 下一项：ReportService 的 EXT AgentBotInbox 绑定读取边界。

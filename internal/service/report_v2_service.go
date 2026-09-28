@@ -360,8 +360,10 @@ func (s *ReportService) GetOutgoingMessagesCount(accountID uint, filter ReportFi
 	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
 	switch groupBy {
 	case "agent", "user":
-		var users []domain.User
-		_ = s.db.Where("id IN ?", senderIDs(messages)).Find(&users).Error
+		users, loadErr := s.users.FindByIDs(senderIDs(messages))
+		if loadErr != nil {
+			return nil, loadErr
+		}
 		for _, u := range users {
 			names[u.ID] = u.Name
 		}
@@ -371,8 +373,10 @@ func (s *ReportService) GetOutgoingMessagesCount(accountID uint, filter ReportFi
 			}
 		}
 	case "team":
-		var teams []domain.Team
-		_ = s.db.Where("account_id = ?", accountID).Find(&teams).Error
+		teams, loadErr := s.teams.List(accountID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
 		for _, t := range teams {
 			names[t.ID] = t.Name
 		}
@@ -688,15 +692,19 @@ func (s *ReportService) GetConversationsReport(accountID uint, reportType string
 		perPage = 25
 	}
 
-	var accountUsers []domain.AccountUser
-	offset := (page - 1) * perPage
-	err := s.db.Preload("User").
-		Where("account_id = ?", accountID).
-		Offset(offset).Limit(perPage).
-		Find(&accountUsers).Error
+	accountUsers, err := s.accounts.ListMembers(accountID)
 	if err != nil {
 		return nil, err
 	}
+	offset := (page - 1) * perPage
+	if offset > len(accountUsers) {
+		offset = len(accountUsers)
+	}
+	end := offset + perPage
+	if end > len(accountUsers) {
+		end = len(accountUsers)
+	}
+	accountUsers = accountUsers[offset:end]
 
 	metrics := make([]AgentLiveConversationMetric, 0, len(accountUsers))
 	for _, au := range accountUsers {

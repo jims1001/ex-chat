@@ -615,6 +615,7 @@
       "capabilitiesRef": "RPT",
       "startupRequired": [],
       "capabilityDependencies": [
+        "IAM",
         "TEN",
         "CHN",
         "CUS",

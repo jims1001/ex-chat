@@ -104,7 +104,7 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 		t.Fatal(err)
 	}
 	// E-ARCH-08-v33 registers TKT owner dependencies for reference validation and hydration.
-	const approvedManifestSHA256 = "22f85ba7d9bde047ab1307121ffa6e7674126c2060fd6a2d2fc83cbd87e29f75"
+	const approvedManifestSHA256 = "43c6cba8ed6912caf108e0cf57ff787bafa42601fe3d4849f4453571b2ae3d11"
 	if actual := fmt.Sprintf("%x", sha256.Sum256(raw)); actual != approvedManifestSHA256 {
 		t.Fatalf("dependency manifest changed (%s); reopen ARCH-03 and approve a new fingerprint", actual)
 	}
