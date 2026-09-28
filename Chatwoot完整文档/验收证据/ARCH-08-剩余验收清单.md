@@ -29,7 +29,7 @@
 | CUS | 联系人与公司基础合同已接入 | 待验收 | 重启幂等单写通过 | 待验收 | 待验收 |
 | MED | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | CON | 合并事件消费已接入 | 待验收 | 事件去重与顺序门禁通过 | 待验收 | 待验收 |
-| MSG | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
+| MSG | 合并事件消费已接入 | 待验收 | 事件去重通过 | 待验收 | 待验收 |
 | RTE | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | TKT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | QLT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
@@ -154,4 +154,5 @@
 - 已完成并验证：CUS `cus.account_contacts.anonymize.v1` 清除账号联系人 PII、身份映射、标签和备注；删除状态查询给出残留计数且不影响其他账号（E-ARCH-08-v109）。
 - 已完成并验证：CUS `cus.contact.merge.v1` 只合并所有者本地事实并原子发布 `cus.contact.merged.v1`，不创建 CON/MSG/TKT/BIL/OPS 外部表（E-ARCH-08-v110）。
 - 已完成并验证：CON 消费 `cus.contact.merged.v1` 后只重分配本账号 Conversation.ContactID，重复事件去重、版本缺口拒绝且不创建 Contact 表（E-ARCH-08-v111）。
-- 下一项：MSG 消费 `cus.contact.merged.v1` 重分配联系人发送者投影。
+- 已完成并验证：MSG 消费合并事件只重分配本账号 Contact 类型消息发送者，User 消息和其他账号保持不变，重复事件去重（E-ARCH-08-v112）。
+- 下一项：TKT 消费 `cus.contact.merged.v1` 重分配工单联系人投影。

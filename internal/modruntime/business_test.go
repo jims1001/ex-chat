@@ -529,6 +529,49 @@ func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	}
 }
 
+func TestMSGConsumesContactMergeEventForContactSendersOnly(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	messages := []domain.Message{
+		{AccountID: 91, ConversationID: 1, SenderType: domain.SenderTypeContact, SenderID: 202, MessageType: domain.MessageTypeIncoming, ContentType: domain.ContentTypeText},
+		{AccountID: 91, ConversationID: 1, SenderType: domain.SenderTypeUser, SenderID: 202, MessageType: domain.MessageTypeOutgoing, ContentType: domain.ContentTypeText},
+		{AccountID: 92, ConversationID: 2, SenderType: domain.SenderTypeContact, SenderID: 202, MessageType: domain.MessageTypeIncoming, ContentType: domain.ContentTypeText},
+	}
+	if err := db.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	cfg.AllowedCallers["CUS"] = true
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "contact-merged-msg-1", EventType: "cus.contact.merged.v1", EventVersion: "v1", SourceModule: "CUS", AccountID: 91, AggregateType: "Contact", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "merge-msg-correlation", CausationID: "contact-merge-1", ChangedFields: []string{"merged"}, Payload: map[string]any{"base_contact_id": 101, "merged_contact_id": 202}, DataClassification: "internal"}
+	deliver := func() *httptest.ResponseRecorder {
+		return deliverEvent(runtime.Handler(), event, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "CUS")
+		})
+	}
+	if response := deliver(); response.Code != http.StatusOK {
+		t.Fatalf("merge event status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := deliver(); response.Code != http.StatusOK {
+		t.Fatalf("duplicate merge event status=%d body=%s", response.Code, response.Body.String())
+	}
+	var contactUpdated, userUntouched, foreignUntouched, receipts int64
+	_ = db.Model(&domain.Message{}).Where("account_id = ? AND sender_type = ? AND sender_id = ?", 91, domain.SenderTypeContact, 101).Count(&contactUpdated).Error
+	_ = db.Model(&domain.Message{}).Where("account_id = ? AND sender_type = ? AND sender_id = ?", 91, domain.SenderTypeUser, 202).Count(&userUntouched).Error
+	_ = db.Model(&domain.Message{}).Where("account_id = ? AND sender_type = ? AND sender_id = ?", 92, domain.SenderTypeContact, 202).Count(&foreignUntouched).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND source_type = ?", "event_consumed", "CUS").Count(&receipts).Error
+	if contactUpdated != 1 || userUntouched != 1 || foreignUntouched != 1 || receipts != 1 {
+		t.Fatalf("contact=%d user=%d foreign=%d receipts=%d", contactUpdated, userUntouched, foreignUntouched, receipts)
+	}
+	if db.Migrator().HasTable(&domain.Contact{}) || db.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("MSG merge consumer created foreign owner tables")
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

@@ -358,9 +358,12 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "partial-contact-merge-consumer",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedConsumedEvents": [
+        "cus.contact.merged.v1"
+      ]
     },
     {
       "module": "RTE",
