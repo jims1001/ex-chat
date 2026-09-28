@@ -1532,6 +1532,103 @@ func TestCUSIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	}
 }
 
+func TestCUSContactCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "CUS")
+	cfg := businessConfig("CUS")
+	command := foundation.CommandEnvelope{CommandID: "capacity-contact", CommandType: "cus.contact.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"name": "Created once", "identifier": "capacity-contact-91"}, IdempotencyKey: "capacity-contact-91", CorrelationID: "capacity-contact-correlation", CausationID: "capacity-contact-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.contact.get.v1"}}
+	const instances = 8
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, instances)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for i := 0; i < instances; i++ {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			response := performContractRequest(handler, "/contracts/commands/cus.contact.create.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+			results <- result{status: response.Code, body: response.Body.String()}
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.status != http.StatusOK || !strings.Contains(response.body, "capacity-contact-91") {
+			t.Fatalf("concurrent contact status=%d body=%s", response.status, response.body)
+		}
+	}
+	var contacts, receipts, events int64
+	_ = db.Model(&domain.Contact{}).Where("account_id = ? AND identifier = ?", 91, "capacity-contact-91").Count(&contacts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.created.v1%").Count(&events).Error
+	if contacts != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("contacts=%d receipts=%d events=%d", contacts, receipts, events)
+	}
+}
+
+func TestCUSMixedVersionUpgradeRollbackPreservesContactFact(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	newRuntime := func(version, release string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("CUS")
+		cfg.ContractVersion, cfg.ReleaseVersion, cfg.AcceptedVersions = version, release, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, "cus-upgrade-correlation")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-contact", CommandType: "cus.contact.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"name": "Survives rollback", "identifier": "rollback-contact-91"}, IdempotencyKey: "upgrade-contact-91", CorrelationID: "cus-upgrade-correlation", CausationID: "cus-upgrade-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.contact.get.v1"}}
+	v2 := newRuntime("v2", "release-2", map[string]bool{"v1": true, "v2": true})
+	response := call(v2, "v2", "/contracts/commands/cus.contact.create.v1", command)
+	if response.Code != http.StatusOK {
+		t.Fatalf("v2 write status=%d body=%s", response.Code, response.Body.String())
+	}
+	var created struct {
+		Data contactView `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.Data.ID == 0 {
+		t.Fatalf("decode created contact: %v body=%s", err, response.Body.String())
+	}
+	v1 := newRuntime("v1", "release-1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/cus.contact.create.v1", command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "rollback-contact-91") {
+		t.Fatalf("v1 replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "cus.contact.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"id": created.Data.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "identifier"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/cus.contact.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "rollback-contact-91") {
+		t.Fatalf("v1 read status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/cus.contact.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rolled-back runtime accepted v2 status=%d body=%s", response.Code, response.Body.String())
+	}
+	var contacts, receipts, events int64
+	_ = db.Model(&domain.Contact{}).Count(&contacts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.created.v1%").Count(&events).Error
+	if contacts != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("rollback contacts=%d receipts=%d events=%d", contacts, receipts, events)
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

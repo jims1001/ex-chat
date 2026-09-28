@@ -254,7 +254,7 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "declared-surface-and-event-worker-verified",
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -285,6 +285,9 @@
       "eventFanoutDeliveryVerified": true,
       "automaticEventDispatchVerified": true,
       "declaredContractSurfaceVerified": true,
+      "postgresMultiInstanceCommandVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true,
+      "ownerBackupRestoreVerified": true,
       "contactMergeFanoutTargets": [
         "CON",
         "MSG",

@@ -38,6 +38,18 @@ func modelTable(db *gorm.DB, model any) (string, error) {
 	return statement.Schema.Table, nil
 }
 
+func snapshotQuery(db *gorm.DB, model any) (*gorm.DB, error) {
+	statement := &gorm.Statement{DB: db}
+	if err := statement.Parse(model); err != nil {
+		return nil, err
+	}
+	query := db.Model(model)
+	for _, field := range statement.Schema.PrimaryFields {
+		query = query.Order(field.DBName + " ASC")
+	}
+	return query, nil
+}
+
 func CreateSnapshot(db *gorm.DB, moduleID, generation, path string) error {
 	if db == nil || strings.TrimSpace(generation) == "" || strings.TrimSpace(path) == "" {
 		return errors.New("snapshot database, generation and path are required")
@@ -53,7 +65,11 @@ func CreateSnapshot(db *gorm.DB, moduleID, generation, path string) error {
 			return err
 		}
 		slice := reflect.New(reflect.SliceOf(reflect.TypeOf(model).Elem()))
-		if err := db.Order("id ASC").Find(slice.Interface()).Error; err != nil {
+		query, err := snapshotQuery(db, model)
+		if err != nil {
+			return err
+		}
+		if err := query.Find(slice.Interface()).Error; err != nil {
 			return fmt.Errorf("snapshot table %s: %w", table, err)
 		}
 		payload, err := json.Marshal(slice.Elem().Interface())
