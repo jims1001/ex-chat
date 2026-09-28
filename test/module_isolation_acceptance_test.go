@@ -120,6 +120,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_widget_message_read_uses_CON_MSG_owner_queries", func(t *testing.T) { testWidgetMessageReadOwnerBoundary(t, openStore) })
 	t.Run("API_widget_members_use_CHN_IAM_owner_queries", func(t *testing.T) { testWidgetInboxMemberOwnerBoundary(t, openStore) })
 	t.Run("API_widget_conversation_validation_uses_CON_owner", func(t *testing.T) { testWidgetConversationValidationBoundary(t, openStore) })
+	t.Run("API_bulk_assignment_uses_TEN_IAM_owner_query", func(t *testing.T) { testAdvancedBulkAssignmentOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1392,6 +1393,36 @@ func testWidgetConversationValidationBoundary(t *testing.T, openStore func(strin
 		if got, err := repo.FindWidgetConversation(scope.accountID, scope.inboxID, conversation.ID, scope.contactID); err != nil || got != nil {
 			t.Fatalf("CON exposed widget conversation across %s boundary: conversation=%+v err=%v", name, got, err)
 		}
+	}
+}
+
+func testAdvancedBulkAssignmentOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	tenDB, iamDB := openStore("TEN"), openStore("IAM")
+	member := domain.User{Name: "Bulk Agent", Email: "bulk-agent@example.test", Role: domain.RoleAgent}
+	nonMember := domain.User{Name: "Other Agent", Email: "other-bulk-agent@example.test", Role: domain.RoleAgent}
+	if err := iamDB.Create(&member).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := iamDB.Create(&nonMember).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tenDB.Create(&domain.AccountUser{AccountID: 96, UserID: member.ID, Role: domain.RoleAgent}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := repository.NewAccountRepositoryWithUserPort(tenDB, repository.NewUserRepository(iamDB))
+	got, err := accounts.FindMember(96, member.ID)
+	if err != nil || got == nil || got.User == nil || got.User.Email != member.Email {
+		t.Fatalf("TEN/IAM bulk assignee lookup failed: member=%+v err=%v", got, err)
+	}
+	if got, err := accounts.FindMember(96, nonMember.ID); err != nil || got != nil {
+		t.Fatalf("TEN exposed non-member assignee: member=%+v err=%v", got, err)
+	}
+	if got, err := accounts.FindMember(97, member.ID); err != nil || got != nil {
+		t.Fatalf("TEN exposed cross-account assignee: member=%+v err=%v", got, err)
+	}
+	if tenDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.AccountUser{}) {
+		t.Fatal("TEN/IAM isolated stores contain a foreign authority table")
 	}
 }
 

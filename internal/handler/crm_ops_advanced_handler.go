@@ -34,6 +34,7 @@ type AdvancedHandler struct {
 	slaRepo           *repository.SLARepository
 	agentBotRepo      *repository.AgentBotRepository
 	inboxRepo         *repository.InboxRepository
+	accountRepo       *repository.AccountRepository
 	attachmentRepo    *repository.AttachmentRepository
 	labelRepo         *repository.LabelRepository
 	messageRepo       *repository.MessageRepository
@@ -108,6 +109,10 @@ func (h *AdvancedHandler) SetStorageService(ss service.StorageService) {
 
 func (h *AdvancedHandler) SetInboxRepo(repo *repository.InboxRepository) {
 	h.inboxRepo = repo
+}
+
+func (h *AdvancedHandler) SetAccountRepo(repo *repository.AccountRepository) {
+	h.accountRepo = repo
 }
 
 func (h *AdvancedHandler) listAgentBotInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {
@@ -1789,25 +1794,26 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 	case "assign_agent":
 		var targetAgent *domain.User
 		if req.Fields.AssigneeID != nil && *req.Fields.AssigneeID > 0 {
-			var agent domain.User
-			err := h.db.Joins("JOIN account_users ON account_users.user_id = users.id").
-				Where("account_users.account_id = ? AND users.id = ?", accID, *req.Fields.AssigneeID).
-				First(&agent).Error
-			if err != nil {
+			member, err := h.accountRepo.FindMember(uint(accID), *req.Fields.AssigneeID)
+			if err != nil || member == nil || member.User == nil {
 				response.BadRequest(c, "Assignee does not belong to account")
 				return
 			}
-			targetAgent = &agent
+			targetAgent = member.User
 		}
 
-		var conversations []domain.Conversation
-		if err := h.db.WithContext(c.Request.Context()).
-			Preload("Inbox").
-			Preload("Assignee").
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Find(&conversations).Error; err != nil {
+		conversations, err := h.convRepo.ListByIDs(uint(accID), req.IDs)
+		if err != nil {
 			response.Error(c, http.StatusInternalServerError, err.Error())
 			return
+		}
+		for i := range conversations {
+			inbox, err := h.inboxRepo.FindSummaryByID(uint(accID), conversations[i].InboxID)
+			if err != nil || inbox == nil {
+				response.InternalError(c, "Failed to load conversation inbox")
+				return
+			}
+			conversations[i].Inbox = inbox
 		}
 
 		now := time.Now().UTC()

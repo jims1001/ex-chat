@@ -189,6 +189,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	storageService := service.NewLocalStorageService("uploads", cfg.JWTSecret)
 	advancedHandler.SetStorageService(storageService)
 	advancedHandler.SetInboxRepo(inboxRepo)
+	advancedHandler.SetAccountRepo(accountRepo)
 	if options.AdvancedHTTPClient != nil {
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)
 	}

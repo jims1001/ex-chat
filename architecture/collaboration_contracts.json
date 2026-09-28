@@ -3439,6 +3439,36 @@
     },
     {
       "consumer": "ORC",
+      "provider": "TEN",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AccountRepository",
+      "method": "FindMember",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "ListByIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC",
       "provider": "RTE",
       "file": "internal/handler/inbox_handler.go",
       "symbol": "AssignmentPolicyRepository",

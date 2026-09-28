@@ -346,6 +346,15 @@ func (r *ConversationRepository) FindIDsByInbox(accountID, inboxID uint) ([]uint
 	return ids, err
 }
 
+func (r *ConversationRepository) ListByIDs(accountID uint, ids []uint) ([]domain.Conversation, error) {
+	conversations := make([]domain.Conversation, 0)
+	if len(ids) == 0 {
+		return conversations, nil
+	}
+	err := r.db.Where("account_id = ? AND id IN ?", accountID, ids).Find(&conversations).Error
+	return conversations, err
+}
+
 func (r *ConversationRepository) FindSLACandidates(accountID uint) ([]domain.Conversation, error) {
 	conversations := make([]domain.Conversation, 0)
 	err := r.db.Model(&domain.Conversation{}).
