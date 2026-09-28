@@ -1521,18 +1521,38 @@ type UpdateContactNoteReq struct {
 	Content string `json:"content" binding:"required"`
 }
 
+func (h *AdvancedHandler) hydrateContactNoteUsers(notes []domain.ContactNote) error {
+	ids := make([]uint, 0, len(notes))
+	seen := make(map[uint]bool)
+	for _, note := range notes {
+		if note.UserID > 0 && !seen[note.UserID] {
+			seen[note.UserID] = true
+			ids = append(ids, note.UserID)
+		}
+	}
+	users, err := h.userRepo.FindByIDs(ids)
+	if err != nil {
+		return err
+	}
+	byID := make(map[uint]*domain.User, len(users))
+	for i := range users {
+		byID[users[i].ID] = &users[i]
+	}
+	for i := range notes {
+		notes[i].User = byID[notes[i].UserID]
+	}
+	return nil
+}
+
 func (h *AdvancedHandler) CreateContactNote(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
 
-	// Verify contact belongs to this account if contact exists
-	var contact domain.Contact
-	if err := h.db.WithContext(c.Request.Context()).Where("id = ?", contactID).First(&contact).Error; err == nil {
-		if contact.AccountID != uint(accID) {
-			response.NotFound(c, "Contact not found")
-			return
-		}
+	contactAccountID, _ := h.contactRepo.FindAccountIDByGlobalID(uint(contactID))
+	if contactAccountID != nil && *contactAccountID != uint(accID) {
+		response.NotFound(c, "Contact not found")
+		return
 	}
 
 	var req CreateContactNoteReq
@@ -1553,30 +1573,27 @@ func (h *AdvancedHandler) CreateContactNote(c *gin.Context) {
 		return
 	}
 
-	_ = h.db.WithContext(c.Request.Context()).Preload("User").First(&note, note.ID).Error
+	notes := []domain.ContactNote{note}
+	_ = h.hydrateContactNoteUsers(notes)
 
-	response.Created(c, note)
+	response.Created(c, notes[0])
 }
 
 func (h *AdvancedHandler) ListContactNotes(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
-	// Verify contact belongs to this account if contact exists
-	var contact domain.Contact
-	if err := h.db.WithContext(c.Request.Context()).Where("id = ?", contactID).First(&contact).Error; err == nil {
-		if contact.AccountID != uint(accID) {
-			response.NotFound(c, "Contact not found")
-			return
-		}
+	contactAccountID, _ := h.contactRepo.FindAccountIDByGlobalID(uint(contactID))
+	if contactAccountID != nil && *contactAccountID != uint(accID) {
+		response.NotFound(c, "Contact not found")
+		return
 	}
 
-	var notes []domain.ContactNote
-	h.db.WithContext(c.Request.Context()).
-		Preload("User").
-		Where("account_id = ? AND contact_id = ?", accID, contactID).
-		Order("id DESC").
-		Find(&notes)
+	notes, err := h.contactRepo.ListNotes(uint(accID), uint(contactID))
+	if err != nil || h.hydrateContactNoteUsers(notes) != nil {
+		response.InternalError(c, "Failed to list contact notes")
+		return
+	}
 	response.Success(c, notes)
 }
 
@@ -1585,10 +1602,8 @@ func (h *AdvancedHandler) UpdateContactNote(c *gin.Context) {
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	noteID, _ := strconv.ParseUint(c.Param("note_id"), 10, 32)
 
-	var note domain.ContactNote
-	if err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND contact_id = ? AND id = ?", accID, contactID, noteID).
-		First(&note).Error; err != nil {
+	note, err := h.contactRepo.FindNote(uint(accID), uint(contactID), uint(noteID))
+	if err != nil || note == nil {
 		response.NotFound(c, "Contact note not found")
 		return
 	}
@@ -1607,13 +1622,14 @@ func (h *AdvancedHandler) UpdateContactNote(c *gin.Context) {
 	note.Content = req.Content
 	note.UpdatedAt = time.Now()
 
-	if err := h.contactRepo.UpdateNote(&note); err != nil {
+	if err := h.contactRepo.UpdateNote(note); err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	_ = h.db.WithContext(c.Request.Context()).Preload("User").First(&note, note.ID).Error
-	response.Success(c, note)
+	notes := []domain.ContactNote{*note}
+	_ = h.hydrateContactNoteUsers(notes)
+	response.Success(c, notes[0])
 }
 
 func (h *AdvancedHandler) DeleteContactNote(c *gin.Context) {
@@ -1621,10 +1637,8 @@ func (h *AdvancedHandler) DeleteContactNote(c *gin.Context) {
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	noteID, _ := strconv.ParseUint(c.Param("note_id"), 10, 32)
 
-	var note domain.ContactNote
-	if err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND contact_id = ? AND id = ?", accID, contactID, noteID).
-		First(&note).Error; err != nil {
+	note, err := h.contactRepo.FindNote(uint(accID), uint(contactID), uint(noteID))
+	if err != nil || note == nil {
 		response.NotFound(c, "Contact note not found")
 		return
 	}
@@ -1643,19 +1657,18 @@ func (h *AdvancedHandler) GetContactNote(c *gin.Context) {
 	contactID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	noteID, _ := strconv.ParseUint(c.Param("note_id"), 10, 32)
 
-	var note domain.ContactNote
-	if err := h.db.WithContext(c.Request.Context()).
-		Preload("User").
-		Where("account_id = ? AND contact_id = ? AND id = ?", accID, contactID, noteID).
-		First(&note).Error; err != nil {
+	note, err := h.contactRepo.FindNote(uint(accID), uint(contactID), uint(noteID))
+	if err != nil || note == nil {
 		response.NotFound(c, "Contact note not found")
 		return
 	}
 
+	notes := []domain.ContactNote{*note}
+	_ = h.hydrateContactNoteUsers(notes)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    note,
-		"payload": note,
+		"data":    notes[0],
+		"payload": notes[0],
 	})
 }
 

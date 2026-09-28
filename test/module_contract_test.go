@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v64 records draft reads through MSG.
-	const approvedCollaborationSHA = "4f540c8bf33d8a9f788d5789e1171df593778c466030cd865912642242028a80"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v65 records contact notes through CUS/IAM.
+	const approvedCollaborationSHA = "6254ef997f3a0d5dd8f380ab53cb1e02d56ce1adaae37e1771c007386c8b5d4b"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -414,7 +414,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},
 		"../internal/handler/widget_handler.go":                      {"h.db.Where", "JOIN conversations ON conversations.id = messages.conversation_id", "messages.id = ? AND conversations.inbox_id", "JOIN inbox_members ON inbox_members.user_id = users.id", "inbox_members.inbox_id = ?"},
-		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")", "account_id = ? AND id = ?\", accID, *req.Fields.TeamID", "h.db.Where(\"account_id = ? AND (title = ? OR id = ?)", "h.db.WithContext(c.Request.Context()).Preload(\"Company\").Preload(\"Labels\")", "Where(\"account_id = ? AND id = ? AND company_id = ?\", accID, contactID, comp.ID)", "h.db.Preload(\"Inbox\").Where(\"account_id = ? AND id = ?\", accID, convID)", "h.db.Where(\"account_id = ? AND conversation_id = ? AND id = ?", "h.db.WithContext(c.Request.Context()).Where(\"account_id = ? AND conversation_id = ? AND user_id = ?"},
+		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")", "account_id = ? AND id = ?\", accID, *req.Fields.TeamID", "h.db.Where(\"account_id = ? AND (title = ? OR id = ?)", "h.db.WithContext(c.Request.Context()).Preload(\"Company\").Preload(\"Labels\")", "Where(\"account_id = ? AND id = ? AND company_id = ?\", accID, contactID, comp.ID)", "h.db.Preload(\"Inbox\").Where(\"account_id = ? AND id = ?\", accID, convID)", "h.db.Where(\"account_id = ? AND conversation_id = ? AND id = ?", "h.db.WithContext(c.Request.Context()).Where(\"account_id = ? AND conversation_id = ? AND user_id = ?", "Preload(\"User\").First(&note"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

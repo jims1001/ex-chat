@@ -108,4 +108,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler.GetConversationSLA 通过 CON 按账号读取会话并由 CHN 组合收件箱，ORC 不再直接查询 Conversation 或预加载 Inbox（E-ARCH-08-v62）。
 - 已完成并验证：CRMOpsAdvancedHandler.UploadAttachment 的会话存在性由 CON 校验，multipart/JSON 消息归属由 MSG 校验并显式注入 MSG 仓储，ORC 不再直接查询 Conversation/Message（E-ARCH-08-v63）。
 - 已完成并验证：CRMOpsAdvancedHandler.GetDraft 通过 MSG 按账号、会话和用户精确读取草稿，ORC 不再直接查询 DraftMessage（E-ARCH-08-v64）。
-- 下一项：CRMOpsAdvancedHandler 联系人备注的 CUS/IAM 访问及用户预加载边界。
+- 已完成并验证：CRMOpsAdvancedHandler 联系人备注通过 CUS 执行归属及增删改查，并由 IAM 批量组合作者，ORC 不再直接查询 Contact/ContactNote 或预加载 User（E-ARCH-08-v65）。
+- 下一项：CRMOpsAdvancedHandler 旧版坐席容量策略的 RTE 访问边界。

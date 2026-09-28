@@ -128,6 +128,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_conversation_SLA_uses_CON_CHN_owner_queries", func(t *testing.T) { testAdvancedConversationSLAOwnerBoundary(t, openStore) })
 	t.Run("ORC_attachment_targets_use_CON_MSG_owner_queries", func(t *testing.T) { testAdvancedAttachmentTargetOwnerBoundary(t, openStore) })
 	t.Run("ORC_draft_reads_use_MSG_owner_query", func(t *testing.T) { testAdvancedDraftOwnerBoundary(t, openStore) })
+	t.Run("ORC_contact_notes_use_CUS_IAM_owner_queries", func(t *testing.T) { testAdvancedContactNoteOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1696,6 +1697,49 @@ func testAdvancedDraftOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	}
 	if msgDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("MSG isolated store contains CON authority table")
+	}
+}
+
+func testAdvancedContactNoteOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, iamDB := openStore("CUS"), openStore("IAM")
+	contact := domain.Contact{AccountID: 601, Name: "Note Contact"}
+	foreignContact := domain.Contact{AccountID: 602, Name: "Foreign Note Contact"}
+	user := domain.User{Name: "Note Author", Email: "note-author@example.test"}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&foreignContact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := iamDB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	contacts := repository.NewContactRepository(cusDB)
+	ownerID, err := contacts.FindAccountIDByGlobalID(foreignContact.ID)
+	if err != nil || ownerID == nil || *ownerID != 602 {
+		t.Fatalf("CUS contact owner lookup failed: owner=%v err=%v", ownerID, err)
+	}
+	note := domain.ContactNote{AccountID: 601, ContactID: contact.ID, UserID: user.ID, Content: "owned note"}
+	if err := contacts.CreateNote(&note); err != nil {
+		t.Fatal(err)
+	}
+	found, err := contacts.FindNote(601, contact.ID, note.ID)
+	if err != nil || found == nil {
+		t.Fatalf("CUS note lookup failed: note=%+v err=%v", found, err)
+	}
+	if cross, err := contacts.FindNote(602, foreignContact.ID, note.ID); err != nil || cross != nil {
+		t.Fatalf("CUS exposed cross-account note: note=%+v err=%v", cross, err)
+	}
+	notes, err := contacts.ListNotes(601, contact.ID)
+	if err != nil || len(notes) != 1 {
+		t.Fatalf("CUS note list failed: notes=%+v err=%v", notes, err)
+	}
+	users, err := repository.NewUserRepository(iamDB).FindByIDs([]uint{notes[0].UserID})
+	if err != nil || len(users) != 1 || users[0].ID != user.ID {
+		t.Fatalf("IAM note author lookup failed: users=%+v err=%v", users, err)
+	}
+	if cusDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.ContactNote{}) {
+		t.Fatal("CUS/IAM isolated stores contain a foreign authority table")
 	}
 }
 

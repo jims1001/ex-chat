@@ -54,6 +54,18 @@ func (r *ContactRepository) FindByID(accountID, id uint) (*domain.Contact, error
 	return &contact, nil
 }
 
+func (r *ContactRepository) FindAccountIDByGlobalID(id uint) (*uint, error) {
+	var accountID uint
+	err := r.db.Model(&domain.Contact{}).Where("id = ?", id).Pluck("account_id", &accountID).Error
+	if err != nil {
+		return nil, err
+	}
+	if accountID == 0 {
+		return nil, nil
+	}
+	return &accountID, nil
+}
+
 func (r *ContactRepository) Exists(accountID, id uint) (bool, error) {
 	var count int64
 	err := r.db.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
@@ -246,6 +258,24 @@ func (r *ContactRepository) UpdateNote(note *domain.ContactNote) error {
 
 func (r *ContactRepository) DeleteNote(accountID, contactID, noteID uint) error {
 	return r.db.Where("account_id = ? AND contact_id = ? AND id = ?", accountID, contactID, noteID).Delete(&domain.ContactNote{}).Error
+}
+
+func (r *ContactRepository) FindNote(accountID, contactID, noteID uint) (*domain.ContactNote, error) {
+	var note domain.ContactNote
+	err := r.db.Where("account_id = ? AND contact_id = ? AND id = ?", accountID, contactID, noteID).First(&note).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &note, nil
+}
+
+func (r *ContactRepository) ListNotes(accountID, contactID uint) ([]domain.ContactNote, error) {
+	notes := make([]domain.ContactNote, 0)
+	err := r.db.Where("account_id = ? AND contact_id = ?", accountID, contactID).Order("id DESC").Find(&notes).Error
+	return notes, err
 }
 
 var ErrContactHasActiveConversations = errors.New("cannot delete contact with active conversations")
