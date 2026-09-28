@@ -16,7 +16,7 @@ import (
 func TestEveryModuleStartsWithIndependentConfigAndReadiness(t *testing.T) {
 	for _, module := range database.ModuleIDs() {
 		t.Run(module, func(t *testing.T) {
-			values := map[string]string{"MODULE_ID": module, "MODULE_ADDR": ":0", "MODULE_DB_DRIVER": "sqlite", "MODULE_DB_PATH": filepath.Join(t.TempDir(), module+".db"), "MODULE_CONTRACT_VERSION": "v1"}
+			values := map[string]string{"MODULE_ID": module, "MODULE_ADDR": ":0", "MODULE_DB_DRIVER": "sqlite", "MODULE_DB_PATH": filepath.Join(t.TempDir(), module+".db"), "MODULE_CONTRACT_VERSION": "v1", "MODULE_AUTH_TOKEN": "test-secret", "MODULE_ALLOWED_CALLERS": "ORC,API"}
 			cfg, err := LoadConfig(func(key string) string { return values[key] })
 			if err != nil {
 				t.Fatal(err)
@@ -48,7 +48,7 @@ func TestEveryModuleStartsWithIndependentConfigAndReadiness(t *testing.T) {
 }
 
 func TestRuntimeBindsIndependentListener(t *testing.T) {
-	values := map[string]string{"MODULE_ID": "IAM", "MODULE_DB_DRIVER": "sqlite", "MODULE_DB_PATH": filepath.Join(t.TempDir(), "iam.db")}
+	values := map[string]string{"MODULE_ID": "IAM", "MODULE_DB_DRIVER": "sqlite", "MODULE_DB_PATH": filepath.Join(t.TempDir(), "iam.db"), "MODULE_AUTH_TOKEN": "test-secret", "MODULE_ALLOWED_CALLERS": "TEN,API"}
 	cfg, err := LoadConfig(func(key string) string { return values[key] })
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestRuntimeBindsIndependentListener(t *testing.T) {
 }
 
 func TestReadinessRejectsMissingSchemaAndSharedConfigFallback(t *testing.T) {
-	values := map[string]string{"MODULE_ID": "CUS", "MODULE_DB_DRIVER": "sqlite", "DB_PATH": "shared.db"}
+	values := map[string]string{"MODULE_ID": "CUS", "MODULE_DB_DRIVER": "sqlite", "DB_PATH": "shared.db", "MODULE_AUTH_TOKEN": "test-secret", "MODULE_ALLOWED_CALLERS": "CON"}
 	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("shared DB_PATH was accepted without MODULE_DB_PATH")
 	}

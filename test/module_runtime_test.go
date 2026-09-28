@@ -19,18 +19,20 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 		FoundationVersion               string
 		ModuleRuntimeEntryPoint         string
 		IndependentReadinessImplemented bool
+		ContractTransportImplemented    bool
 		Modules                         []struct {
-			Module                   string
-			DefaultUnit              string
-			ContractVersion          string
-			CapabilitiesRef          string
-			StartupRequired          []string
-			CapabilityDependencies   []string
-			AsynchronousDependencies []string
-			StoredModels             []string
-			LocalJournal             string
-			FailurePolicy            struct{ WhenStopped, Recovery string }
-			RuntimeShellImplemented  bool
+			Module                       string
+			DefaultUnit                  string
+			ContractVersion              string
+			CapabilitiesRef              string
+			StartupRequired              []string
+			CapabilityDependencies       []string
+			AsynchronousDependencies     []string
+			StoredModels                 []string
+			LocalJournal                 string
+			FailurePolicy                struct{ WhenStopped, Recovery string }
+			RuntimeShellImplemented      bool
+			ContractTransportImplemented bool
 		}
 	}
 	if err := json.Unmarshal(raw, &inventory); err != nil {
@@ -39,7 +41,7 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 	if inventory.FoundationVersion != "foundation-v1" {
 		t.Fatal("invalid foundation version")
 	}
-	if inventory.ModuleRuntimeEntryPoint != "cmd/module-server" || !inventory.IndependentReadinessImplemented {
+	if inventory.ModuleRuntimeEntryPoint != "cmd/module-server" || !inventory.IndependentReadinessImplemented || !inventory.ContractTransportImplemented {
 		t.Fatal("independent module runtime shell is not registered")
 	}
 	var dependencies architectureDependencyManifest
@@ -79,8 +81,8 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 		if module.DefaultUnit < "U1" || module.DefaultUnit > "U5" || module.LocalJournal != "LocalChangeJournal" || module.FailurePolicy.WhenStopped == "" || module.FailurePolicy.Recovery == "" {
 			t.Fatalf("incomplete runtime inventory for %s", module.Module)
 		}
-		if !module.RuntimeShellImplemented {
-			t.Fatalf("runtime shell missing for %s", module.Module)
+		if !module.RuntimeShellImplemented || !module.ContractTransportImplemented {
+			t.Fatalf("runtime shell or contract transport missing for %s", module.Module)
 		}
 		models, err := database.ModuleModels(module.Module)
 		if err != nil {

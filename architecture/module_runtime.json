@@ -33,7 +33,7 @@
       "error_rate",
       "checkpoint"
     ],
-    "configuration": "Independent module identity, listener, database credentials, health and schema readiness are implemented; business capability handlers remain to be extracted per module."
+    "configuration": "Independent identity, listener, database credentials, health, schema readiness and authenticated/versioned contract transport are implemented; business capability handlers remain to be extracted per module."
   },
   "modules": [
     {
@@ -59,7 +59,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "TEN",
@@ -86,7 +87,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "ENT",
@@ -110,7 +112,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "SYS",
@@ -137,7 +140,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "CHN",
@@ -164,7 +168,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "CUS",
@@ -194,7 +199,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "MED",
@@ -214,7 +220,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "CON",
@@ -240,7 +247,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "MSG",
@@ -269,7 +277,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "RTE",
@@ -299,7 +308,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "TKT",
@@ -331,7 +341,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "QLT",
@@ -367,7 +378,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "KB",
@@ -393,7 +405,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "BIL",
@@ -419,7 +432,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "EXT",
@@ -453,7 +467,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "NTF",
@@ -485,7 +500,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "AUT",
@@ -520,7 +536,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "OPS",
@@ -557,7 +574,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "AIC",
@@ -598,7 +616,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "MIG",
@@ -627,7 +646,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "RPT",
@@ -673,7 +693,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "SRH",
@@ -705,7 +726,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "ORC",
@@ -745,7 +767,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "API",
@@ -792,7 +815,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "RTM",
@@ -831,7 +855,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     },
     {
       "module": "AUD",
@@ -882,7 +907,8 @@
       },
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
-      "runtimeShellImplemented": true
+      "runtimeShellImplemented": true,
+      "contractTransportImplemented": true
     }
   ],
   "moduleRuntimeEntryPoint": "cmd/module-server",
@@ -892,5 +918,22 @@
     "MODULE_DB_DSN"
   ],
   "moduleListenerConfig": "MODULE_ADDR",
-  "moduleIdentityConfig": "MODULE_ID"
+  "moduleIdentityConfig": "MODULE_ID",
+  "contractTransport": {
+    "paths": [
+      "/contracts/commands/{capability}",
+      "/contracts/queries/{capability}"
+    ],
+    "method": "POST",
+    "authentication": [
+      "Authorization: Bearer <MODULE_AUTH_TOKEN>",
+      "X-Module-Caller allow-list"
+    ],
+    "versionHeader": "X-Contract-Version",
+    "correlationHeader": "X-Correlation-Id",
+    "timeoutConfig": "MODULE_MAX_TIMEOUT_MS",
+    "requestLimitConfig": "MODULE_MAX_REQUEST_BYTES",
+    "errorEnvelope": "foundation.ContractError"
+  },
+  "contractTransportImplemented": true
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,10 @@ type Config struct {
 	DBPath          string
 	DBDSN           string
 	ContractVersion string
+	AuthToken       string
+	AllowedCallers  map[string]bool
+	MaxTimeout      time.Duration
+	MaxRequestBytes int64
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -36,12 +41,36 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		DBPath:          strings.TrimSpace(getenv("MODULE_DB_PATH")),
 		DBDSN:           strings.TrimSpace(getenv("MODULE_DB_DSN")),
 		ContractVersion: strings.TrimSpace(getenv("MODULE_CONTRACT_VERSION")),
+		AuthToken:       strings.TrimSpace(getenv("MODULE_AUTH_TOKEN")),
+		AllowedCallers:  parseCallers(getenv("MODULE_ALLOWED_CALLERS")),
 	}
 	if cfg.Address == "" {
 		cfg.Address = ":8090"
 	}
 	if cfg.ContractVersion == "" {
 		cfg.ContractVersion = "v1"
+	}
+	if cfg.AuthToken == "" {
+		return Config{}, errors.New("MODULE_AUTH_TOKEN is required")
+	}
+	if len(cfg.AllowedCallers) == 0 {
+		return Config{}, errors.New("MODULE_ALLOWED_CALLERS is required")
+	}
+	cfg.MaxTimeout = 10 * time.Second
+	if value := strings.TrimSpace(getenv("MODULE_MAX_TIMEOUT_MS")); value != "" {
+		milliseconds, err := strconv.Atoi(value)
+		if err != nil || milliseconds <= 0 || milliseconds > 60000 {
+			return Config{}, errors.New("MODULE_MAX_TIMEOUT_MS must be between 1 and 60000")
+		}
+		cfg.MaxTimeout = time.Duration(milliseconds) * time.Millisecond
+	}
+	cfg.MaxRequestBytes = 1 << 20
+	if value := strings.TrimSpace(getenv("MODULE_MAX_REQUEST_BYTES")); value != "" {
+		bytes, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || bytes <= 0 || bytes > 10<<20 {
+			return Config{}, errors.New("MODULE_MAX_REQUEST_BYTES must be between 1 and 10485760")
+		}
+		cfg.MaxRequestBytes = bytes
 	}
 	if _, err := database.ModuleModels(cfg.ModuleID); err != nil {
 		return Config{}, err
@@ -61,6 +90,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
+func parseCallers(value string) map[string]bool {
+	callers := map[string]bool{}
+	for _, caller := range strings.Split(value, ",") {
+		caller = strings.ToUpper(strings.TrimSpace(caller))
+		if caller != "" {
+			callers[caller] = true
+		}
+	}
+	return callers
+}
+
 func OpenDatabase(cfg Config) (*gorm.DB, error) {
 	var dialector gorm.Dialector
 	if cfg.DBDriver == "postgres" {
@@ -78,6 +118,7 @@ func OpenDatabase(cfg Config) (*gorm.DB, error) {
 type Runtime struct {
 	Config    Config
 	DB        *gorm.DB
+	Contracts *ContractRegistry
 	StartedAt time.Time
 }
 
@@ -121,6 +162,9 @@ func (r Runtime) Handler() http.Handler {
 		}
 		write(w, http.StatusOK, map[string]any{"status": "ready", "module_id": r.Config.ModuleID, "foundation_version": FoundationVersion, "contract_version": r.Config.ContractVersion})
 	})
+	if r.Contracts != nil {
+		mux.Handle("/contracts/", r.Contracts.Handler(r.Config))
+	}
 	return mux
 }
 
@@ -133,5 +177,5 @@ func FromEnvironment() (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
-	return Runtime{Config: cfg, DB: db, StartedAt: time.Now().UTC()}, nil
+	return Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry(cfg.ModuleID), StartedAt: time.Now().UTC()}, nil
 }
