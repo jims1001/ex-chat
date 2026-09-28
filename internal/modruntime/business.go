@@ -100,6 +100,19 @@ type templateView struct {
 	Components string `json:"components"`
 }
 
+type contactView struct {
+	ID            uint   `json:"id"`
+	AccountID     uint   `json:"account_id"`
+	CompanyID     *uint  `json:"company_id,omitempty"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	PhoneNumber   string `json:"phone_number"`
+	Identifier    string `json:"identifier"`
+	AvatarURL     string `json:"avatar_url"`
+	Blocked       bool   `json:"blocked"`
+	ObjectVersion int    `json:"object_version"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -232,6 +245,22 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "entitlement store is unavailable"}
 			}
 			return capabilityCheckView{AccountID: query.AccountID, Capability: capability, Allowed: features[capability]}, nil
+		})
+	case "CUS":
+		contacts := repository.NewContactRepositoryWithOwnerPorts(r.DB, nil, nil, nil, nil, nil)
+		return r.Contracts.RegisterQuery("cus.contact.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			contactID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact id is required"}
+			}
+			contact, err := contacts.FindSummaryByID(query.AccountID, contactID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact store is unavailable"}
+			}
+			if contact == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
+			}
+			return contactFromModel(contact), nil
 		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
@@ -626,6 +655,13 @@ func (r *Runtime) RegisterBusinessContracts() error {
 	default:
 		return fmt.Errorf("business contracts are not implemented for %s", r.Config.ModuleID)
 	}
+}
+
+func contactFromModel(contact *domain.Contact) *contactView {
+	if contact == nil {
+		return nil
+	}
+	return &contactView{ID: contact.ID, AccountID: contact.AccountID, CompanyID: contact.CompanyID, Name: contact.Name, Email: contact.Email, PhoneNumber: contact.PhoneNumber, Identifier: contact.Identifier, AvatarURL: contact.AvatarURL, Blocked: contact.Blocked, ObjectVersion: contact.ObjectVersion}
 }
 
 func accountFromModel(account *domain.Account) *accountView {

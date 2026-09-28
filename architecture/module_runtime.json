@@ -253,10 +253,13 @@
         "whenStopped": "新客户和客户修改暂停；既有会话按最小快照展示",
         "recovery": "身份去重后再恢复入站"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "partial-contact-query",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "cus.contact.get.v1"
+      ]
     },
     {
       "module": "MED",

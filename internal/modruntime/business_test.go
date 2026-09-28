@@ -151,6 +151,39 @@ func TestCHNInboxQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
 	}
 }
 
+func TestCUSContactQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	contact := domain.Contact{AccountID: 91, Name: "Customer", Email: "customer@example.test", PhoneNumber: "+61000000000", Identifier: "customer-91", AvatarURL: "https://example.test/avatar.png", PubsubToken: "must-not-leak", CustomAttributes: `{"tier":"gold"}`, ObjectVersion: 3}
+	if err := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil).Create(&contact); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CUS")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	query := foundation.QueryEnvelope{QueryType: "cus.contact.get.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: map[string]any{"id": contact.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name", "email"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	call := func(accountID uint) *httptest.ResponseRecorder {
+		query.AccountID = accountID
+		return performContractRequest(runtime.Handler(), "/contracts/queries/cus.contact.get.v1", query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	response := call(91)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "customer@example.test") || strings.Contains(response.Body.String(), contact.PubsubToken) || strings.Contains(response.Body.String(), "gold") {
+		t.Fatalf("contact query status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(92); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account contact status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, foreign := range []any{&domain.Inbox{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("CUS runtime created foreign table %T", foreign)
+		}
+	}
+}
+
 func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
 	iamDB := newModuleTestDB(t, "IAM")
 	iamCfg := businessConfig("IAM")
