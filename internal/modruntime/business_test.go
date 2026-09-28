@@ -198,11 +198,12 @@ func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
 	if replay.Code != http.StatusOK || !strings.Contains(replay.Body.String(), `"id":1`) {
 		t.Fatalf("replay mismatch first=%s replay=%s", first.Body.String(), replay.Body.String())
 	}
-	var inboxes, receipts int64
+	var inboxes, receipts, events int64
 	_ = chnDB.Model(&domain.Inbox{}).Where("account_id = ?", 91).Count(&inboxes).Error
 	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
-	if inboxes != 1 || receipts != 1 {
-		t.Fatalf("inboxes=%d receipts=%d", inboxes, receipts)
+	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if inboxes != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("inboxes=%d receipts=%d events=%d", inboxes, receipts, events)
 	}
 
 	if err := tenServer.Shutdown(context.Background()); err != nil {
@@ -268,8 +269,10 @@ func TestCHNInboxUpdateBoundsFieldsAccountAndReplay(t *testing.T) {
 	}
 	var receipts int64
 	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
-	if receipts != 1 {
-		t.Fatalf("failed updates left receipts=%d", receipts)
+	var events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if receipts != 1 || events != 1 {
+		t.Fatalf("failed updates left receipts=%d events=%d", receipts, events)
 	}
 }
 
@@ -361,8 +364,10 @@ func TestCHNMemberBindUsesTENMembershipAndRollsBackFailures(t *testing.T) {
 	_ = chnDB.Model(&domain.InboxMember{}).Count(&bindings).Error
 	var receipts int64
 	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
-	if bindings != 0 || receipts != 2 {
-		t.Fatalf("bindings=%d receipts=%d", bindings, receipts)
+	var events int64
+	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if bindings != 0 || receipts != 2 || events != 2 {
+		t.Fatalf("bindings=%d receipts=%d events=%d", bindings, receipts, events)
 	}
 }
 
@@ -432,8 +437,10 @@ func TestCHNChannelAuthorizeUsesENTAndKeepsSecretsLocal(t *testing.T) {
 	}
 	var receipts int64
 	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
-	if receipts != 1 {
-		t.Fatalf("failed authorizations left receipts=%d", receipts)
+	var authorizationEvent domain.LocalChangeJournal
+	eventErr := chnDB.Where("action = ?", "event_outbox").First(&authorizationEvent).Error
+	if receipts != 1 || eventErr != nil || strings.Contains(authorizationEvent.AfterState, "top-secret") {
+		t.Fatalf("authorization receipts=%d eventErr=%v payload=%s", receipts, eventErr, authorizationEvent.AfterState)
 	}
 }
 
@@ -528,8 +535,29 @@ func TestCHNHealthAndAccountRevokeStayWithinOwnerBoundary(t *testing.T) {
 	_ = db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", ids92).Count(&members92).Error
 	var receipts int64
 	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
-	if members91 != 0 || members92 != 1 || receipts != 2 {
-		t.Fatalf("members91=%d members92=%d receipts=%d", members91, members92, receipts)
+	var events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if members91 != 0 || members92 != 1 || receipts != 2 || events != 2 {
+		t.Fatalf("members91=%d members92=%d receipts=%d events=%d", members91, members92, receipts, events)
+	}
+	rptDB := newModuleTestDB(t, "RPT")
+	rptRegistry := NewContractRegistry("RPT")
+	var applied atomic.Int64
+	for _, eventType := range []string{"chn.inbox.changed.v1", "chn.channel_health.changed.v1"} {
+		if err := rptRegistry.RegisterEvent(eventType, func(context.Context, foundation.EventEnvelope) error { applied.Add(1); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rptCfg := businessConfig("RPT")
+	rptCfg.AllowedCallers["CHN"] = true
+	rptServer, rptAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: rptCfg, DB: rptDB, Contracts: rptRegistry}.Handler())
+	defer rptServer.Shutdown(context.Background())
+	dispatcher := NewEventDispatcher(db, "CHN", DependencyConfig{URL: "http://" + rptAddress, Token: rptCfg.AuthToken}, "v1", time.Second)
+	if delivered, err := dispatcher.DeliverPending(context.Background(), 10); err != nil || delivered != 2 || applied.Load() != 2 {
+		t.Fatalf("event delivery delivered=%d applied=%d err=%v", delivered, applied.Load(), err)
+	}
+	if delivered, err := dispatcher.DeliverPending(context.Background(), 10); err != nil || delivered != 0 {
+		t.Fatalf("event redelivery delivered=%d err=%v", delivered, err)
 	}
 	if response := query("chn.account_deletion_status.get.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"credential_count":0`) || !strings.Contains(response.Body.String(), `"member_count":0`) || !strings.Contains(response.Body.String(), `"ready":true`) {
 		t.Fatalf("deletion status=%d body=%s", response.Code, response.Body.String())

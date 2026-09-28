@@ -141,4 +141,5 @@
 - 已完成并验证：CHN `chn.channel.authorize.v1` 经 ENT `ent.capability.check.v1` 校验权益后在 CHN 本地保存密钥，响应及收据不泄露密钥，权益/依赖失败无残留（E-ARCH-08-v96）。
 - 已完成并验证：CHN `chn.health.update.v1` 保留密钥并保存所有者健康观测；`chn.account_channels.revoke.v1` 原子撤销账号全部凭据和成员绑定且不影响其他账号（E-ARCH-08-v97）。
 - 已完成并验证：CHN 能力、连接状态和账号删除状态查询只返回安全摘要；撤销后凭据与成员计数归零且 ready=true（E-ARCH-08-v98）。
-- 下一项：CHN 领域事件 outbox 及完整独立运行闭环审计。
+- 已完成并验证：CHN 六条写命令与领域事件 outbox 同事务；收件箱/健康事件不含密钥，可认证投递、消费去重并在成功后标记 delivered（E-ARCH-08-v99）。
+- 下一项：CHN 模板变更事件及完整独立运行闭环审计。

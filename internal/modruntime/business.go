@@ -353,6 +353,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if err := txRepo.Update(inbox); err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "inbox could not be updated"}
 			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.inbox.changed.v1", "Inbox", strconv.FormatUint(uint64(inbox.ID), 10), []string{"configuration"}, map[string]any{"inbox_id": inbox.ID, "operation": "updated"}); err != nil {
+				return nil, err
+			}
 			return inboxFromModel(inbox), nil
 		}); err != nil {
 			return err
@@ -387,6 +390,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if err := txRepo.UpdateChannelHealth(command.AccountID, uint(inboxID), status, checkedAt, details); err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "channel health could not be updated"}
 			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.channel_health.changed.v1", "Inbox", command.Target.ID, []string{"health"}, map[string]any{"inbox_id": uint(inboxID), "status": status, "checked_at": checkedAt.UTC()}); err != nil {
+				return nil, err
+			}
 			return map[string]any{"inbox_id": uint(inboxID), "status": status, "checked_at": checkedAt.UTC()}, nil
 		}); err != nil {
 			return err
@@ -398,6 +404,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			count, err := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil).RevokeAccountChannels(command.AccountID)
 			if err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "account channels could not be revoked"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.inbox.changed.v1", "AccountChannels", command.Target.ID, []string{"authorization", "members"}, map[string]any{"account_id": command.AccountID, "operation": "revoked", "inbox_count": count}); err != nil {
+				return nil, err
 			}
 			return map[string]any{"account_id": command.AccountID, "revoked_inboxes": count}, nil
 		}); err != nil {
@@ -426,6 +435,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			inbox := &domain.Inbox{AccountID: command.AccountID, Name: strings.TrimSpace(name), ChannelType: channelType, WebsiteToken: foundation.GenerateUUID(), Timezone: "UTC", GreetingEnabled: true}
 			if err := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil).Create(inbox); err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "inbox could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.inbox.changed.v1", "Inbox", strconv.FormatUint(uint64(inbox.ID), 10), []string{"created"}, map[string]any{"inbox_id": inbox.ID, "operation": "created", "channel_type": inbox.ChannelType}); err != nil {
+				return nil, err
 			}
 			return inboxFromModel(inbox), nil
 		}); err != nil {
@@ -465,6 +477,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			if err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "inbox membership could not be changed"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.inbox.changed.v1", "Inbox", command.Target.ID, []string{"members"}, map[string]any{"inbox_id": inbox.ID, "user_id": userID, "operation": operation}); err != nil {
+				return nil, err
 			}
 			return map[string]any{"inbox_id": inbox.ID, "user_id": userID, "operation": operation}, nil
 		}); err != nil {
@@ -512,6 +527,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if err := txRepo.Update(inbox); err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "channel authorization could not be saved"}
 			}
+			if err := r.appendBusinessEvent(ctx, command, "chn.inbox.changed.v1", "Inbox", command.Target.ID, []string{"authorization"}, map[string]any{"inbox_id": inbox.ID, "authorized": true}); err != nil {
+				return nil, err
+			}
 			return map[string]any{"inbox_id": inbox.ID, "authorized": true}, nil
 		})
 	default:
@@ -521,6 +539,20 @@ func (r *Runtime) RegisterBusinessContracts() error {
 
 func accountFromModel(account *domain.Account) *accountView {
 	return &accountView{ID: account.ID, Name: account.Name, Locale: account.Locale, Status: account.Status, Timezone: account.Timezone}
+}
+
+func (r *Runtime) appendBusinessEvent(ctx context.Context, command foundation.CommandEnvelope, eventType, aggregateType, aggregateID string, changed []string, payload map[string]any) error {
+	tx := Transaction(ctx, r.DB)
+	var latest int64
+	if err := tx.Model(&domain.LocalChangeJournal{}).Where("source_module = ? AND action = ? AND object_type = ? AND object_display_id = ?", r.Config.ModuleID, "event_outbox", aggregateType, aggregateID).Select("COALESCE(MAX(object_version_after),0)").Scan(&latest).Error; err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "event outbox is unavailable"}
+	}
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: foundation.GenerateUUID(), EventType: eventType, EventVersion: r.Config.ContractVersion, SourceModule: r.Config.ModuleID, AccountID: command.AccountID, AggregateType: aggregateType, AggregateID: aggregateID, AggregateVersion: uint64(latest + 1), OccurredAt: now, PublishedAt: now, Actor: command.Actor, CorrelationID: command.CorrelationID, CausationID: command.CommandID, ChangedFields: changed, Payload: payload, DataClassification: "internal"}
+	if err := NewEventOutbox(r.DB, r.Config.ModuleID).Append(tx, event); err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "event outbox write failed"}
+	}
+	return nil
 }
 
 func inboxFromModel(inbox *domain.Inbox) *inboxView {

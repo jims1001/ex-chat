@@ -213,7 +213,13 @@
         "chn.health.update.v1",
         "chn.account_channels.revoke.v1"
       ],
-      "dependencyStopRecoveryVerified": true
+      "dependencyStopRecoveryVerified": true,
+      "implementedIndependentEvents": [
+        "chn.inbox.changed.v1",
+        "chn.channel_health.changed.v1"
+      ],
+      "outboxAtomicWithCommands": true,
+      "eventDeliveryRecoveryVerified": true
     },
     {
       "module": "CUS",
