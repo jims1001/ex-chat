@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -749,8 +750,91 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		// The remaining MED commands and queries are registered in subsequent owner-state handlers.
-		return nil
+		if err := r.Contracts.RegisterCommand("med.asset.confirm.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			assetID, failure := mediaCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			uploadID, err := uintFilter(command.Input, "upload_id")
+			token, _ := command.Input["upload_token"].(string)
+			if err != nil || strings.TrimSpace(token) == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "upload confirmation is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var asset domain.MediaAsset
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, assetID).First(&asset).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "asset was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			var upload domain.UploadSession
+			if err := tx.Where("account_id = ? AND asset_id = ? AND id = ?", command.AccountID, assetID, uploadID).First(&upload).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "upload session was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "upload session is unavailable"}
+			}
+			digest := sha256.Sum256([]byte(strings.TrimSpace(token)))
+			if upload.Status != "pending" || time.Now().UTC().After(upload.ExpiresAt) || subtle.ConstantTimeCompare([]byte(upload.TokenHash), []byte(hex.EncodeToString(digest[:]))) != 1 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "upload session cannot be confirmed"}
+			}
+			if checksum, ok := command.Input["checksum"].(string); ok && asset.Checksum != "" && strings.TrimSpace(checksum) != asset.Checksum {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "upload checksum does not match"}
+			}
+			now := time.Now().UTC()
+			if err := tx.Model(&domain.UploadSession{}).Where("id = ?", upload.ID).Updates(map[string]any{"status": "confirmed", "updated_at": now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "upload session could not be confirmed"}
+			}
+			if err := tx.Model(&domain.MediaAsset{}).Where("account_id = ? AND id = ? AND status = ?", command.AccountID, assetID, "pending_upload").Updates(map[string]any{"status": "pending_scan", "object_version": gorm.Expr("object_version + 1"), "updated_at": now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset could not be confirmed"}
+			}
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, assetID).First(&asset).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "confirmed asset is unavailable"}
+			}
+			return mediaAssetFromModel(&asset), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("med.asset.scan.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			assetID, failure := mediaCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			result, _ := command.Input["result"].(string)
+			threat, _ := command.Input["threat"].(string)
+			result, threat = strings.ToLower(strings.TrimSpace(result)), strings.TrimSpace(threat)
+			if result != "clean" && result != "rejected" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "scan result must be clean or rejected"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var asset domain.MediaAsset
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, assetID).First(&asset).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "asset was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			if asset.Status != "pending_scan" || asset.SecurityState != "pending" {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset is not awaiting a security scan"}
+			}
+			now := time.Now().UTC()
+			scan := domain.SecurityScan{AccountID: command.AccountID, AssetID: assetID, Status: result, Threat: threat, ScannedAt: now, CreatedAt: now}
+			if err := tx.Create(&scan).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "security scan could not be recorded"}
+			}
+			status, eventType := "ready", "med.media.ready.v1"
+			if result == "rejected" {
+				status, eventType = "rejected", "med.media.rejected.v1"
+			}
+			if err := tx.Model(&domain.MediaAsset{}).Where("account_id = ? AND id = ?", command.AccountID, assetID).Updates(map[string]any{"status": status, "security_state": result, "object_version": gorm.Expr("object_version + 1"), "updated_at": now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset security state could not be updated"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, eventType, "MediaAsset", command.Target.ID, []string{"status", "security_state"}, map[string]any{"asset_id": assetID, "status": status, "content_type": asset.ContentType, "file_size": asset.FileSize}); err != nil {
+				return nil, err
+			}
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, assetID).First(&asset).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "scanned asset is unavailable"}
+			}
+			return mediaAssetFromModel(&asset), nil
+		})
 	case "CON":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
@@ -1305,6 +1389,17 @@ func identityFromUser(user *domain.User) *identityView {
 
 func mediaAssetFromModel(asset *domain.MediaAsset) *mediaAssetView {
 	return &mediaAssetView{ID: asset.ID, AccountID: asset.AccountID, FileName: asset.FileName, ContentType: asset.ContentType, FileSize: asset.FileSize, Checksum: asset.Checksum, Status: asset.Status, SecurityState: asset.SecurityState, ObjectVersion: asset.ObjectVersion, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt}
+}
+
+func mediaCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {
+	if command.Target.Type != "asset" {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "asset target is required"}
+	}
+	parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+	if err != nil || parsed == 0 {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "asset target is invalid"}
+	}
+	return uint(parsed), nil
 }
 
 func int64Filter(filter map[string]any, key string) (int64, error) {

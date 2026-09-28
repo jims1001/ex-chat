@@ -318,14 +318,20 @@
         "recovery": "补传和孤立引用清理"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-upload-create-and-asset-query",
+      "acceptanceStatus": "partial-confirm-and-security-scan",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "med.asset.get.v1"
       ],
       "implementedIndependentCommands": [
-        "med.upload.create.v1"
+        "med.upload.create.v1",
+        "med.asset.confirm.v1",
+        "med.asset.scan.v1"
+      ],
+      "implementedIndependentEvents": [
+        "med.media.ready.v1",
+        "med.media.rejected.v1"
       ]
     },
     {

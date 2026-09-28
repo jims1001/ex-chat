@@ -2,6 +2,8 @@ package modruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -257,6 +259,82 @@ func TestMEDUploadCreateAndAssetQueryOwnMetadata(t *testing.T) {
 		if db.Migrator().HasTable(foreign) {
 			t.Fatalf("MED runtime contains foreign table %T", foreign)
 		}
+	}
+}
+
+func TestMEDConfirmAndScanEnforceOwnerStateMachine(t *testing.T) {
+	db := newModuleTestDB(t, "MED")
+	now := time.Now().UTC()
+	token := "one-time-upload-token"
+	digest := sha256.Sum256([]byte(token))
+	cleanAsset := domain.MediaAsset{AccountID: 91, FileName: "clean.pdf", ContentType: "application/pdf", FileSize: 512, Checksum: "sha256:clean", StorageKey: "91/private-clean", Status: "pending_upload", SecurityState: "pending", ObjectVersion: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&cleanAsset).Error; err != nil {
+		t.Fatal(err)
+	}
+	upload := domain.UploadSession{AccountID: 91, AssetID: cleanAsset.ID, TokenHash: hex.EncodeToString(digest[:]), Status: "pending", ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&upload).Error; err != nil {
+		t.Fatal(err)
+	}
+	rejectedAsset := domain.MediaAsset{AccountID: 91, FileName: "bad.php", ContentType: "application/octet-stream", FileSize: 128, StorageKey: "91/private-bad", Status: "pending_scan", SecurityState: "pending", ObjectVersion: 2, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&rejectedAsset).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MED")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MED")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	confirm := foundation.CommandEnvelope{CommandID: "media-confirm-1", CommandType: "med.asset.confirm.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "asset", ID: strconv.FormatUint(uint64(cleanAsset.ID), 10)}, Input: map[string]any{"upload_id": upload.ID, "upload_token": token, "checksum": cleanAsset.Checksum}, IdempotencyKey: "media-confirm-91", CorrelationID: "media-confirm-correlation", CausationID: "media-upload-1", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "med.asset.get.v1"}}
+	for i := 0; i < 2; i++ {
+		if response := call("/contracts/commands/med.asset.confirm.v1", confirm); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "pending_scan") {
+			t.Fatalf("confirm status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	scanClean := foundation.CommandEnvelope{CommandID: "media-scan-clean", CommandType: "med.asset.scan.v1", AccountID: 91, Actor: confirm.Actor, Target: confirm.Target, Input: map[string]any{"result": "clean"}, IdempotencyKey: "media-scan-clean-91", CorrelationID: "media-scan-clean-correlation", CausationID: confirm.CommandID, RequestedAt: now, TimeoutPolicy: confirm.TimeoutPolicy}
+	for i := 0; i < 2; i++ {
+		if response := call("/contracts/commands/med.asset.scan.v1", scanClean); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"ready"`) {
+			t.Fatalf("clean scan status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	scanRejected := scanClean
+	scanRejected.CommandID, scanRejected.IdempotencyKey, scanRejected.CorrelationID = "media-scan-rejected", "media-scan-rejected-91", "media-scan-rejected-correlation"
+	scanRejected.Target.ID = strconv.FormatUint(uint64(rejectedAsset.ID), 10)
+	scanRejected.Input = map[string]any{"result": "rejected", "threat": "webshell"}
+	if response := call("/contracts/commands/med.asset.scan.v1", scanRejected); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"rejected"`) {
+		t.Fatalf("rejected scan status=%d body=%s", response.Code, response.Body.String())
+	}
+	var storedClean, storedRejected domain.MediaAsset
+	_ = db.First(&storedClean, cleanAsset.ID).Error
+	_ = db.First(&storedRejected, rejectedAsset.ID).Error
+	var scans, receipts, readyEvents, rejectedEvents int64
+	_ = db.Model(&domain.SecurityScan{}).Count(&scans).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%med.media.ready.v1%").Count(&readyEvents).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%med.media.rejected.v1%").Count(&rejectedEvents).Error
+	if storedClean.Status != "ready" || storedClean.SecurityState != "clean" || storedClean.ObjectVersion != 3 || storedRejected.Status != "rejected" || scans != 2 || receipts != 3 || readyEvents != 1 || rejectedEvents != 1 {
+		t.Fatalf("clean=%+v rejected=%+v scans=%d receipts=%d ready=%d rejected_events=%d", storedClean, storedRejected, scans, receipts, readyEvents, rejectedEvents)
+	}
+	var eventRows []domain.LocalChangeJournal
+	_ = db.Where("action = ?", "event_outbox").Find(&eventRows).Error
+	for _, event := range eventRows {
+		if strings.Contains(event.AfterState, "private-") || strings.Contains(event.AfterState, "webshell") {
+			t.Fatalf("media event leaked private details: %s", event.AfterState)
+		}
+	}
+	foreign := confirm
+	foreign.CommandID, foreign.IdempotencyKey, foreign.AccountID = "media-confirm-foreign", "media-confirm-foreign", 92
+	if response := call("/contracts/commands/med.asset.confirm.v1", foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign confirm status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
