@@ -5033,6 +5033,16 @@
       "use": "read",
       "contract": "msg.message.get.v1",
       "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "NTF",
+      "provider": "IAM",
+      "file": "internal/service/push_service.go",
+      "symbol": "UserRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
     }
   ]
 }

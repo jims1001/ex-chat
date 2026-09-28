@@ -31,6 +31,7 @@ type PushService struct {
 	db               *gorm.DB
 	deviceRepo       *repository.DeviceRepository
 	notificationRepo *repository.NotificationRepository
+	userRepo         *repository.UserRepository
 	httpClient       *http.Client
 	dedupCache       sync.Map
 }
@@ -52,6 +53,10 @@ func NewPushService(db *gorm.DB, deviceRepo *repository.DeviceRepository) *PushS
 
 func (s *PushService) SetNotificationRepo(repo *repository.NotificationRepository) {
 	s.notificationRepo = repo
+}
+
+func (s *PushService) SetUserRepo(repo *repository.UserRepository) {
+	s.userRepo = repo
 }
 
 func (s *PushService) SetHTTPClient(client *http.Client) {
@@ -102,9 +107,8 @@ func (s *PushService) Dispatch(ctx context.Context, userID, accountID uint, payl
 			// Check quiet hours with user timezone resolution
 			if setting.QuietHoursEnabled && setting.QuietHoursStart != "" && setting.QuietHoursEnd != "" {
 				loc := time.UTC
-				if s.db != nil {
-					var u domain.User
-					if s.db.Where("id = ?", userID).First(&u).Error == nil && u.Timezone != "" {
+				if s.userRepo != nil {
+					if u, err := s.userRepo.FindByID(userID); err == nil && u != nil && u.Timezone != "" {
 						if parsedLoc, err := time.LoadLocation(u.Timezone); err == nil {
 							loc = parsedLoc
 						}

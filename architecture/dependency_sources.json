@@ -98,6 +98,7 @@
     {"name":"AUD","synchronous":[],"events":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC","API","RTM"],"shared":[],"startup":[]}
   ],
   "observedCode": [
+    {"consumer":"NTF","provider":"IAM","kind":"synchronous","file":"internal/service/push_service.go","symbol":"UserRepository"},
     {"consumer":"ORC","provider":"SRH","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"CustomFilterRepository"},
     {"consumer":"AUT","provider":"TEN","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"AccountRepository"},
     {"consumer":"AUT","provider":"CUS","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"ContactRepository"},

@@ -110,6 +110,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_contact_echo_use_CUS_MSG_owner_queries", func(t *testing.T) { testPublicContactEchoOwnerBoundary(t, openStore) })
+	t.Run("NTF_push_quiet_hours_use_IAM_timezone_query", func(t *testing.T) { testPushTimezoneOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
 	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
@@ -2396,6 +2397,58 @@ func testPublicContactEchoOwnerBoundary(t *testing.T, openStore func(string) *go
 	}
 	if cusDB.Migrator().HasTable(&domain.Message{}) || msgDB.Migrator().HasTable(&domain.Contact{}) {
 		t.Fatal("CUS/MSG public boundary contains a foreign authority table")
+	}
+}
+
+func testPushTimezoneOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	ntfDB, iamDB := openStore("NTF"), openStore("IAM")
+	users := repository.NewUserRepository(iamDB)
+	devices := repository.NewDeviceRepository(ntfDB)
+	notifications := repository.NewNotificationRepository(ntfDB)
+	user := domain.User{Name: "Timezone owner", Email: "timezone-owner@example.test", Timezone: "Australia/Sydney"}
+	if err := users.Create(&user); err != nil {
+		t.Fatal(err)
+	}
+	location, err := time.LoadLocation(user.Timezone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().In(location)
+	setting := domain.NotificationSetting{
+		AccountID:          781,
+		UserID:             user.ID,
+		QuietHoursEnabled:  true,
+		QuietHoursStart:    now.Add(-2 * time.Minute).Format("15:04"),
+		QuietHoursEnd:      now.Add(2 * time.Minute).Format("15:04"),
+		SelectedPushFlags:  `["system_alert"]`,
+		SelectedEmailFlags: `[]`,
+		SelectedInAppFlags: `[]`,
+	}
+	if err := notifications.UpsertNotificationSetting(context.Background(), &setting); err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := devices.UpsertSubscription(context.Background(), &domain.NotificationSubscription{
+		AccountID: 781, UserID: user.ID, PushToken: server.URL, SubscriptionType: "webpush",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	push := service.NewPushService(ntfDB, devices)
+	push.SetNotificationRepo(notifications)
+	push.SetUserRepo(users)
+	sent, err := push.Dispatch(context.Background(), user.ID, 781, service.PushPayload{
+		Title: "quiet", Body: "quiet", AccountID: 781, ResourceID: 1, ResourceType: "system", NotificationType: domain.NotificationTypeSystemAlert,
+	})
+	if err != nil || sent != 0 || requests != 0 {
+		t.Fatalf("NTF ignored IAM timezone quiet hours: sent=%d requests=%d err=%v", sent, requests, err)
+	}
+	if ntfDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.NotificationSetting{}) {
+		t.Fatal("NTF/IAM timezone boundary contains a foreign authority table")
 	}
 }
 
