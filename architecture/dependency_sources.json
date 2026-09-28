@@ -128,6 +128,7 @@
     {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"AccountRepository"},
     {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"TeamRepository"},
     {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"ContactRepository"},
+    {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"LabelRepository"},
     {"consumer":"OPS","provider":"CON","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"ConversationRepository"},
     {"consumer":"OPS","provider":"MSG","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"MessageRepository"},
     {"consumer":"AIC","provider":"OPS","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"CannedResponseRepository"},

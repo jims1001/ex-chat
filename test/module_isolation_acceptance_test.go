@@ -91,6 +91,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RPT_SLA_service_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testSLAServiceOwnerBoundary(t, openStore) })
 	t.Run("RPT_reports_use_CHN_CON_MSG_CUS_owner_queries", func(t *testing.T) { testReportServiceOwnerBoundary(t, openStore) })
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
+	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1911,6 +1912,64 @@ func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string
 	}
 	if conDB.Migrator().HasTable(&domain.Label{}) {
 		t.Fatal("CON store contains CUS authority tables")
+	}
+}
+
+func testCampaignAudienceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	opsDB, cusDB, conDB, msgDB := openStore("OPS"), openStore("CUS"), openStore("CON"), openStore("MSG")
+	matched := domain.Contact{AccountID: 1, Name: "Matched", Email: "matched@example.com"}
+	unmatched := domain.Contact{AccountID: 1, Name: "Unmatched", Email: "unmatched@example.com"}
+	if err := cusDB.Create(&matched).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&unmatched).Error; err != nil {
+		t.Fatal(err)
+	}
+	label := domain.Label{AccountID: 1, Title: "vip-customer"}
+	if err := cusDB.Create(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	matchedConversation := domain.Conversation{AccountID: 1, InboxID: 10, ContactID: matched.ID, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	unmatchedConversation := domain.Conversation{AccountID: 1, InboxID: 10, ContactID: unmatched.ID, DisplayID: 2, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&matchedConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&unmatchedConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&domain.ConversationLabel{ConversationID: matchedConversation.ID, LabelID: label.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, campaign := range []domain.Campaign{
+		{AccountID: 1, InboxID: 10, Title: "exact", Message: "exact", Status: "active", CampaignType: "ongoing", Audience: `{"labels":["vip-customer"]}`},
+		{AccountID: 1, InboxID: 10, Title: "fuzzy", Message: "fuzzy", Status: "active", CampaignType: "ongoing", Audience: "vip"},
+	} {
+		if err := opsDB.Create(&campaign).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conversations := repository.NewConversationRepository(conDB)
+	campaigns := service.NewCampaignService(opsDB, conversations, repository.NewMessageRepositoryWithConversationPort(msgDB, conversations), repository.NewContactRepository(cusDB))
+	campaigns.SetAudienceOwner(repository.NewLabelRepositoryWithConversationPort(cusDB, conversations))
+	count, err := campaigns.TriggerOngoingCampaignForContact(1, 10, matched.ID, matchedConversation.ID)
+	if err != nil || count != 2 {
+		t.Fatalf("matching contact deliveries=%d err=%v", count, err)
+	}
+	count, err = campaigns.TriggerOngoingCampaignForContact(1, 10, unmatched.ID, unmatchedConversation.ID)
+	if err != nil || count != 0 {
+		t.Fatalf("unmatched contact deliveries=%d err=%v", count, err)
+	}
+	for name, model := range map[string]any{"CUS Contact": &domain.Contact{}, "CUS Label": &domain.Label{}, "CON Conversation": &domain.Conversation{}, "CON label relation": &domain.ConversationLabel{}, "MSG Message": &domain.Message{}} {
+		if opsDB.Migrator().HasTable(model) {
+			t.Fatalf("OPS store contains %s authority table", name)
+		}
+	}
+	if cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.ConversationLabel{}) {
+		t.Fatal("CUS store contains CON authority tables")
+	}
+	if conDB.Migrator().HasTable(&domain.Label{}) {
+		t.Fatal("CON store contains CUS Label authority table")
 	}
 }
 

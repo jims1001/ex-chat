@@ -981,6 +981,18 @@ func (r *ConversationRepository) FindLabelIDs(accountID, conversationID uint) ([
 	return labelIDs, err
 }
 
+func (r *ConversationRepository) FindContactIDsByLabelIDs(accountID uint, labelIDs []uint) ([]uint, error) {
+	if len(labelIDs) == 0 {
+		return []uint{}, nil
+	}
+	var contactIDs []uint
+	err := r.db.Model(&domain.Conversation{}).
+		Joins("JOIN conversation_labels ON conversation_labels.conversation_id = conversations.id").
+		Where("conversations.account_id = ? AND conversation_labels.label_id IN ?", accountID, labelIDs).
+		Distinct().Pluck("conversations.contact_id", &contactIDs).Error
+	return contactIDs, err
+}
+
 // DeleteLabelReferences removes only relations attached to conversations owned
 // by the supplied account, leaving other tenants untouched.
 func (r *ConversationRepository) DeleteLabelReferences(accountID, labelID uint) error {

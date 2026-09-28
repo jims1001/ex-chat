@@ -2179,6 +2179,16 @@
     },
     {
       "consumer": "OPS",
+      "provider": "CON",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "ConversationRepository",
+      "method": "FindContactIDsByLabelIDs",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "OPS",
       "provider": "CUS",
       "file": "internal/handler/ops_handler.go",
       "symbol": "LabelRepository",
@@ -2276,6 +2286,26 @@
       "use": "read",
       "contract": "cus.contact.get.v1",
       "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "LabelRepository",
+      "method": "FindIDsByTitleMatch",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "LabelRepository",
+      "method": "FindIDsByTitles",
+      "use": "read",
+      "contract": "cus.label.get.v1",
+      "replicaEvent": "cus.label.changed.v1"
     },
     {
       "consumer": "OPS",

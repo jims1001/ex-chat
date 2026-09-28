@@ -130,6 +130,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	slaService.SetAppliedSLARepo(appliedSLARepo)
 	slaService.SetOwnerRepositories(inboxRepo, msgRepo, accountRepo)
 	campaignService := service.NewCampaignService(db, convRepo, msgRepo, contactRepo)
+	campaignService.SetAudienceOwner(labelRepo)
 	campaignService.SetHub(hub)
 	emailService := service.NewEmailService(db)
 	if cfg != nil && cfg.Environment == "test" {

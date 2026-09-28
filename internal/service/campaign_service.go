@@ -20,6 +20,7 @@ type CampaignService struct {
 	convRepo     *repository.ConversationRepository
 	msgRepo      *repository.MessageRepository
 	contactRepo  *repository.ContactRepository
+	labelRepo    *repository.LabelRepository
 	campaignRepo *repository.CampaignRepository
 	hub          *ws.Hub
 }
@@ -39,8 +40,13 @@ func NewCampaignService(
 		convRepo:     convRepo,
 		msgRepo:      msgRepo,
 		contactRepo:  contactRepo,
+		labelRepo:    repository.NewLabelRepository(db),
 		campaignRepo: repository.NewCampaignRepository(db),
 	}
+}
+
+func (s *CampaignService) SetAudienceOwner(labels *repository.LabelRepository) {
+	s.labelRepo = labels
 }
 
 // GetCampaignWithStats retrieves a campaign by ID enriched with delivery statistics
@@ -263,12 +269,10 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 						labelNames = append(labelNames, s)
 					}
 				}
-				var matchedContactIDs []uint
-				s.db.Table("conversations").
-					Joins("JOIN conversation_labels ON conversation_labels.conversation_id = conversations.id").
-					Joins("JOIN labels ON labels.id = conversation_labels.label_id").
-					Where("conversations.account_id = ? AND labels.title IN (?)", accountID, labelNames).
-					Pluck("DISTINCT conversations.contact_id", &matchedContactIDs)
+				matchedContactIDs, err := s.contactIDsMatchingLabels(accountID, labelNames, false)
+				if err != nil {
+					return 0, err
+				}
 
 				idMap := make(map[uint]bool)
 				for _, cid := range matchedContactIDs {
@@ -303,12 +307,10 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 				}
 			}
 		} else {
-			var matchedContactIDs []uint
-			s.db.Table("conversations").
-				Joins("JOIN conversation_labels ON conversation_labels.conversation_id = conversations.id").
-				Joins("JOIN labels ON labels.id = conversation_labels.label_id").
-				Where("conversations.account_id = ? AND (labels.title = ? OR labels.title LIKE ?)", accountID, audienceStr, "%"+audienceStr+"%").
-				Pluck("DISTINCT conversations.contact_id", &matchedContactIDs)
+			matchedContactIDs, err := s.contactIDsMatchingLabels(accountID, []string{audienceStr}, true)
+			if err != nil {
+				return 0, err
+			}
 
 			idMap := make(map[uint]bool)
 			for _, cid := range matchedContactIDs {
@@ -444,7 +446,11 @@ func (s *CampaignService) TriggerOngoingCampaignForContact(accountID, inboxID, c
 
 		// Check audience filter if specified
 		if camp.Audience != "" && camp.Audience != "all" {
-			if !s.contactMatchesAudience(accountID, contact, camp.Audience) {
+			matches, err := s.contactMatchesAudience(accountID, contact, camp.Audience)
+			if err != nil {
+				return triggeredCount, err
+			}
+			if !matches {
 				continue
 			}
 		}
@@ -499,10 +505,10 @@ func (s *CampaignService) TriggerOngoingCampaignForContact(accountID, inboxID, c
 }
 
 // contactMatchesAudience validates if a contact matches an audience specification
-func (s *CampaignService) contactMatchesAudience(accountID uint, contact *domain.Contact, audienceStr string) bool {
+func (s *CampaignService) contactMatchesAudience(accountID uint, contact *domain.Contact, audienceStr string) (bool, error) {
 	audienceStr = strings.TrimSpace(audienceStr)
 	if audienceStr == "" || audienceStr == "all" {
-		return true
+		return true, nil
 	}
 
 	var rawMap map[string]any
@@ -512,15 +518,15 @@ func (s *CampaignService) contactMatchesAudience(accountID uint, contact *domain
 				switch v := r.(type) {
 				case float64:
 					if uint(v) == contact.ID {
-						return true
+						return true, nil
 					}
 				case string:
 					if id, err := strconv.ParseUint(v, 10, 64); err == nil && uint(id) == contact.ID {
-						return true
+						return true, nil
 					}
 				}
 			}
-			return false
+			return false, nil
 		}
 		if rawLabels, ok := rawMap["labels"].([]any); ok {
 			var labelNames []string
@@ -529,24 +535,41 @@ func (s *CampaignService) contactMatchesAudience(accountID uint, contact *domain
 					labelNames = append(labelNames, s)
 				}
 			}
-			var count int64
-			s.db.Table("conversations").
-				Joins("JOIN conversation_labels ON conversation_labels.conversation_id = conversations.id").
-				Joins("JOIN labels ON labels.id = conversation_labels.label_id").
-				Where("conversations.account_id = ? AND conversations.contact_id = ? AND labels.title IN (?)", accountID, contact.ID, labelNames).
-				Count(&count)
-			return count > 0
+			contactIDs, err := s.contactIDsMatchingLabels(accountID, labelNames, false)
+			return containsUint(contactIDs, contact.ID), err
 		}
 	}
 
 	// Fallback to label match
-	var count int64
-	s.db.Table("conversations").
-		Joins("JOIN conversation_labels ON conversation_labels.conversation_id = conversations.id").
-		Joins("JOIN labels ON labels.id = conversation_labels.label_id").
-		Where("conversations.account_id = ? AND conversations.contact_id = ? AND (labels.title = ? OR labels.title LIKE ?)", accountID, contact.ID, audienceStr, "%"+audienceStr+"%").
-		Count(&count)
-	return count > 0
+	contactIDs, err := s.contactIDsMatchingLabels(accountID, []string{audienceStr}, true)
+	return containsUint(contactIDs, contact.ID), err
+}
+
+func (s *CampaignService) contactIDsMatchingLabels(accountID uint, labelNames []string, fuzzy bool) ([]uint, error) {
+	var labelIDs []uint
+	var err error
+	if fuzzy && len(labelNames) > 0 {
+		labelIDs, err = s.labelRepo.FindIDsByTitleMatch(accountID, labelNames[0])
+	} else {
+		titles := make([]any, 0, len(labelNames))
+		for _, title := range labelNames {
+			titles = append(titles, title)
+		}
+		labelIDs, err = s.labelRepo.FindIDsByTitles(accountID, titles)
+	}
+	if err != nil || len(labelIDs) == 0 {
+		return nil, err
+	}
+	return s.convRepo.FindContactIDsByLabelIDs(accountID, labelIDs)
+}
+
+func containsUint(ids []uint, target uint) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
 }
 
 // StartScheduledCampaignWorker periodically checks and triggers scheduled and ongoing campaigns
