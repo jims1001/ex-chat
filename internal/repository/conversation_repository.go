@@ -399,6 +399,16 @@ func (r *ConversationRepository) FindOpenByContactAndInbox(accountID, contactID,
 	return &conv, nil
 }
 
+func (r *ConversationRepository) FindByContactAndInbox(accountID, contactID, inboxID uint) (*domain.Conversation, error) {
+	var conversation domain.Conversation
+	err := r.db.Where("account_id = ? AND contact_id = ? AND inbox_id = ?", accountID, contactID, inboxID).
+		First(&conversation).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &conversation, err
+}
+
 func (r *ConversationRepository) List(accountID uint, status, priority string, assigneeID *uint, inboxID *uint, page, pageSize int) ([]domain.Conversation, int64, error) {
 	var conversations []domain.Conversation
 	var total int64

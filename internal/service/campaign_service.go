@@ -342,20 +342,20 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 			}
 		}
 
-		// Find or create conversation for this contact and inbox
-		var conv domain.Conversation
-		err := s.db.Where("account_id = ? AND contact_id = ? AND inbox_id = ?", accountID, contact.ID, campaign.InboxID).
-			First(&conv).Error
-
+		// Find or create conversation through the CON owner.
+		conv, err := s.convRepo.FindByContactAndInbox(accountID, contact.ID, campaign.InboxID)
 		if err != nil {
-			conv = domain.Conversation{
+			return sentCount, err
+		}
+		if conv == nil {
+			conv = &domain.Conversation{
 				AccountID: accountID,
 				InboxID:   campaign.InboxID,
 				ContactID: contact.ID,
 				Status:    domain.ConversationStatusOpen,
 				Priority:  domain.PriorityMedium,
 			}
-			if err := s.convRepo.Create(&conv); err != nil {
+			if err := s.convRepo.Create(conv); err != nil {
 				continue
 			}
 		}

@@ -92,6 +92,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RPT_reports_use_CHN_CON_MSG_CUS_owner_queries", func(t *testing.T) { testReportServiceOwnerBoundary(t, openStore) })
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
+	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1912,6 +1913,54 @@ func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string
 	}
 	if conDB.Migrator().HasTable(&domain.Label{}) {
 		t.Fatal("CON store contains CUS authority tables")
+	}
+}
+
+func testCampaignConversationOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	opsDB, cusDB, conDB, msgDB := openStore("OPS"), openStore("CUS"), openStore("CON"), openStore("MSG")
+	contacts := []domain.Contact{
+		{AccountID: 1, Name: "Resolved contact", Email: "resolved@example.com"},
+		{AccountID: 1, Name: "Pending contact", Email: "pending@example.com"},
+	}
+	for i := range contacts {
+		if err := cusDB.Create(&contacts[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversations := []domain.Conversation{
+		{AccountID: 1, InboxID: 20, ContactID: contacts[0].ID, DisplayID: 1, Status: domain.ConversationStatusResolved},
+		{AccountID: 1, InboxID: 20, ContactID: contacts[1].ID, DisplayID: 2, Status: domain.ConversationStatusPending},
+		{AccountID: 2, InboxID: 20, ContactID: 999, DisplayID: 1, Status: domain.ConversationStatusOpen},
+	}
+	for i := range conversations {
+		if err := conDB.Create(&conversations[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	campaign := domain.Campaign{AccountID: 1, InboxID: 20, Title: "reuse conversations", Message: "owner lookup", Status: "active", CampaignType: "one_off", Audience: "all"}
+	if err := opsDB.Create(&campaign).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversationOwner := repository.NewConversationRepository(conDB)
+	campaigns := service.NewCampaignService(opsDB, conversationOwner, repository.NewMessageRepositoryWithConversationPort(msgDB, conversationOwner), repository.NewContactRepository(cusDB))
+	sent, err := campaigns.TriggerCampaign(1, campaign.ID)
+	if err != nil || sent != 2 {
+		t.Fatalf("owner-backed campaign sent=%d err=%v", sent, err)
+	}
+	var conversationCount int64
+	if err := conDB.Model(&domain.Conversation{}).Where("account_id = ?", 1).Count(&conversationCount).Error; err != nil || conversationCount != 2 {
+		t.Fatalf("existing conversations were not reused: count=%d err=%v", conversationCount, err)
+	}
+	if foreign, err := conversationOwner.FindByContactAndInbox(1, 999, 20); err != nil || foreign != nil {
+		t.Fatalf("cross-account conversation leaked: conversation=%+v err=%v", foreign, err)
+	}
+	var deliveries []domain.CampaignDelivery
+	if err := opsDB.Where("campaign_id = ?", campaign.ID).Order("contact_id ASC").Find(&deliveries).Error; err != nil || len(deliveries) != 2 || deliveries[0].ConversationID != conversations[0].ID || deliveries[1].ConversationID != conversations[1].ID {
+		t.Fatalf("unexpected delivery conversations: deliveries=%+v err=%v", deliveries, err)
+	}
+	if opsDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("OPS store contains CON Conversation authority table")
 	}
 }
 

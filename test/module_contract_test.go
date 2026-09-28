@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v50 records OPS audience reads through CON and CUS.
-	const approvedCollaborationSHA = "60e01818a507e29030aa61abb9e38ff853e783e466713a49ab3f8dd91296f047"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v51 records OPS conversation lookup through CON.
+	const approvedCollaborationSHA = "dad3c35b2e1ba0c2ae80c39c1fc8512a3b503e1aceca19bbfcc25d6bf9e63a87"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -411,7 +411,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/report_dimensions.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")"},
 		"../internal/service/report_v2_service.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "s.db.Model(&domain.User", "s.db.Model(&domain.AgentBotInbox", "JOIN conversations", "JOIN inboxes", "JOIN messages", "JOIN labels", "JOIN conversation_labels", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")", "Preload(\"Conversation\")"},
 		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
-		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels"},
+		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

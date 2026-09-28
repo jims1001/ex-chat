@@ -2189,6 +2189,16 @@
     },
     {
       "consumer": "OPS",
+      "provider": "CON",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "ConversationRepository",
+      "method": "FindByContactAndInbox",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "OPS",
       "provider": "CUS",
       "file": "internal/handler/ops_handler.go",
       "symbol": "LabelRepository",
