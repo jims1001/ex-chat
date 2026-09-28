@@ -338,6 +338,112 @@ func (r *ConversationRepository) FindSummaryByID(accountID, conversationID uint)
 	return &conversation, nil
 }
 
+type ParticipantSyncResult struct {
+	Added        []uint
+	Removed      []uint
+	Participants []domain.ConversationParticipant
+}
+
+func ensureConversationAccount(tx *gorm.DB, accountID, conversationID uint) error {
+	var count int64
+	if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *ConversationRepository) AddParticipants(accountID, conversationID uint, userIDs []uint) ([]uint, error) {
+	added := make([]uint, 0)
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureConversationAccount(tx, accountID, conversationID); err != nil {
+			return err
+		}
+		for _, userID := range userIDs {
+			if userID == 0 {
+				continue
+			}
+			participant := domain.ConversationParticipant{ConversationID: conversationID, UserID: userID, CreatedAt: time.Now().UTC()}
+			result := tx.Where("conversation_id = ? AND user_id = ?", conversationID, userID).FirstOrCreate(&participant)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected > 0 {
+				added = append(added, userID)
+			}
+		}
+		return nil
+	})
+	return added, err
+}
+
+func (r *ConversationRepository) ListParticipants(accountID, conversationID uint) ([]domain.ConversationParticipant, error) {
+	if err := ensureConversationAccount(r.db, accountID, conversationID); err != nil {
+		return nil, err
+	}
+	participants := make([]domain.ConversationParticipant, 0)
+	err := r.db.Where("conversation_id = ?", conversationID).Order("id ASC").Find(&participants).Error
+	return participants, err
+}
+
+func (r *ConversationRepository) RemoveParticipants(accountID, conversationID uint, userIDs []uint) (int64, error) {
+	var removed int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureConversationAccount(tx, accountID, conversationID); err != nil {
+			return err
+		}
+		result := tx.Where("conversation_id = ? AND user_id IN (?)", conversationID, userIDs).Delete(&domain.ConversationParticipant{})
+		removed = result.RowsAffected
+		return result.Error
+	})
+	return removed, err
+}
+
+func (r *ConversationRepository) SyncParticipants(accountID, conversationID uint, desiredIDs []uint) (*ParticipantSyncResult, error) {
+	result := &ParticipantSyncResult{Added: make([]uint, 0), Removed: make([]uint, 0), Participants: make([]domain.ConversationParticipant, 0)}
+	desired := make(map[uint]bool)
+	for _, userID := range desiredIDs {
+		if userID > 0 {
+			desired[userID] = true
+		}
+	}
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := ensureConversationAccount(tx, accountID, conversationID); err != nil {
+			return err
+		}
+		var current []domain.ConversationParticipant
+		if err := tx.Where("conversation_id = ?", conversationID).Find(&current).Error; err != nil {
+			return err
+		}
+		currentIDs := make(map[uint]bool)
+		for _, participant := range current {
+			currentIDs[participant.UserID] = true
+			if !desired[participant.UserID] {
+				result.Removed = append(result.Removed, participant.UserID)
+			}
+		}
+		for userID := range desired {
+			if !currentIDs[userID] {
+				result.Added = append(result.Added, userID)
+			}
+		}
+		if len(result.Removed) > 0 {
+			if err := tx.Where("conversation_id = ? AND user_id IN (?)", conversationID, result.Removed).Delete(&domain.ConversationParticipant{}).Error; err != nil {
+				return err
+			}
+		}
+		for _, userID := range result.Added {
+			if err := tx.Create(&domain.ConversationParticipant{ConversationID: conversationID, UserID: userID, CreatedAt: time.Now().UTC()}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("conversation_id = ?", conversationID).Order("id ASC").Find(&result.Participants).Error
+	})
+	return result, err
+}
+
 func (r *ConversationRepository) FindIDsByInbox(accountID, inboxID uint) ([]uint, error) {
 	var ids []uint
 	err := r.db.Model(&domain.Conversation{}).

@@ -2,13 +2,10 @@ package handler
 
 import (
 	"strconv"
-	"time"
 
-	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 // ----------------- Conversation Participants -----------------
@@ -32,8 +29,8 @@ func (h *AdvancedHandler) verifyConversationBelongsToAccount(c *gin.Context, acc
 		response.NotFound(c, "Conversation not found")
 		return false
 	}
-	var conv domain.Conversation
-	if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND account_id = ?", convID, accID).First(&conv).Error; err != nil {
+	conv, err := h.convRepo.FindSummaryByID(accID, convID)
+	if err != nil || conv == nil {
 		logger.WithComponent("conversation_participant").Warn("conversation access denied or not found",
 			"action", action,
 			"account_id", accID,
@@ -79,24 +76,12 @@ func (h *AdvancedHandler) AddParticipants(c *gin.Context) {
 		return
 	}
 
-	addedCount := 0
-	var addedUserIDs []uint
-
-	for _, uid := range req.UserIDs {
-		if uid == 0 {
-			continue
-		}
-		p := domain.ConversationParticipant{
-			ConversationID: uint(convID),
-			UserID:         uid,
-			CreatedAt:      time.Now().UTC(),
-		}
-		res := h.db.WithContext(c.Request.Context()).Where("conversation_id = ? AND user_id = ?", convID, uid).FirstOrCreate(&p)
-		if res.RowsAffected > 0 {
-			addedCount++
-			addedUserIDs = append(addedUserIDs, uid)
-		}
+	addedUserIDs, err := h.convRepo.AddParticipants(uint(accID), uint(convID), req.UserIDs)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
 	}
+	addedCount := len(addedUserIDs)
 
 	logger.WithComponent("conversation_participant").Info("conversation participants added",
 		"account_id", accID,
@@ -125,8 +110,11 @@ func (h *AdvancedHandler) ListParticipants(c *gin.Context) {
 		return
 	}
 
-	var parts []domain.ConversationParticipant
-	h.db.WithContext(c.Request.Context()).Where("conversation_id = ?", convID).Find(&parts)
+	parts, err := h.convRepo.ListParticipants(uint(accID), uint(convID))
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 
 	logger.WithComponent("conversation_participant").Info("conversation participants listed",
 		"account_id", accID,
@@ -225,23 +213,20 @@ func (h *AdvancedHandler) removeUserIDs(c *gin.Context, accID, convID, operatorI
 		return
 	}
 
-	res := h.db.WithContext(c.Request.Context()).
-		Where("conversation_id = ? AND user_id IN (?)", convID, validUIDs).
-		Delete(&domain.ConversationParticipant{})
-
-	if res.Error != nil {
+	removedCount, err := h.convRepo.RemoveParticipants(accID, convID, validUIDs)
+	if err != nil {
 		logger.WithComponent("conversation_participant").Error("database error removing conversation participants",
 			"account_id", accID,
 			"conversation_id", convID,
 			"operator_id", operatorID,
 			"target_user_ids", validUIDs,
-			"error", res.Error.Error(),
+			"error", err.Error(),
 		)
-		response.InternalError(c, "Failed to remove participants: "+res.Error.Error())
+		response.InternalError(c, "Failed to remove participants: "+err.Error())
 		return
 	}
 
-	if res.RowsAffected == 0 {
+	if removedCount == 0 {
 		logger.WithComponent("conversation_participant").Warn("no participants were removed (records not found)",
 			"account_id", accID,
 			"conversation_id", convID,
@@ -254,13 +239,13 @@ func (h *AdvancedHandler) removeUserIDs(c *gin.Context, accID, convID, operatorI
 			"conversation_id", convID,
 			"operator_id", operatorID,
 			"target_user_ids", validUIDs,
-			"removed_count", res.RowsAffected,
+			"removed_count", removedCount,
 		)
 	}
 
 	response.Success(c, gin.H{
 		"status":        "ok",
-		"removed_count": res.RowsAffected,
+		"removed_count": removedCount,
 		"user_ids":      validUIDs,
 	})
 }
@@ -288,65 +273,7 @@ func (h *AdvancedHandler) UpdateParticipants(c *gin.Context) {
 		return
 	}
 
-	// Deduplicate desired user IDs
-	desiredMap := make(map[uint]bool)
-	var desiredIDs []uint
-	for _, uid := range req.UserIDs {
-		if uid > 0 && !desiredMap[uid] {
-			desiredMap[uid] = true
-			desiredIDs = append(desiredIDs, uid)
-		}
-	}
-
-	var toAdd []uint
-	var toRemove []uint
-	var finalParts []domain.ConversationParticipant
-
-	// Transactional diff sync: removes excluded participants, adds newly specified ones
-	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		var currentParts []domain.ConversationParticipant
-		if err := tx.Where("conversation_id = ?", convID).Find(&currentParts).Error; err != nil {
-			return err
-		}
-
-		currentMap := make(map[uint]bool)
-		for _, p := range currentParts {
-			currentMap[p.UserID] = true
-			if !desiredMap[p.UserID] {
-				toRemove = append(toRemove, p.UserID)
-			}
-		}
-
-		for _, uid := range desiredIDs {
-			if !currentMap[uid] {
-				toAdd = append(toAdd, uid)
-			}
-		}
-
-		// Remove excluded participants
-		if len(toRemove) > 0 {
-			if err := tx.Where("conversation_id = ? AND user_id IN (?)", convID, toRemove).
-				Delete(&domain.ConversationParticipant{}).Error; err != nil {
-				return err
-			}
-		}
-
-		// Insert new participants
-		for _, uid := range toAdd {
-			p := domain.ConversationParticipant{
-				ConversationID: uint(convID),
-				UserID:         uid,
-				CreatedAt:      time.Now().UTC(),
-			}
-			if err := tx.Create(&p).Error; err != nil {
-				return err
-			}
-		}
-
-		// Fetch the final refreshed list
-		return tx.Where("conversation_id = ?", convID).Find(&finalParts).Error
-	})
-
+	result, err := h.convRepo.SyncParticipants(uint(accID), uint(convID), req.UserIDs)
 	if err != nil {
 		logger.WithComponent("conversation_participant").Error("database error during full update of conversation participants",
 			"account_id", accID,
@@ -362,16 +289,16 @@ func (h *AdvancedHandler) UpdateParticipants(c *gin.Context) {
 		"account_id", accID,
 		"conversation_id", convID,
 		"operator_id", operatorID,
-		"added_user_ids", toAdd,
-		"removed_user_ids", toRemove,
-		"final_count", len(finalParts),
+		"added_user_ids", result.Added,
+		"removed_user_ids", result.Removed,
+		"final_count", len(result.Participants),
 	)
 
 	response.Success(c, gin.H{
 		"status":       "ok",
-		"added":        toAdd,
-		"removed":      toRemove,
-		"participants": finalParts,
-		"total_count":  len(finalParts),
+		"added":        result.Added,
+		"removed":      result.Removed,
+		"participants": result.Participants,
+		"total_count":  len(result.Participants),
 	})
 }

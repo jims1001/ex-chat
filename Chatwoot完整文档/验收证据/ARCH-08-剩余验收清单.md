@@ -114,4 +114,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler.ShopifyOrders 通过 CON 获取账号内会话摘要、通过 CUS 获取联系人邮箱，ORC 不再预加载 Conversation.Contact（E-ARCH-08-v68）。
 - 已完成并验证：CRMOpsAdvancedHandler.DialogflowProcess 通过 OPS CannedResponseRepository 按账号匹配预设回复，ORC 不再直接查询 CannedResponse（E-ARCH-08-v69）。
 - 已完成并验证：AdvancedHandler 自动化规则 CRUD、克隆与执行历史通过 AUT AutomationService 访问，ORC 不再直接读写 AutomationRule/AutomationRuleExecution（E-ARCH-08-v70）。
-- 下一项：conversation_participant_handler.go 的 CON ConversationParticipant 访问边界。
+- 已完成并验证：conversation_participant_handler.go 通过 CON ConversationRepository 完成会话校验及参与者增删查同步，ORC 不再直接访问 ConversationParticipant（E-ARCH-08-v71）。
+- 下一项：custom_filter_handler.go 的 SRH CustomFilter 访问边界。

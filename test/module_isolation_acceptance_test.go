@@ -134,6 +134,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_shopify_uses_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedShopifyContactOwnerBoundary(t, openStore) })
 	t.Run("ORC_dialogflow_uses_OPS_canned_response_query", func(t *testing.T) { testAdvancedDialogflowCannedResponseOwnerBoundary(t, openStore) })
 	t.Run("ORC_automation_rules_use_AUT_owner_service", func(t *testing.T) { testAdvancedAutomationRuleOwnerBoundary(t, openStore) })
+	t.Run("ORC_participants_use_CON_owner_commands", func(t *testing.T) { testAdvancedParticipantOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1918,6 +1919,44 @@ func testAdvancedAutomationRuleOwnerBoundary(t *testing.T, openStore func(string
 	}
 	if autDB.Migrator().HasTable(&domain.Conversation{}) || autDB.Migrator().HasTable(&domain.Contact{}) {
 		t.Fatal("AUT store contains CON/CUS authority table")
+	}
+}
+
+func testAdvancedParticipantOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB := openStore("CON")
+	conversations := repository.NewConversationRepository(conDB)
+	owned := domain.Conversation{AccountID: 751, ContactID: 1, InboxID: 1, Status: domain.ConversationStatusOpen}
+	foreign := domain.Conversation{AccountID: 752, ContactID: 2, InboxID: 2, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	added, err := conversations.AddParticipants(751, owned.ID, []uint{11, 12, 12, 0})
+	if err != nil || len(added) != 2 {
+		t.Fatalf("CON participant add failed: added=%v err=%v", added, err)
+	}
+	parts, err := conversations.ListParticipants(751, owned.ID)
+	if err != nil || len(parts) != 2 {
+		t.Fatalf("CON participant list failed: participants=%+v err=%v", parts, err)
+	}
+	synced, err := conversations.SyncParticipants(751, owned.ID, []uint{12, 13, 13})
+	if err != nil || len(synced.Added) != 1 || len(synced.Removed) != 1 || len(synced.Participants) != 2 {
+		t.Fatalf("CON participant sync failed: result=%+v err=%v", synced, err)
+	}
+	removed, err := conversations.RemoveParticipants(751, owned.ID, []uint{12, 13})
+	if err != nil || removed != 2 {
+		t.Fatalf("CON participant removal failed: removed=%d err=%v", removed, err)
+	}
+	if _, err := conversations.AddParticipants(752, owned.ID, []uint{99}); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("CON accepted cross-account participant write: err=%v", err)
+	}
+	if _, err := conversations.ListParticipants(751, foreign.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("CON exposed cross-account participants: err=%v", err)
+	}
+	if conDB.Migrator().HasTable(&domain.User{}) || conDB.Migrator().HasTable(&domain.AccountUser{}) {
+		t.Fatal("CON participant store contains IAM/TEN authority table")
 	}
 }
 

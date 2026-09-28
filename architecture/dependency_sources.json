@@ -19,6 +19,7 @@
     {"consumer":"API","file":"internal/handler/conversation_handler.go"},
     {"consumer":"ORC","file":"internal/handler/crm_ops_advanced_handler.go"},
     {"consumer":"ORC","provider":"AUT","kind":"synchronous","file":"internal/handler/automation_rule_handler.go","symbol":"AutomationService"},
+    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/handler/conversation_participant_handler.go","symbol":"ConversationRepository"},
     {"consumer":"CUS","file":"internal/handler/custom_attribute_handler.go"},
     {"consumer":"EXT","file":"internal/handler/dashboard_app_handler.go"},
     {"consumer":"NTF","file":"internal/handler/device_handler.go"},
