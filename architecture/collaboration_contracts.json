@@ -5023,6 +5023,16 @@
       "use": "read",
       "contract": "con.conversation.get.v1",
       "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/public_handler.go",
+      "symbol": "MessageRepository",
+      "method": "FindByEchoID",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
     }
   ]
 }

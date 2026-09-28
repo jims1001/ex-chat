@@ -570,6 +570,18 @@ func (r *MessageRepository) FindByIDAndConversation(accountID, conversationID, m
 	return &msg, nil
 }
 
+func (r *MessageRepository) FindByEchoID(accountID, conversationID uint, echoID string) (*domain.Message, error) {
+	var msg domain.Message
+	err := r.db.Where("account_id = ? AND conversation_id = ? AND echo_id = ?", accountID, conversationID, echoID).First(&msg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
 func (r *MessageRepository) UpdateContent(accountID, conversationID, messageID uint, content string) (*domain.Message, error) {
 	msg, err := r.FindByIDAndConversation(accountID, conversationID, messageID)
 	if err != nil {

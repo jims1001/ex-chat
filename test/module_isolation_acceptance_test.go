@@ -109,6 +109,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("OPS_macros_use_CON_TEN_CUS_MSG_owner_commands", func(t *testing.T) { testMacroRepositoryOwnerBoundary(t, openStore) })
 	t.Run("EXT_platform_uses_TEN_IAM_owner_contracts", func(t *testing.T) { testPlatformRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
+	t.Run("API_public_contact_echo_use_CUS_MSG_owner_queries", func(t *testing.T) { testPublicContactEchoOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
 	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
@@ -2360,6 +2361,41 @@ func testPublicRepositoryOwnerBoundary(t *testing.T, openStore func(string) *gor
 		if check.db.Migrator().HasTable(check.model) {
 			t.Fatalf("%s contains a foreign authority table", name)
 		}
+	}
+}
+
+func testPublicContactEchoOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB, msgDB := openStore("CUS"), openStore("MSG")
+	contacts := repository.NewContactRepository(cusDB)
+	messages := repository.NewMessageRepositoryWithConversationPort(msgDB, nil)
+	contact := domain.Contact{AccountID: 771, Name: "Public owner contact", CustomAttributes: `{}`}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	updated, err := contacts.UpdatePublic(771, contact.ID, nil, map[string]any{"tier": "gold"})
+	if err != nil || updated == nil || !strings.Contains(updated.CustomAttributes, "gold") {
+		t.Fatalf("CUS contact update/readback failed: contact=%+v err=%v", updated, err)
+	}
+	if foreign, err := contacts.UpdatePublic(772, contact.ID, nil, map[string]any{"tier": "foreign"}); !errors.Is(err, gorm.ErrRecordNotFound) || foreign != nil {
+		t.Fatalf("CUS accepted cross-account contact update: contact=%+v err=%v", foreign, err)
+	}
+	owned := domain.Message{AccountID: 771, ConversationID: 31, EchoID: "public-echo", Content: "owned"}
+	foreignAccount := domain.Message{AccountID: 772, ConversationID: 31, EchoID: "public-echo", Content: "foreign-account"}
+	foreignConversation := domain.Message{AccountID: 771, ConversationID: 32, EchoID: "public-echo", Content: "foreign-conversation"}
+	for _, message := range []*domain.Message{&owned, &foreignAccount, &foreignConversation} {
+		if err := msgDB.Create(message).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	found, err := messages.FindByEchoID(771, 31, "public-echo")
+	if err != nil || found == nil || found.ID != owned.ID {
+		t.Fatalf("MSG echo lookup failed: message=%+v err=%v", found, err)
+	}
+	if found, err := messages.FindByEchoID(771, 33, "public-echo"); err != nil || found != nil {
+		t.Fatalf("MSG echo lookup escaped conversation scope: message=%+v err=%v", found, err)
+	}
+	if cusDB.Migrator().HasTable(&domain.Message{}) || msgDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("CUS/MSG public boundary contains a foreign authority table")
 	}
 }
 

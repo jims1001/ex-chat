@@ -20,7 +20,6 @@ import (
 
 // PublicHandler manages customer-facing Public API endpoints
 type PublicHandler struct {
-	db                *gorm.DB
 	inboxRepo         *repository.InboxRepository
 	contactRepo       *repository.ContactRepository
 	convRepo          *repository.ConversationRepository
@@ -35,19 +34,17 @@ type PublicHandler struct {
 
 // NewPublicHandler creates a new PublicHandler instance
 func NewPublicHandler(
-	db *gorm.DB,
 	i *repository.InboxRepository,
 	c *repository.ContactRepository,
 	cv *repository.ConversationRepository,
 	m *repository.MessageRepository,
 ) *PublicHandler {
 	return &PublicHandler{
-		db:          db,
 		inboxRepo:   i,
 		contactRepo: c,
 		convRepo:    cv,
 		msgRepo:     m,
-		publicRepo:  repository.NewPublicRepository(db),
+		publicRepo:  repository.NewPublicRepositoryWithOwnerPorts(i, c, cv, m),
 	}
 }
 
@@ -162,8 +159,12 @@ func (h *PublicHandler) CreateContact(c *gin.Context) {
 	_, _ = h.contactRepo.FindOrCreateContactInbox(contact.ID, inbox.ID, sourceID)
 
 	if len(req.CustomAttributes) > 0 {
-		_, _ = h.publicRepo.UpdateContact(c.Request.Context(), inbox.AccountID, contact.ID, nil, req.CustomAttributes)
-		_ = h.db.WithContext(c.Request.Context()).Where("id = ?", contact.ID).First(&contact).Error
+		updated, err := h.publicRepo.UpdateContact(c.Request.Context(), inbox.AccountID, contact.ID, nil, req.CustomAttributes)
+		if err != nil {
+			response.InternalError(c, "Failed to update contact attributes")
+			return
+		}
+		contact = *updated
 	}
 
 	response.Created(c, contact)
@@ -362,8 +363,12 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 
 	// Idempotency check with echo_id
 	if req.EchoID != "" {
-		var existing domain.Message
-		if err := h.db.WithContext(c.Request.Context()).Where("conversation_id = ? AND echo_id = ?", conv.ID, req.EchoID).First(&existing).Error; err == nil {
+		existing, err := h.msgRepo.FindByEchoID(conv.AccountID, conv.ID, req.EchoID)
+		if err != nil {
+			response.InternalError(c, "Failed to check message idempotency")
+			return
+		}
+		if existing != nil {
 			response.Success(c, existing)
 			return
 		}

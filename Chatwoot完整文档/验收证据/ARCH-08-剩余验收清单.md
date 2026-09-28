@@ -116,4 +116,5 @@
 - 已完成并验证：AdvancedHandler 自动化规则 CRUD、克隆与执行历史通过 AUT AutomationService 访问，ORC 不再直接读写 AutomationRule/AutomationRuleExecution（E-ARCH-08-v70）。
 - 已完成并验证：conversation_participant_handler.go 通过 CON ConversationRepository 完成会话校验及参与者增删查同步，ORC 不再直接访问 ConversationParticipant（E-ARCH-08-v71）。
 - 已完成并验证：custom_filter_handler.go 通过 SRH CustomFilterRepository 完成创建、个人及共享列表、详情、更新和删除，ORC 不再直接访问 CustomFilter（E-ARCH-08-v72）。
-- 下一项：PublicHandler 创建联系人后的 CUS 回读及消息 echo_id 的 MSG 幂等查询边界。
+- 已完成并验证：PublicHandler 创建联系人后的属性回读复用 CUS 所有者结果，消息 echo_id 通过 MSG 按账号和会话查询，处理器不再持有数据库句柄（E-ARCH-08-v73）。
+- 下一项：PushService 静默时段计算中的 IAM 用户时区读取边界。

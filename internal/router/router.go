@@ -179,7 +179,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	systemConfigHandler := handler.NewSystemConfigHandler(repository.NewSystemConfigRepository(db))
 	platformHandler := handler.NewPlatformHandler(platformRepo, userRepo)
 	platformHandler.SetJWTSecret(cfg.JWTSecret)
-	publicHandler := handler.NewPublicHandler(db, inboxRepo, contactRepo, convRepo, msgRepo)
+	publicHandler := handler.NewPublicHandler(inboxRepo, contactRepo, convRepo, msgRepo)
 	publicHandler.SetPublicRepository(publicRepo)
 	publicHandler.SetAutomationAndWebhook(automationService, webhookService)
 	publicHandler.SetPushAndHub(pushService, hub)

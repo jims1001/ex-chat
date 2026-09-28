@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v72 records custom filters through SRH.
-	const approvedCollaborationSHA = "d0d7eba3a3e6308c5764e556965885a41c817a51102c3049d064191bd193d56c"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v73 records public contact and echo reads through CUS/MSG.
+	const approvedCollaborationSHA = "3993178fc957885acd1d1f4f3e8967e57bcf122d942249f8838fb83fad36c88f"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -417,6 +417,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")", "account_id = ? AND id = ?\", accID, *req.Fields.TeamID", "h.db.Where(\"account_id = ? AND (title = ? OR id = ?)", "h.db.WithContext(c.Request.Context()).Preload(\"Company\").Preload(\"Labels\")", "Where(\"account_id = ? AND id = ? AND company_id = ?\", accID, contactID, comp.ID)", "h.db.Preload(\"Inbox\").Where(\"account_id = ? AND id = ?\", accID, convID)", "h.db.Where(\"account_id = ? AND conversation_id = ? AND id = ?", "h.db.WithContext(c.Request.Context()).Where(\"account_id = ? AND conversation_id = ? AND user_id = ?", "Preload(\"User\").First(&note", "Assign(domain.CapacityPolicy", "h.db.Where(\"account_id = ?\", accID).Find(&installed)", "h.db.Where(\"account_id = ? AND app_id = ? AND status = ?", "h.db.Preload(\"Contact\")", "h.db.WithContext(c.Request.Context())"},
 		"../internal/handler/conversation_participant_handler.go":    {"h.db"},
 		"../internal/handler/custom_filter_handler.go":               {"h.db"},
+		"../internal/handler/public_handler.go":                      {"h.db"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {
