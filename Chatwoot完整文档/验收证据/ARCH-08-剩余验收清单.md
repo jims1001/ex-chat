@@ -106,4 +106,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler 批量添加/删除标签通过 CON 获取账号范围内会话、通过 CUS 创建或解析标签，并由 CON 维护会话标签关系；ORC 不再直接读取 Conversation/Label（E-ARCH-08-v60）。
 - 已完成并验证：CRMOpsAdvancedHandler 公司联系人添加后的回读和解除前归属检查均通过 CUS CompanyRepository 完成，ORC 不再直接读取 Contact/Company/Labels（E-ARCH-08-v61）。
 - 已完成并验证：CRMOpsAdvancedHandler.GetConversationSLA 通过 CON 按账号读取会话并由 CHN 组合收件箱，ORC 不再直接查询 Conversation 或预加载 Inbox（E-ARCH-08-v62）。
-- 下一项：CRMOpsAdvancedHandler.UploadAttachment 的 CON/MSG 会话及消息校验边界。
+- 已完成并验证：CRMOpsAdvancedHandler.UploadAttachment 的会话存在性由 CON 校验，multipart/JSON 消息归属由 MSG 校验并显式注入 MSG 仓储，ORC 不再直接查询 Conversation/Message（E-ARCH-08-v63）。
+- 下一项：CRMOpsAdvancedHandler.GetDraft 的 MSG 草稿读取边界。

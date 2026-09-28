@@ -126,6 +126,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_bulk_labels_use_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedBulkLabelOwnerBoundary(t, openStore) })
 	t.Run("ORC_company_contact_links_use_CUS_owner_queries", func(t *testing.T) { testAdvancedCompanyContactOwnerBoundary(t, openStore) })
 	t.Run("ORC_conversation_SLA_uses_CON_CHN_owner_queries", func(t *testing.T) { testAdvancedConversationSLAOwnerBoundary(t, openStore) })
+	t.Run("ORC_attachment_targets_use_CON_MSG_owner_queries", func(t *testing.T) { testAdvancedAttachmentTargetOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1618,6 +1619,51 @@ func testAdvancedConversationSLAOwnerBoundary(t *testing.T, openStore func(strin
 	}
 	if conDB.Migrator().HasTable(&domain.Inbox{}) || chnDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CON/CHN isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedAttachmentTargetOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, msgDB := openStore("CON"), openStore("MSG")
+	conversation := domain.Conversation{AccountID: 401, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	otherConversation := domain.Conversation{AccountID: 401, InboxID: 1, ContactID: 2, DisplayID: 2, Status: domain.ConversationStatusOpen}
+	foreignConversation := domain.Conversation{AccountID: 402, InboxID: 2, ContactID: 3, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	for _, item := range []*domain.Conversation{&conversation, &otherConversation, &foreignConversation} {
+		if err := conDB.Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	message := domain.Message{AccountID: 401, ConversationID: conversation.ID, MessageType: domain.MessageTypeOutgoing, Content: "attachment target"}
+	foreignMessage := domain.Message{AccountID: 402, ConversationID: foreignConversation.ID, MessageType: domain.MessageTypeOutgoing, Content: "foreign attachment target"}
+	if err := msgDB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := msgDB.Create(&foreignMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversations := repository.NewConversationRepository(conDB)
+	messages := repository.NewMessageRepository(msgDB)
+	exists, err := conversations.MessageTargetExists(401, conversation.ID)
+	if err != nil || !exists {
+		t.Fatalf("CON attachment conversation validation failed: exists=%v err=%v", exists, err)
+	}
+	owned, err := messages.FindByID(401, message.ID)
+	if err != nil || owned == nil || owned.ConversationID != conversation.ID {
+		t.Fatalf("MSG attachment message validation failed: message=%+v err=%v", owned, err)
+	}
+	if owned.ConversationID == otherConversation.ID {
+		t.Fatal("MSG accepted attachment message for a different conversation")
+	}
+	foreign, err := messages.FindByID(401, foreignMessage.ID)
+	if err != nil || foreign != nil {
+		t.Fatalf("MSG exposed cross-account attachment message: message=%+v err=%v", foreign, err)
+	}
+	exists, err = conversations.MessageTargetExists(401, foreignConversation.ID)
+	if err != nil || exists {
+		t.Fatalf("CON exposed cross-account attachment conversation: exists=%v err=%v", exists, err)
+	}
+	if conDB.Migrator().HasTable(&domain.Message{}) || msgDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CON/MSG isolated stores contain a foreign authority table")
 	}
 }
 

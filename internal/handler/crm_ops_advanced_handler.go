@@ -125,6 +125,10 @@ func (h *AdvancedHandler) SetTeamRepo(repo *repository.TeamRepository) {
 	h.teamRepo = repo
 }
 
+func (h *AdvancedHandler) SetMessageRepo(repo *repository.MessageRepository) {
+	h.messageRepo = repo
+}
+
 func (h *AdvancedHandler) listAgentBotInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {
 	if h.inboxRepo == nil {
 		return nil, errors.New("inbox repository is not configured")
@@ -1225,8 +1229,8 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 	}
 
 	// 1. Validate that the conversation exists and belongs to this account
-	var conv domain.Conversation
-	if err := h.db.Where("account_id = ? AND id = ?", accID, convID).First(&conv).Error; err != nil {
+	conversationExists, err := h.convRepo.MessageTargetExists(uint(accID), uint(convID))
+	if err != nil || !conversationExists {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -1275,8 +1279,8 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 		}
 
 		// Validate message belongs to this conversation and this account
-		var msg domain.Message
-		if err := h.db.Where("account_id = ? AND conversation_id = ? AND id = ?", accID, convID, msgID).First(&msg).Error; err != nil {
+		msg, err := h.messageRepo.FindByID(uint(accID), uint(msgID))
+		if err != nil || msg == nil || msg.ConversationID != uint(convID) {
 			response.NotFound(c, "Message not found in this conversation")
 			return
 		}
@@ -1394,8 +1398,8 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 	}
 
 	// Validate message belongs to this conversation and this account
-	var msg domain.Message
-	if err := h.db.Where("account_id = ? AND conversation_id = ? AND id = ?", accID, convID, req.MessageID).First(&msg).Error; err != nil {
+	msg, err := h.messageRepo.FindByID(uint(accID), req.MessageID)
+	if err != nil || msg == nil || msg.ConversationID != uint(convID) {
 		response.NotFound(c, "Message not found in this conversation")
 		return
 	}

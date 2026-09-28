@@ -3482,6 +3482,26 @@
       "provider": "CON",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "ConversationRepository",
+      "method": "MessageTargetExists",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "MessageRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "ConversationRepository",
       "method": "ListByIDs",
       "use": "read",
       "contract": "con.conversation.get.v1",
