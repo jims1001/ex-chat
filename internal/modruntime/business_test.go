@@ -437,6 +437,89 @@ func TestCHNChannelAuthorizeUsesENTAndKeepsSecretsLocal(t *testing.T) {
 	}
 }
 
+func TestCHNHealthAndAccountRevokeStayWithinOwnerBoundary(t *testing.T) {
+	db := newModuleTestDB(t, "CHN")
+	repo := repository.NewInboxRepositoryWithAccountPort(db, nil)
+	inboxes := []domain.Inbox{
+		{AccountID: 91, Name: "One", ChannelType: "Channel::Whatsapp", WebsiteToken: "web-1", HMACToken: "hmac-1", HMACMandatory: true, WebhookURL: "https://one.test", ProviderConfig: `{"access_token":"secret-1"}`},
+		{AccountID: 91, Name: "Two", ChannelType: "Channel::Api", WebsiteToken: "web-2", ProviderConfig: `{"api_key":"secret-2"}`},
+		{AccountID: 92, Name: "Other", ChannelType: "Channel::Api", WebsiteToken: "keep-web", HMACToken: "keep-hmac", ProviderConfig: `{"api_key":"keep-secret"}`},
+	}
+	for i := range inboxes {
+		if err := repo.Create(&inboxes[i]); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.AddMember(inboxes[i].ID, uint(i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := businessConfig("CHN")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	checkedAt := time.Now().UTC().Truncate(time.Second)
+	health := foundation.CommandEnvelope{CommandID: "health-1", CommandType: "chn.health.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inboxes[0].ID), 10)}, Input: map[string]any{"status": "degraded", "checked_at": checkedAt.Format(time.RFC3339Nano), "details": map[string]any{"delivery_error_rate": 0.2}}, IdempotencyKey: "health-91-1", CorrelationID: "correlation-1", CausationID: "probe-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
+	if response := call("/contracts/commands/chn.health.update.v1", health); response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret-1") {
+		t.Fatalf("health status=%d body=%s", response.Code, response.Body.String())
+	}
+	var afterHealth domain.Inbox
+	if err := db.First(&afterHealth, inboxes[0].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(afterHealth.ProviderConfig, "secret-1") || !strings.Contains(afterHealth.ProviderConfig, `"status":"degraded"`) {
+		t.Fatalf("health did not preserve credentials: %s", afterHealth.ProviderConfig)
+	}
+	invalid := health
+	invalid.CommandID, invalid.IdempotencyKey, invalid.Input = "health-invalid", "health-invalid", map[string]any{"status": "unknown", "checked_at": checkedAt.Format(time.RFC3339Nano)}
+	if response := call("/contracts/commands/chn.health.update.v1", invalid); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid health status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	revoke := foundation.CommandEnvelope{CommandID: "revoke-91", CommandType: "chn.account_channels.revoke.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"reason": "account_deletion"}, IdempotencyKey: "revoke-91", CorrelationID: "correlation-1", CausationID: "delete-91", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
+	if response := call("/contracts/commands/chn.account_channels.revoke.v1", revoke); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"revoked_inboxes":2`) {
+		t.Fatalf("revoke status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("/contracts/commands/chn.account_channels.revoke.v1", revoke); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"revoked_inboxes":2`) {
+		t.Fatalf("revoke replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	var account91 []domain.Inbox
+	if err := db.Where("account_id = ?", 91).Find(&account91).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, inbox := range account91 {
+		if inbox.ProviderConfig != "" || !strings.HasPrefix(inbox.WebsiteToken, "revoked-") || inbox.HMACToken != "" || inbox.WebhookURL != "" || inbox.HMACMandatory {
+			t.Fatalf("credential survived revoke: %+v", inbox)
+		}
+	}
+	var other domain.Inbox
+	if err := db.First(&other, inboxes[2].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if other.WebsiteToken != "keep-web" || !strings.Contains(other.ProviderConfig, "keep-secret") {
+		t.Fatalf("other account was modified: %+v", other)
+	}
+	var members91, members92 int64
+	ids91 := db.Model(&domain.Inbox{}).Select("id").Where("account_id = ?", 91)
+	ids92 := db.Model(&domain.Inbox{}).Select("id").Where("account_id = ?", 92)
+	_ = db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", ids91).Count(&members91).Error
+	_ = db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", ids92).Count(&members92).Error
+	var receipts int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if members91 != 0 || members92 != 1 || receipts != 2 {
+		t.Fatalf("members91=%d members92=%d receipts=%d", members91, members92, receipts)
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

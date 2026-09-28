@@ -316,6 +316,35 @@ func (r *InboxRepository) UpdateProviderConfig(accountID, inboxID uint, updates 
 	return merged, err
 }
 
+// UpdateChannelHealth stores the latest owner-local channel health observation
+// without exposing or replacing provider credentials.
+func (r *InboxRepository) UpdateChannelHealth(accountID, inboxID uint, status string, checkedAt time.Time, details map[string]any) error {
+	_, err := r.UpdateProviderConfig(accountID, inboxID, map[string]any{"_health": map[string]any{"status": status, "checked_at": checkedAt.UTC().Format(time.RFC3339Nano), "details": details}})
+	return err
+}
+
+// RevokeAccountChannels removes every channel credential and agent binding for
+// one account while retaining inbox records needed by historical references.
+func (r *InboxRepository) RevokeAccountChannels(accountID uint) (int64, error) {
+	var ids []uint
+	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ?", accountID).Order("id ASC").Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if err := r.db.Where("inbox_id IN ?", ids).Delete(&domain.InboxMember{}).Error; err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		result := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, id).Updates(map[string]any{"provider_config": "", "webhook_url": "", "website_token": "revoked-" + generateToken(24), "hmac_token": "", "hmac_mandatory": false})
+		if result.Error != nil {
+			return 0, result.Error
+		}
+	}
+	return int64(len(ids)), nil
+}
+
 func (r *InboxRepository) GetCSATTemplate(accountID, inboxID uint) (map[string]any, error) {
 	var inbox domain.Inbox
 	if err := r.db.Where("account_id = ? AND id = ?", accountID, inboxID).First(&inbox).Error; err != nil {

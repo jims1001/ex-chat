@@ -281,6 +281,52 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("chn.health.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "inbox" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is required"}
+			}
+			inboxID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || inboxID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is invalid"}
+			}
+			status, _ := command.Input["status"].(string)
+			if status != "healthy" && status != "degraded" && status != "unhealthy" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "channel health status is invalid"}
+			}
+			checkedValue, _ := command.Input["checked_at"].(string)
+			checkedAt, err := time.Parse(time.RFC3339Nano, checkedValue)
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "channel health checked_at is invalid"}
+			}
+			details, _ := command.Input["details"].(map[string]any)
+			if details == nil {
+				details = map[string]any{}
+			}
+			txRepo := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil)
+			if inbox, err := txRepo.FindSummaryByID(command.AccountID, uint(inboxID)); err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			} else if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			if err := txRepo.UpdateChannelHealth(command.AccountID, uint(inboxID), status, checkedAt, details); err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "channel health could not be updated"}
+			}
+			return map[string]any{"inbox_id": uint(inboxID), "status": status, "checked_at": checkedAt.UTC()}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("chn.account_channels.revoke.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "channel revoke target must match account"}
+			}
+			count, err := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil).RevokeAccountChannels(command.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "account channels could not be revoked"}
+			}
+			return map[string]any{"account_id": command.AccountID, "revoked_inboxes": count}, nil
+		}); err != nil {
+			return err
+		}
 		dependency, ok := r.Config.Dependencies["TEN"]
 		if !ok {
 			return nil
