@@ -52,6 +52,12 @@ type membershipCheckView struct {
 	Allowed   bool `json:"allowed"`
 }
 
+type capabilityCheckView struct {
+	AccountID  uint   `json:"account_id"`
+	Capability string `json:"capability"`
+	Allowed    bool   `json:"allowed"`
+}
+
 type inboxView struct {
 	ID                  uint   `json:"id"`
 	AccountID           uint   `json:"account_id"`
@@ -186,6 +192,20 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return err
 		}
 		return r.Contracts.RegisterEvent("iam.identity.changed.v1", func(context.Context, foundation.EventEnvelope) error { return nil })
+	case "ENT":
+		enterprise := repository.NewEnterpriseRepository(r.DB)
+		return r.Contracts.RegisterQuery("ent.capability.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			capability, _ := query.Filter["capability"].(string)
+			capability = strings.TrimSpace(capability)
+			if capability == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "capability is required"}
+			}
+			features, err := enterprise.GetAccountFeatures(query.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "entitlement store is unavailable"}
+			}
+			return capabilityCheckView{AccountID: query.AccountID, Capability: capability, Allowed: features[capability]}, nil
+		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
 		if err := r.Contracts.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
@@ -289,7 +309,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("chn.member.bind.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("chn.member.bind.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "inbox" {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is required"}
 			}
@@ -325,6 +345,52 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "inbox membership could not be changed"}
 			}
 			return map[string]any{"inbox_id": inbox.ID, "user_id": userID, "operation": operation}, nil
+		}); err != nil {
+			return err
+		}
+		entDependency, ok := r.Config.Dependencies["ENT"]
+		if !ok {
+			return nil
+		}
+		entClient := newModuleClient("CHN", entDependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		return r.Contracts.RegisterCommand("chn.channel.authorize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "inbox" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is required"}
+			}
+			inboxID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || inboxID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is invalid"}
+			}
+			if err := entClient.requireCapability(ctx, command.AccountID, command.Actor, "channel_authorization"); err != nil {
+				return nil, err
+			}
+			provider, ok := command.Input["provider_config"].(map[string]any)
+			if !ok || len(provider) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "provider_config is required"}
+			}
+			encoded, err := json.Marshal(provider)
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "provider_config is invalid"}
+			}
+			txRepo := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil)
+			inbox, err := txRepo.FindSummaryByID(command.AccountID, uint(inboxID))
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			inbox.ProviderConfig = string(encoded)
+			if value, ok := command.Input["webhook_url"].(string); ok {
+				inbox.WebhookURL = strings.TrimSpace(value)
+			}
+			if value, ok := command.Input["hmac_mandatory"].(bool); ok {
+				inbox.HMACMandatory = value
+			}
+			if err := txRepo.Update(inbox); err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "channel authorization could not be saved"}
+			}
+			return map[string]any{"inbox_id": inbox.ID, "authorized": true}, nil
 		})
 	default:
 		return fmt.Errorf("business contracts are not implemented for %s", r.Config.ModuleID)
@@ -486,6 +552,42 @@ func (c *moduleClient) requireMember(ctx context.Context, accountID uint, actor 
 		return nil
 	}
 	return &ContractFailure{Type: "resource_not_found", Message: "account member was not found"}
+}
+
+func (c *moduleClient) requireCapability(ctx context.Context, accountID uint, actor foundation.ContractActor, capability string) error {
+	correlationID := foundation.GenerateUUID()
+	envelope := foundation.QueryEnvelope{QueryType: "ent.capability.check.v1", AccountID: accountID, Actor: actor, Filter: map[string]any{"capability": capability}, Sort: []string{"capability"}, Page: "1", Fields: []string{"account_id", "capability", "allowed"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	body, _ := json.Marshal(envelope)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/contracts/queries/ent.capability.check.v1", bytes.NewReader(body))
+	if err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "ENT request could not be created"}
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set(headerCaller, c.caller)
+	request.Header.Set(headerContractVersion, c.version)
+	request.Header.Set(headerCorrelationID, correlationID)
+	response, err := c.client.Do(request)
+	if err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "ENT dependency is unavailable"}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var failure foundation.ContractError
+		if json.NewDecoder(response.Body).Decode(&failure) == nil && failure.Validate() == nil {
+			return &ContractFailure{Type: failure.Type, Message: failure.Message, RetryAfterMS: failure.RetryAfterMS, Details: failure.Details}
+		}
+		return &ContractFailure{Type: "dependency_unavailable", Message: "ENT returned an invalid response"}
+	}
+	var payload struct {
+		Data capabilityCheckView `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "ENT returned an invalid capability"}
+	}
+	if payload.Data.AccountID != accountID || payload.Data.Capability != capability || !payload.Data.Allowed {
+		return &ContractFailure{Type: "feature_unavailable", Message: "channel authorization is not enabled"}
+	}
+	return nil
 }
 
 func (c *moduleClient) getIdentities(ctx context.Context, parent foundation.QueryEnvelope, userIDs []uint) (map[uint]*identityView, error) {

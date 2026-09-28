@@ -139,7 +139,10 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "ent.capability.check.v1"
+      ]
     },
     {
       "module": "SYS",
@@ -202,7 +205,8 @@
       "implementedIndependentCommands": [
         "chn.inbox.create.v1",
         "chn.inbox.update.v1",
-        "chn.member.bind.v1"
+        "chn.member.bind.v1",
+        "chn.channel.authorize.v1"
       ],
       "dependencyStopRecoveryVerified": true
     },

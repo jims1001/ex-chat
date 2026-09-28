@@ -138,4 +138,5 @@
 - 已完成并验证：CHN `chn.inbox.create.v1` 经 TEN `ten.account.get.v1` 校验账号后，在 CHN 本地事务中原子写入业务数据和幂等收据；TEN 停机不产生残留写入（E-ARCH-08-v93）。
 - 已完成并验证：CHN `chn.inbox.update.v1` 仅允许公开配置字段，强制账号归属并支持持久化幂等重放；密钥及供应商配置不能经该合同修改（E-ARCH-08-v94）。
 - 已完成并验证：CHN `chn.member.bind.v1` 通过最小化 TEN `ten.permissions.check.v1` 校验账号成员，绑定/解绑与幂等收据原子提交，依赖失败不残留（E-ARCH-08-v95）。
-- 下一项：CHN 通道授权及健康更新命令。
+- 已完成并验证：CHN `chn.channel.authorize.v1` 经 ENT `ent.capability.check.v1` 校验权益后在 CHN 本地保存密钥，响应及收据不泄露密钥，权益/依赖失败无残留（E-ARCH-08-v96）。
+- 下一项：CHN 通道健康更新及账号通道撤销命令。

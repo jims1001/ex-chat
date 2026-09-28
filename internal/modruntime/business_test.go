@@ -366,6 +366,77 @@ func TestCHNMemberBindUsesTENMembershipAndRollsBackFailures(t *testing.T) {
 	}
 }
 
+func TestCHNChannelAuthorizeUsesENTAndKeepsSecretsLocal(t *testing.T) {
+	entDB := newModuleTestDB(t, "ENT")
+	if err := repository.NewEnterpriseRepository(entDB).SetAccountFeature(91, "channel_authorization", true); err != nil {
+		t.Fatal(err)
+	}
+	entCfg := businessConfig("ENT")
+	entCfg.AllowedCallers["CHN"] = true
+	entRuntime := Runtime{Config: entCfg, DB: entDB, Contracts: NewContractRegistry("ENT")}
+	if err := entRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	entServer, entAddress := startHTTPServer(t, "127.0.0.1:0", entRuntime.Handler())
+
+	chnDB := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "WhatsApp", ChannelType: "Channel::Whatsapp", WebsiteToken: "token"}
+	if err := repository.NewInboxRepositoryWithAccountPort(chnDB, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	chnCfg := businessConfig("CHN")
+	chnCfg.Dependencies["TEN"] = DependencyConfig{URL: "http://127.0.0.1:1", Token: "unused"}
+	chnCfg.Dependencies["ENT"] = DependencyConfig{URL: "http://" + entAddress, Token: entCfg.AuthToken}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: chnCfg, DB: chnDB, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "authorize-1", CommandType: "chn.channel.authorize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"provider_config": map[string]any{"access_token": "top-secret", "phone_number_id": "123"}, "webhook_url": "https://example.test/hooks", "hmac_mandatory": true}, IdempotencyKey: "authorize-91-1", CorrelationID: "correlation-1", CausationID: "inbox-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/chn.channel.authorize.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+chnCfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	first := call(command)
+	if first.Code != http.StatusOK || strings.Contains(first.Body.String(), "top-secret") {
+		t.Fatalf("authorize status=%d body=%s", first.Code, first.Body.String())
+	}
+	if replay := call(command); replay.Code != http.StatusOK || strings.Contains(replay.Body.String(), "top-secret") {
+		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var stored domain.Inbox
+	if err := chnDB.First(&stored, inbox.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored.ProviderConfig, "top-secret") || stored.WebhookURL != "https://example.test/hooks" || !stored.HMACMandatory {
+		t.Fatalf("authorization was not persisted: %+v", stored)
+	}
+
+	disabled := command
+	disabled.CommandID, disabled.IdempotencyKey, disabled.AccountID = "authorize-disabled", "authorize-disabled", 92
+	disabled.Target.ID = strconv.FormatUint(uint64(inbox.ID), 10)
+	if response := call(disabled); response.Code != http.StatusServiceUnavailable { // feature_unavailable maps to 503
+		t.Fatalf("disabled feature status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := entServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := command
+	unavailable.CommandID, unavailable.IdempotencyKey = "authorize-down", "authorize-down"
+	if response := call(unavailable); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ENT down status=%d body=%s", response.Code, response.Body.String())
+	}
+	var receipts int64
+	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if receipts != 1 {
+		t.Fatalf("failed authorizations left receipts=%d", receipts)
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

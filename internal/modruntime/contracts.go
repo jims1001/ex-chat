@@ -278,7 +278,7 @@ func contractFailureStatus(errorType string) int {
 		return http.StatusConflict
 	case "rate_limited":
 		return http.StatusTooManyRequests
-	case "dependency_unavailable":
+	case "dependency_unavailable", "feature_unavailable":
 		return http.StatusServiceUnavailable
 	case "result_unknown":
 		return http.StatusGatewayTimeout
