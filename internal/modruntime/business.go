@@ -248,7 +248,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		})
 	case "CUS":
 		contacts := repository.NewContactRepositoryWithOwnerPorts(r.DB, nil, nil, nil, nil, nil)
-		return r.Contracts.RegisterQuery("cus.contact.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		if err := r.Contracts.RegisterQuery("cus.contact.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			contactID, err := uintFilter(query.Filter, "id")
 			if err != nil {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "contact id is required"}
@@ -259,6 +259,30 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			if contact == nil {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
+			}
+			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("cus.contact.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			name, _ := command.Input["name"].(string)
+			email, _ := command.Input["email"].(string)
+			phone, _ := command.Input["phone_number"].(string)
+			identifier, _ := command.Input["identifier"].(string)
+			avatarURL, _ := command.Input["avatar_url"].(string)
+			if strings.TrimSpace(name) == "" && strings.TrimSpace(email) == "" && strings.TrimSpace(phone) == "" && strings.TrimSpace(identifier) == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact identity is required"}
+			}
+			contact := &domain.Contact{AccountID: command.AccountID, Name: strings.TrimSpace(name), Email: strings.TrimSpace(email), PhoneNumber: strings.TrimSpace(phone), Identifier: strings.TrimSpace(identifier), AvatarURL: strings.TrimSpace(avatarURL), ObjectVersion: 1}
+			txRepo := repository.NewContactRepositoryWithOwnerPorts(Transaction(ctx, r.DB), nil, nil, nil, nil, nil)
+			if err := txRepo.Create(contact); err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contact could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "cus.contact.created.v1", "Contact", strconv.FormatUint(uint64(contact.ID), 10), []string{"created"}, map[string]any{"contact_id": contact.ID, "operation": "created"}); err != nil {
+				return nil, err
 			}
 			return contactFromModel(contact), nil
 		})

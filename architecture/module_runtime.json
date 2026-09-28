@@ -254,12 +254,19 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-contact-query",
+      "acceptanceStatus": "partial-contact-create",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "cus.contact.get.v1"
-      ]
+      ],
+      "implementedIndependentCommands": [
+        "cus.contact.create.v1"
+      ],
+      "implementedIndependentEvents": [
+        "cus.contact.created.v1"
+      ],
+      "outboxAtomicWithCommands": true
     },
     {
       "module": "MED",

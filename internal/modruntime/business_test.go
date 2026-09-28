@@ -184,6 +184,52 @@ func TestCUSContactQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
 	}
 }
 
+func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "contact-create-1", CommandType: "cus.contact.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"name": "Customer", "email": "customer@example.test", "phone_number": "+61000000000", "identifier": "customer-91", "avatar_url": "https://example.test/avatar.png", "pubsub_token": "ignored-secret", "custom_attributes": `{"ignored":true}`}, IdempotencyKey: "contact-create-91", CorrelationID: "contact-correlation", CausationID: "contact-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.contact.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.contact.create.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for i := 0; i < 2; i++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "customer@example.test") || strings.Contains(response.Body.String(), "ignored-secret") {
+			t.Fatalf("contact create status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var contacts, receipts, events int64
+	_ = db.Model(&domain.Contact{}).Count(&contacts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.created.v1%").Count(&events).Error
+	var stored domain.Contact
+	if err := db.First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if contacts != 1 || receipts != 1 || events != 1 || stored.PubsubToken != "" || stored.CustomAttributes != "" {
+		t.Fatalf("contacts=%d receipts=%d events=%d stored=%+v", contacts, receipts, events, stored)
+	}
+	invalid := command
+	invalid.CommandID, invalid.IdempotencyKey, invalid.Input = "contact-create-invalid", "contact-create-invalid-91", map[string]any{}
+	if response := call(invalid); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid contact status=%d body=%s", response.Code, response.Body.String())
+	}
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if receipts != 1 {
+		t.Fatalf("failed command left receipt count=%d", receipts)
+	}
+}
+
 func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
 	iamDB := newModuleTestDB(t, "IAM")
 	iamCfg := businessConfig("IAM")
