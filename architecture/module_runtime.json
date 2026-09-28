@@ -254,7 +254,7 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-account-anonymize",
+      "acceptanceStatus": "partial-contact-merge-producer",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -267,6 +267,7 @@
       "implementedIndependentCommands": [
         "cus.contact.create.v1",
         "cus.contact.update.v1",
+        "cus.contact.merge.v1",
         "cus.company.update.v1",
         "cus.label.manage.v1",
         "cus.account_contacts.anonymize.v1"
@@ -274,6 +275,7 @@
       "implementedIndependentEvents": [
         "cus.contact.created.v1",
         "cus.contact.changed.v1",
+        "cus.contact.merged.v1",
         "cus.company.changed.v1",
         "cus.label.changed.v1"
       ],

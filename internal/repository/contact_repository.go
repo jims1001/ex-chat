@@ -472,19 +472,22 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 	if exists != 2 {
 		return gorm.ErrRecordNotFound
 	}
-	if r.conversations == nil || r.messages == nil || r.tickets == nil || r.orders == nil || r.campaigns == nil {
-		return gorm.ErrInvalidData
-	}
-	commands := []func() error{
-		func() error { return r.conversations.ReassignContact(accountID, mergeeID, baseID) },
-		func() error { return r.messages.ReassignContactSender(accountID, mergeeID, baseID) },
-		func() error { return r.tickets.ReassignContact(accountID, mergeeID, baseID) },
-		func() error { return r.orders.ReassignContact(accountID, mergeeID, baseID) },
-		func() error { return r.campaigns.ReassignContact(context.Background(), accountID, mergeeID, baseID) },
-	}
-	for _, command := range commands {
-		if err := command(); err != nil {
-			return err
+	hasOwnerPort := r.conversations != nil || r.messages != nil || r.tickets != nil || r.orders != nil || r.campaigns != nil
+	if hasOwnerPort {
+		if r.conversations == nil || r.messages == nil || r.tickets == nil || r.orders == nil || r.campaigns == nil {
+			return gorm.ErrInvalidData
+		}
+		commands := []func() error{
+			func() error { return r.conversations.ReassignContact(accountID, mergeeID, baseID) },
+			func() error { return r.messages.ReassignContactSender(accountID, mergeeID, baseID) },
+			func() error { return r.tickets.ReassignContact(accountID, mergeeID, baseID) },
+			func() error { return r.orders.ReassignContact(accountID, mergeeID, baseID) },
+			func() error { return r.campaigns.ReassignContact(context.Background(), accountID, mergeeID, baseID) },
+		}
+		for _, command := range commands {
+			if err := command(); err != nil {
+				return err
+			}
 		}
 	}
 	if r.projections != nil {
@@ -552,13 +555,12 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 				updates["custom_attributes"] = string(mergedJSON)
 			}
 		}
+		updates["object_version"] = gorm.Expr("object_version + 1")
 
-		if len(updates) > 0 {
-			if err := tx.Model(&domain.Contact{}).
-				Where("account_id = ? AND id = ?", accountID, baseID).
-				Updates(updates).Error; err != nil {
-				return err
-			}
+		if err := tx.Model(&domain.Contact{}).
+			Where("account_id = ? AND id = ?", accountID, baseID).
+			Updates(updates).Error; err != nil {
+			return err
 		}
 
 		// 2. Handle ContactInboxes with duplicate resolution

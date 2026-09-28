@@ -420,6 +420,72 @@ func TestCUSAccountContactAnonymizeAndDeletionStatusAreOwnerLocal(t *testing.T) 
 	}
 }
 
+func TestCUSContactMergeOwnsLocalFactsAndPublishesProjectionEvent(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	repo := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil)
+	base := domain.Contact{AccountID: 91, Name: "Base", Email: "base@example.test", CustomAttributes: `{"base":true}`, ObjectVersion: 2}
+	mergee := domain.Contact{AccountID: 91, PhoneNumber: "+6100", Identifier: "mergee-id", CustomAttributes: `{"mergee":true}`, ObjectVersion: 4}
+	foreign := domain.Contact{AccountID: 92, Name: "Foreign"}
+	for _, contact := range []*domain.Contact{&base, &mergee, &foreign} {
+		if err := repo.Create(contact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	labelA := domain.Label{AccountID: 91, Title: "A"}
+	labelB := domain.Label{AccountID: 91, Title: "B"}
+	_ = db.Create(&labelA).Error
+	_ = db.Create(&labelB).Error
+	for _, relation := range []domain.ContactInbox{{ContactID: base.ID, InboxID: 10, SourceID: "base-10"}, {ContactID: mergee.ID, InboxID: 10, SourceID: "mergee-10"}, {ContactID: mergee.ID, InboxID: 11, SourceID: "mergee-11"}} {
+		if err := db.Create(&relation).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, relation := range []domain.ContactLabel{{ContactID: base.ID, LabelID: labelA.ID}, {ContactID: mergee.ID, LabelID: labelA.ID}, {ContactID: mergee.ID, LabelID: labelB.ID}} {
+		if err := db.Create(&relation).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&domain.ContactNote{AccountID: 91, ContactID: mergee.ID, UserID: 1, Content: "move me"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "contact-merge-1", CommandType: "cus.contact.merge.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "contact", ID: strconv.FormatUint(uint64(base.ID), 10)}, Input: map[string]any{"mergee_id": mergee.ID}, IdempotencyKey: "contact-merge-91", CorrelationID: "merge-correlation", CausationID: "merge-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.contact.get.v1"}}
+	for i := 0; i < 2; i++ {
+		response := performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.contact.merge.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "mergee-id") {
+			t.Fatalf("contact merge status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var merged domain.Contact
+	if err := db.First(&merged, base.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var mergeeCount, inboxes, labels, notes, receipts, events int64
+	_ = db.Model(&domain.Contact{}).Where("id = ?", mergee.ID).Count(&mergeeCount).Error
+	_ = db.Model(&domain.ContactInbox{}).Where("contact_id = ?", base.ID).Count(&inboxes).Error
+	_ = db.Model(&domain.ContactLabel{}).Where("contact_id = ?", base.ID).Count(&labels).Error
+	_ = db.Model(&domain.ContactNote{}).Where("contact_id = ?", base.ID).Count(&notes).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.merged.v1%").Count(&events).Error
+	if mergeeCount != 0 || merged.PhoneNumber != mergee.PhoneNumber || merged.Identifier != mergee.Identifier || merged.ObjectVersion != 3 || inboxes != 2 || labels != 2 || notes != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("merged=%+v mergee=%d inboxes=%d labels=%d notes=%d receipts=%d events=%d", merged, mergeeCount, inboxes, labels, notes, receipts, events)
+	}
+	if db.Migrator().HasTable(&domain.Conversation{}) || db.Migrator().HasTable(&domain.Message{}) || db.Migrator().HasTable(&domain.Ticket{}) || db.Migrator().HasTable(&domain.Order{}) || db.Migrator().HasTable(&domain.Campaign{}) {
+		t.Fatal("CUS merge runtime created foreign projection tables")
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

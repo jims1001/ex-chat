@@ -584,7 +584,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("cus.account_contacts.anonymize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("cus.account_contacts.anonymize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
 			}
@@ -616,6 +616,33 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, err
 			}
 			return status, nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("cus.contact.merge.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "contact" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "base contact target is required"}
+			}
+			baseID64, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			mergeeID, mergeeErr := uintFilter(command.Input, "mergee_id")
+			if err != nil || baseID64 == 0 || mergeeErr != nil || uint(baseID64) == mergeeID {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "distinct base and mergee contacts are required"}
+			}
+			baseID := uint(baseID64)
+			txRepo := repository.NewContactRepositoryWithOwnerPorts(Transaction(ctx, r.DB), nil, nil, nil, nil, nil)
+			if err := txRepo.MergeContacts(command.AccountID, baseID, mergeeID); errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "merge contact was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contacts could not be merged"}
+			}
+			base, err := txRepo.FindSummaryByID(command.AccountID, baseID)
+			if err != nil || base == nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "merged contact is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "cus.contact.merged.v1", "Contact", command.Target.ID, []string{"merged"}, map[string]any{"base_contact_id": baseID, "merged_contact_id": mergeeID}); err != nil {
+				return nil, err
+			}
+			return contactFromModel(base), nil
 		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
