@@ -73,6 +73,22 @@ type inboxView struct {
 	CSATSurveyEnabled   bool   `json:"csat_survey_enabled"`
 }
 
+type channelCapabilitiesView struct {
+	InboxID          uint     `json:"inbox_id"`
+	ChannelType      string   `json:"channel_type"`
+	Capabilities     []string `json:"capabilities"`
+	AuthorizationSet bool     `json:"authorization_set"`
+}
+
+type connectionStatusView struct {
+	InboxID     uint      `json:"inbox_id"`
+	Status      string    `json:"status"`
+	Configured  bool      `json:"configured"`
+	WebhookSet  bool      `json:"webhook_set"`
+	HMACEnabled bool      `json:"hmac_enabled"`
+	CheckedAt   time.Time `json:"checked_at,omitempty"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -221,6 +237,66 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
 			}
 			return inboxFromModel(inbox), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("chn.capabilities.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox id is required"}
+			}
+			inbox, err := inboxes.FindSummaryByID(query.AccountID, id)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			capabilities := []string{"messages", "attachments", "webhooks"}
+			if inbox.ChannelType == "Channel::WebWidget" {
+				capabilities = append(capabilities, "widget", "hmac")
+			}
+			if inbox.ChannelType == "Channel::Whatsapp" {
+				capabilities = append(capabilities, "templates")
+			}
+			return channelCapabilitiesView{InboxID: inbox.ID, ChannelType: inbox.ChannelType, Capabilities: capabilities, AuthorizationSet: strings.TrimSpace(inbox.ProviderConfig) != ""}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("chn.connection.status.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox id is required"}
+			}
+			inbox, err := inboxes.FindSummaryByID(query.AccountID, id)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			view := connectionStatusView{InboxID: inbox.ID, Status: "unknown", Configured: strings.TrimSpace(inbox.ProviderConfig) != "", WebhookSet: strings.TrimSpace(inbox.WebhookURL) != "", HMACEnabled: inbox.HMACMandatory}
+			var provider map[string]any
+			if json.Unmarshal([]byte(inbox.ProviderConfig), &provider) == nil {
+				if health, ok := provider["_health"].(map[string]any); ok {
+					if status, ok := health["status"].(string); ok {
+						view.Status = status
+					}
+					if checked, ok := health["checked_at"].(string); ok {
+						view.CheckedAt, _ = time.Parse(time.RFC3339Nano, checked)
+					}
+				}
+			}
+			return view, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("chn.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			status, err := inboxes.AccountDeletionStatus(query.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "channel deletion status is unavailable"}
+			}
+			return status, nil
 		}); err != nil {
 			return err
 		}

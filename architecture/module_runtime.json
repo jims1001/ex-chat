@@ -200,7 +200,10 @@
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
-        "chn.inbox.get.v1"
+        "chn.inbox.get.v1",
+        "chn.capabilities.get.v1",
+        "chn.connection.status.v1",
+        "chn.account_deletion_status.get.v1"
       ],
       "implementedIndependentCommands": [
         "chn.inbox.create.v1",

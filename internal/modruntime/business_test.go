@@ -467,6 +467,13 @@ func TestCHNHealthAndAccountRevokeStayWithinOwnerBoundary(t *testing.T) {
 			request.Header.Set(headerCaller, "API")
 		})
 	}
+	query := func(capability string, accountID uint, filter map[string]any) *httptest.ResponseRecorder {
+		envelope := foundation.QueryEnvelope{QueryType: capability, AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"status"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+		return performContractRequest(newRuntime().Handler(), "/contracts/queries/"+capability, envelope, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
 	checkedAt := time.Now().UTC().Truncate(time.Second)
 	health := foundation.CommandEnvelope{CommandID: "health-1", CommandType: "chn.health.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inboxes[0].ID), 10)}, Input: map[string]any{"status": "degraded", "checked_at": checkedAt.Format(time.RFC3339Nano), "details": map[string]any{"delivery_error_rate": 0.2}}, IdempotencyKey: "health-91-1", CorrelationID: "correlation-1", CausationID: "probe-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
 	if response := call("/contracts/commands/chn.health.update.v1", health); response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret-1") {
@@ -478,6 +485,12 @@ func TestCHNHealthAndAccountRevokeStayWithinOwnerBoundary(t *testing.T) {
 	}
 	if !strings.Contains(afterHealth.ProviderConfig, "secret-1") || !strings.Contains(afterHealth.ProviderConfig, `"status":"degraded"`) {
 		t.Fatalf("health did not preserve credentials: %s", afterHealth.ProviderConfig)
+	}
+	if response := query("chn.connection.status.v1", 91, map[string]any{"id": inboxes[0].ID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"degraded"`) || strings.Contains(response.Body.String(), "secret-1") {
+		t.Fatalf("connection status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := query("chn.capabilities.get.v1", 91, map[string]any{"id": inboxes[0].ID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "templates") || strings.Contains(response.Body.String(), "secret-1") {
+		t.Fatalf("capabilities status=%d body=%s", response.Code, response.Body.String())
 	}
 	invalid := health
 	invalid.CommandID, invalid.IdempotencyKey, invalid.Input = "health-invalid", "health-invalid", map[string]any{"status": "unknown", "checked_at": checkedAt.Format(time.RFC3339Nano)}
@@ -517,6 +530,12 @@ func TestCHNHealthAndAccountRevokeStayWithinOwnerBoundary(t *testing.T) {
 	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
 	if members91 != 0 || members92 != 1 || receipts != 2 {
 		t.Fatalf("members91=%d members92=%d receipts=%d", members91, members92, receipts)
+	}
+	if response := query("chn.account_deletion_status.get.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"credential_count":0`) || !strings.Contains(response.Body.String(), `"member_count":0`) || !strings.Contains(response.Body.String(), `"ready":true`) {
+		t.Fatalf("deletion status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := query("chn.account_deletion_status.get.v1", 92, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) {
+		t.Fatalf("other deletion status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

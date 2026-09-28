@@ -140,4 +140,5 @@
 - 已完成并验证：CHN `chn.member.bind.v1` 通过最小化 TEN `ten.permissions.check.v1` 校验账号成员，绑定/解绑与幂等收据原子提交，依赖失败不残留（E-ARCH-08-v95）。
 - 已完成并验证：CHN `chn.channel.authorize.v1` 经 ENT `ent.capability.check.v1` 校验权益后在 CHN 本地保存密钥，响应及收据不泄露密钥，权益/依赖失败无残留（E-ARCH-08-v96）。
 - 已完成并验证：CHN `chn.health.update.v1` 保留密钥并保存所有者健康观测；`chn.account_channels.revoke.v1` 原子撤销账号全部凭据和成员绑定且不影响其他账号（E-ARCH-08-v97）。
-- 下一项：CHN 能力/连接状态查询，并完成 CHN 独立运行能力闭环审计。
+- 已完成并验证：CHN 能力、连接状态和账号删除状态查询只返回安全摘要；撤销后凭据与成员计数归零且 ready=true（E-ARCH-08-v98）。
+- 下一项：CHN 领域事件 outbox 及完整独立运行闭环审计。

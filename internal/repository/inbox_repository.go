@@ -38,6 +38,13 @@ type inboxMessagePort interface {
 	ChannelDeliveryStats(accountID uint, conversationIDs []uint, since time.Time) (ChannelDeliveryStats, error)
 }
 
+type AccountChannelDeletionStatus struct {
+	InboxCount      int64 `json:"inbox_count"`
+	CredentialCount int64 `json:"credential_count"`
+	MemberCount     int64 `json:"member_count"`
+	Ready           bool  `json:"ready"`
+}
+
 func NewInboxRepository(db *gorm.DB) *InboxRepository {
 	repo := NewInboxRepositoryWithAccountPort(db, NewAccountRepository(db))
 	repo.conversations = &ConversationRepository{db: db}
@@ -135,6 +142,22 @@ func (r *InboxRepository) ListByAccount(accountID uint) ([]domain.Inbox, error) 
 		}
 	}
 	return inboxes, nil
+}
+
+func (r *InboxRepository) AccountDeletionStatus(accountID uint) (AccountChannelDeletionStatus, error) {
+	var status AccountChannelDeletionStatus
+	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ?", accountID).Count(&status.InboxCount).Error; err != nil {
+		return status, err
+	}
+	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND (provider_config <> '' OR webhook_url <> '' OR hmac_token <> '' OR hmac_mandatory = ? OR website_token NOT LIKE ?)", accountID, true, "revoked-%").Count(&status.CredentialCount).Error; err != nil {
+		return status, err
+	}
+	owned := r.db.Model(&domain.Inbox{}).Select("id").Where("account_id = ?", accountID)
+	if err := r.db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", owned).Count(&status.MemberCount).Error; err != nil {
+		return status, err
+	}
+	status.Ready = status.CredentialCount == 0 && status.MemberCount == 0
+	return status, nil
 }
 
 func (r *InboxRepository) BindAssignmentPolicy(accountID, inboxID uint, policyID *uint) error {
