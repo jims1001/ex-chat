@@ -130,6 +130,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_draft_reads_use_MSG_owner_query", func(t *testing.T) { testAdvancedDraftOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_notes_use_CUS_IAM_owner_queries", func(t *testing.T) { testAdvancedContactNoteOwnerBoundary(t, openStore) })
 	t.Run("ORC_legacy_capacity_uses_RTE_owner_queries", func(t *testing.T) { testAdvancedLegacyCapacityOwnerBoundary(t, openStore) })
+	t.Run("ORC_integrations_use_EXT_owner_queries", func(t *testing.T) { testAdvancedIntegrationOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1764,6 +1765,38 @@ func testAdvancedLegacyCapacityOwnerBoundary(t *testing.T, openStore func(string
 	}
 	if rteDB.Migrator().HasTable(&domain.User{}) || rteDB.Migrator().HasTable(&domain.Account{}) {
 		t.Fatal("RTE store contains IAM/TEN authority table")
+	}
+}
+
+func testAdvancedIntegrationOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	extDB := openStore("EXT")
+	repo := repository.NewIntegrationRepository(extDB)
+	if _, err := repo.Install(711, "shopify", `[{"id":"owned-order"}]`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Install(711, "dialogflow", `{"project_id":"owned-project"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Install(712, "shopify", `[{"id":"foreign-order"}]`); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := repo.ListByAccount(711)
+	if err != nil || len(installed) != 2 {
+		t.Fatalf("EXT installation list failed: installations=%+v err=%v", installed, err)
+	}
+	shopify, err := repo.FindInstalled(711, "shopify")
+	if err != nil || shopify == nil || shopify.AccountID != 711 {
+		t.Fatalf("EXT installed app lookup failed: installation=%+v err=%v", shopify, err)
+	}
+	if err := repo.Disable(711, "shopify"); err != nil {
+		t.Fatal(err)
+	}
+	shopify, err = repo.FindInstalled(711, "shopify")
+	if err != nil || shopify != nil {
+		t.Fatalf("disabled EXT installation remained visible: installation=%+v err=%v", shopify, err)
+	}
+	if extDB.Migrator().HasTable(&domain.Conversation{}) || extDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("EXT store contains CON/CUS authority table")
 	}
 }
 

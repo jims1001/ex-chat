@@ -7,7 +7,7 @@
 | 基线 | Git `2807b89`；E-ARCH-08-v65 |
 | 阶段分库检查 | 69 个子用例通过 |
 | 专项回归 | RTE 独立库下保存、更新和账号范围列表通过；其他账号记录不会进入结果；RTE 库无 IAM User 或 TEN Account 权威表 |
-| 依赖清单 | 复用 ORC→RTE AgentCapacityPolicyRepository 源码边；依赖摘要保持 `20ea1e19a280eb3ea89b132e865ac82ed760b6c27ab843d90f71115b9332a54c` |
+| 依赖清单 | 复用 ORC→RTE AgentCapacityPolicyRepository 源码边；依赖摘要保持 `6b12a468832b7121784bd72ec16ed8e8c7566801f69fd9ce668b4d8c113e7c6a` |
 | 模块合同 | 新增 `rte.capacity.manage.v1` 写合同；模块合同摘要 `e477ec629d8ccc3712b386657b32966b74f3a93f0c2fd5068e60410da5c4993d` |
 | 协作合同 | 新增旧版容量策略列表与保存方法边；协作摘要 `20170fcf2bc78f22d021a6e8e1aecca3ae74e84d2200a81f2b91c031f83cfd9a` |
 | 完整回归 | `make test` 通过；69 项模块隔离验收通过 |

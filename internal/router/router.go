@@ -99,6 +99,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	channelEnterpriseRepo := repository.NewChannelAuthEnterpriseRepository(db)
 	assignmentPolicyRepo := repository.NewAssignmentPolicyRepository(db)
 	agentCapacityPolicyRepo := repository.NewAgentCapacityPolicyRepository(db)
+	integrationRepo := repository.NewIntegrationRepository(db)
 	contactExtensionRepo := repository.NewContactExtensionRepository(db)
 	companyExtensionRepo := repository.NewCompanyExtensionRepository(db)
 	csatExtensionRepo := repository.NewCSATExtensionRepositoryWithOwners(db, convRepo, contactRepo, inboxRepo, userRepo)
@@ -193,6 +194,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	advancedHandler.SetUserRepo(userRepo)
 	advancedHandler.SetTeamRepo(teamRepo)
 	advancedHandler.SetCapacityPolicyRepo(agentCapacityPolicyRepo)
+	advancedHandler.SetIntegrationRepo(integrationRepo)
 	advancedHandler.SetMessageRepo(msgRepo)
 	if options.AdvancedHTTPClient != nil {
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)

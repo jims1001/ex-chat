@@ -131,6 +131,10 @@ func (h *AdvancedHandler) SetCapacityPolicyRepo(repo *repository.AgentCapacityPo
 	h.capacityPolicyRepo = repo
 }
 
+func (h *AdvancedHandler) SetIntegrationRepo(repo *repository.IntegrationRepository) {
+	h.integrationRepo = repo
+}
+
 func (h *AdvancedHandler) SetMessageRepo(repo *repository.MessageRepository) {
 	h.messageRepo = repo
 }
@@ -2120,8 +2124,11 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 
 func (h *AdvancedHandler) ListIntegrationApps(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	var installed []domain.IntegrationInstallation
-	_ = h.db.Where("account_id = ?", accID).Find(&installed)
+	installed, err := h.integrationRepo.ListByAccount(accID)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 	installedMap := make(map[string]domain.IntegrationInstallation)
 	for _, inst := range installed {
 		installedMap[inst.AppID] = inst
@@ -2209,8 +2216,11 @@ func (h *AdvancedHandler) ShopifyOrders(c *gin.Context) {
 		}
 	}
 
-	var inst domain.IntegrationInstallation
-	_ = h.db.Where("account_id = ? AND app_id = ? AND status = ?", accID, "shopify", "installed").First(&inst)
+	inst, err := h.integrationRepo.FindInstalled(accID, "shopify")
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 
 	now := time.Now().UTC()
 	allOrders := []ShopifyOrder{
@@ -2256,7 +2266,7 @@ func (h *AdvancedHandler) ShopifyOrders(c *gin.Context) {
 	}
 
 	// If settings contain configured custom orders JSON, append or use them
-	if inst.Settings != "" {
+	if inst != nil && inst.Settings != "" {
 		var customOrders []ShopifyOrder
 		if err := json.Unmarshal([]byte(inst.Settings), &customOrders); err == nil && len(customOrders) > 0 {
 			allOrders = append(allOrders, customOrders...)
@@ -2264,7 +2274,7 @@ func (h *AdvancedHandler) ShopifyOrders(c *gin.Context) {
 	}
 
 	// If real Shopify credentials and HTTP client are provided, query Shopify API:
-	if inst.Settings != "" && h.httpClient != nil {
+	if inst != nil && inst.Settings != "" && h.httpClient != nil {
 		var shopConf struct {
 			ShopDomain  string `json:"shop_domain"`
 			AccessToken string `json:"access_token"`
@@ -2346,7 +2356,7 @@ func (h *AdvancedHandler) ShopifyOrders(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"account_id": accID,
-		"installed":  inst.Status == "installed",
+		"installed":  inst != nil,
 		"orders":     filteredOrders,
 	})
 }
@@ -2365,8 +2375,11 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 		return
 	}
 
-	var inst domain.IntegrationInstallation
-	_ = h.db.Where("account_id = ? AND app_id = ? AND status = ?", accID, "dialogflow", "installed").First(&inst)
+	inst, err := h.integrationRepo.FindInstalled(accID, "dialogflow")
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
 
 	sessionID := req.SessionID
 	if sessionID == "" {
@@ -2379,7 +2392,7 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 
 	projectID := "ex-chat-agent"
 	var credentials string
-	if inst.Settings != "" {
+	if inst != nil && inst.Settings != "" {
 		var conf struct {
 			ProjectID   string `json:"project_id"`
 			Credentials string `json:"credentials"`

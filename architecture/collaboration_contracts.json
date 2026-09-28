@@ -3282,6 +3282,26 @@
       "provider": "EXT",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "IntegrationRepository",
+      "method": "FindInstalled",
+      "use": "read",
+      "contract": "ext.installation.get.v1",
+      "replicaEvent": "ext.plugin.installed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "EXT",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "IntegrationRepository",
+      "method": "ListByAccount",
+      "use": "read",
+      "contract": "ext.installation.get.v1",
+      "replicaEvent": "ext.plugin.installed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "EXT",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "IntegrationRepository",
       "method": "Disable",
       "use": "write",
       "contract": "ext.plugin.disable.v1",
