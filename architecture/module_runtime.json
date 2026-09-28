@@ -196,7 +196,7 @@
         "recovery": "健康、Token 和回调补偿"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "runtime-surface-verified",
+      "acceptanceStatus": "runtime-capacity-upgrade-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -223,7 +223,9 @@
       ],
       "outboxAtomicWithCommands": true,
       "eventDeliveryRecoveryVerified": true,
-      "ownerBackupRestoreVerified": true
+      "ownerBackupRestoreVerified": true,
+      "postgresMultiInstanceCommandVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true
     },
     {
       "module": "CUS",

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -632,6 +633,113 @@ func TestCHNTemplateManageListAndEventsAreOwnerLocal(t *testing.T) {
 		if strings.Contains(event.AfterState, "access_token") {
 			t.Fatalf("template event leaked credential: %s", event.AfterState)
 		}
+	}
+}
+
+func TestCHNTemplateCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "WhatsApp", ChannelType: "Channel::Whatsapp", WebsiteToken: "capacity-token"}
+	if err := repository.NewInboxRepositoryWithAccountPort(db, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CHN")
+	command := foundation.CommandEnvelope{CommandID: "capacity-template", CommandType: "chn.template.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"action": "upsert", "name": "capacity_once", "components": `[{"type":"BODY","text":"Created once"}]`}, IdempotencyKey: "capacity-template-91", CorrelationID: "capacity-correlation", CausationID: "capacity-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.templates.list.v1"}}
+
+	const instances = 8
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, instances)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for i := 0; i < instances; i++ {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			response := performContractRequest(handler, "/contracts/commands/chn.template.manage.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+			results <- result{status: response.Code, body: response.Body.String()}
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.status != http.StatusOK || !strings.Contains(response.body, "capacity_once") {
+			t.Fatalf("concurrent template status=%d body=%s", response.status, response.body)
+		}
+	}
+	var templates, receipts, events int64
+	if err := db.Model(&domain.InboxMessageTemplate{}).Where("account_id = ? AND inbox_id = ? AND name = ?", 91, inbox.ID, "capacity_once").Count(&templates).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%chn.template.changed.v1%").Count(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if templates != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("templates=%d receipts=%d events=%d", templates, receipts, events)
+	}
+}
+
+func TestCHNMixedVersionUpgradeRollbackPreservesTemplateFact(t *testing.T) {
+	db := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "WhatsApp", ChannelType: "Channel::Whatsapp", WebsiteToken: "upgrade-token"}
+	if err := repository.NewInboxRepositoryWithAccountPort(db, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	newRuntime := func(version, release string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("CHN")
+		cfg.ContractVersion = version
+		cfg.ReleaseVersion = release
+		cfg.AcceptedVersions = accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, "upgrade-correlation")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-template", CommandType: "chn.template.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"action": "upsert", "name": "survives_rollback", "components": `[{"type":"BODY","text":"Still readable"}]`}, IdempotencyKey: "upgrade-template-91", CorrelationID: "upgrade-correlation", CausationID: "upgrade-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.templates.list.v1"}}
+	v2 := newRuntime("v2", "release-2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/chn.template.manage.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2 write status=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := newRuntime("v1", "release-1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/chn.template.manage.v1", command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "survives_rollback") {
+		t.Fatalf("v1 replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "chn.templates.list.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"inbox_id": inbox.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/chn.templates.list.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "survives_rollback") {
+		t.Fatalf("v1 read status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/chn.templates.list.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rolled-back runtime accepted v2 status=%d body=%s", response.Code, response.Body.String())
+	}
+	var templates, receipts, events int64
+	_ = db.Model(&domain.InboxMessageTemplate{}).Count(&templates).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%chn.template.changed.v1%").Count(&events).Error
+	if templates != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("rollback templates=%d receipts=%d events=%d", templates, receipts, events)
 	}
 }
 
