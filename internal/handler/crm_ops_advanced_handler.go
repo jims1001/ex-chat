@@ -28,7 +28,6 @@ import (
 )
 
 type AdvancedHandler struct {
-	db                 *gorm.DB
 	companyRepo        *repository.CompanyRepository
 	campaignRepo       *repository.CampaignRepository
 	slaRepo            *repository.SLARepository
@@ -67,7 +66,6 @@ func NewAdvancedHandler(
 	att *repository.AttachmentRepository,
 ) *AdvancedHandler {
 	return &AdvancedHandler{
-		db:                 db,
 		companyRepo:        c,
 		campaignRepo:       cp,
 		slaRepo:            s,
