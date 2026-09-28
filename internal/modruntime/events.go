@@ -103,8 +103,8 @@ func (d *EventDispatcher) deliver(ctx context.Context, event foundation.EventEnv
 }
 
 type EventFanoutTarget struct {
-	Dependency DependencyConfig
-	EventTypes map[string]bool
+	Dependency DependencyConfig `json:"dependency"`
+	EventTypes map[string]bool  `json:"event_types"`
 }
 
 type EventFanoutDispatcher struct {

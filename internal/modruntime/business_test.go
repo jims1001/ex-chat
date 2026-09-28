@@ -1511,6 +1511,27 @@ func TestCHNIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	}
 }
 
+func TestCUSIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	registry := NewContractRegistry("CUS")
+	runtime := Runtime{Config: businessConfig("CUS"), DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	// module_contracts.json declares seven commands and five queries for CUS.
+	if registry.Count() != 12 {
+		t.Fatalf("CUS registered contracts=%d want=12", registry.Count())
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("CUS runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}, &domain.Ticket{}, &domain.Order{}, &domain.CampaignDelivery{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("CUS runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

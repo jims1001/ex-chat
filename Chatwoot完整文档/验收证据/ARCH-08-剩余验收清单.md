@@ -26,7 +26,7 @@
 | ENT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | SYS | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | CHN | 声明合同运行面已验证 | 启停与依赖恢复通过 | PostgreSQL 8 实例同命令单写通过 | v1/v2 并存及回退事实保留通过 | 所有者备份恢复通过 |
-| CUS | 联系人与公司基础合同已接入 | 合并事件部分停机恢复补投通过 | 重启幂等单写通过 | 待验收 | 待验收 |
+| CUS | 7 Command、5 Query、6 Event 声明面已接入 | 合并事件自动扇出及停机恢复补投通过 | 重启幂等单写通过 | 待验收 | 待验收 |
 | MED | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | CON | 合并事件消费已接入 | 待验收 | 事件去重与顺序门禁通过 | 待验收 | 待验收 |
 | MSG | 合并事件消费已接入 | 待验收 | 事件去重通过 | 待验收 | 待验收 |
@@ -158,4 +158,5 @@
 - 已完成并验证：TKT/BIL/OPS 分别消费合并事件并只更新本账号 Ticket/TicketComment、Order、CampaignDelivery 联系人投影，重复事件去重且无 Contact 表（E-ARCH-08-v113）。
 - 已完成并验证：CUS 合并事件按合同路由扇出至 CON/MSG/TKT/BIL/OPS，每目标持久化投递收据；部分目标停机时 outbox 保持 pending，恢复后只补投未完成目标（E-ARCH-08-v114）。
 - 已完成并验证：CUS `cus.contact.delete.v1` 在 CON 已完成活跃会话检查与历史会话分离后，原子删除联系人及所有者关系数据，并发布 `cus.contact.deleted.v1`（E-ARCH-08-v115）。
-- 下一项：CUS 公开声明面完整性复验，然后补齐事件自动调度接线。
+- 已完成并验证：CUS 7 个 Command 和 5 个 Query 全部注册，6 个 Event 全部由业务命令发布；`module-server` 按 `MODULE_EVENT_TARGETS_JSON` 和轮询间隔自动投递 outbox（E-ARCH-08-v116）。
+- 下一项：CUS PostgreSQL 多实例、混合版本回退和所有者备份恢复验收。

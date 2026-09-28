@@ -216,3 +216,53 @@ func TestEventFanoutPersistsPerTargetProgressAndRecovers(t *testing.T) {
 		t.Fatalf("completed fanout replay delivered=%d err=%v", delivered, err)
 	}
 }
+
+func TestRuntimeEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
+	consumerDB := newModuleTestDB(t, "CON")
+	consumerRegistry := NewContractRegistry("CON")
+	delivered := make(chan struct{}, 1)
+	if err := consumerRegistry.RegisterEvent("cus.contact.merged.v1", func(context.Context, foundation.EventEnvelope) error {
+		delivered <- struct{}{}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := businessConfig("CON")
+	consumerCfg.AllowedCallers["CUS"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: consumerCfg, DB: consumerDB, Contracts: consumerRegistry}.Handler())
+	defer server.Shutdown(context.Background())
+
+	sourceDB := newModuleTestDB(t, "CUS")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "automatic-fanout-1", EventType: "cus.contact.merged.v1", EventVersion: "v1", SourceModule: "CUS", AccountID: 91, AggregateType: "Contact", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "automatic-correlation", CausationID: "automatic-command", ChangedFields: []string{"merged"}, Payload: map[string]any{"base_contact_id": 101, "merged_contact_id": 202}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "CUS").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	sourceCfg := businessConfig("CUS")
+	sourceCfg.EventPollInterval = 10 * time.Millisecond
+	sourceCfg.EventTargets = map[string]EventFanoutTarget{"CON": {Dependency: DependencyConfig{URL: "http://" + address, Token: consumerCfg.AuthToken}, EventTypes: map[string]bool{event.EventType: true}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errors := make(chan error, 1)
+	go (Runtime{Config: sourceCfg, DB: sourceDB}).RunEventFanout(ctx, func(err error) { errors <- err })
+	select {
+	case <-delivered:
+	case err := <-errors:
+		t.Fatalf("automatic fanout error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("automatic fanout did not deliver pending event")
+	}
+	var outbox, receipts int64
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&outbox).Error
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+		if outbox == 1 && receipts == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if outbox != 1 || receipts != 1 {
+		t.Fatalf("automatic outbox=%d receipts=%d", outbox, receipts)
+	}
+}

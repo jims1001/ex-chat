@@ -33,7 +33,7 @@
       "error_rate",
       "checkpoint"
     ],
-    "configuration": "Independent identity, listener, database credentials, health, schema readiness and authenticated/versioned contract transport are implemented; business capability handlers remain to be extracted per module."
+    "configuration": "Independent identity, listener, database credentials, health, schema readiness, authenticated/versioned contract transport and configured outbox fanout workers are implemented; business capability handlers remain to be extracted per module."
   },
   "modules": [
     {
@@ -254,7 +254,7 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-contact-delete-owner-finalization",
+      "acceptanceStatus": "declared-surface-and-event-worker-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -283,6 +283,8 @@
       ],
       "outboxAtomicWithCommands": true,
       "eventFanoutDeliveryVerified": true,
+      "automaticEventDispatchVerified": true,
+      "declaredContractSurfaceVerified": true,
       "contactMergeFanoutTargets": [
         "CON",
         "MSG",

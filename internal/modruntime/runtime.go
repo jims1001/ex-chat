@@ -1,6 +1,7 @@
 package modruntime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,8 @@ type Config struct {
 	MaxRequestBytes    int64
 	EnableBusiness     bool
 	Dependencies       map[string]DependencyConfig
+	EventTargets       map[string]EventFanoutTarget
+	EventPollInterval  time.Duration
 }
 
 type DependencyConfig struct {
@@ -58,6 +61,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		AllowedCallers:     parseCallers(getenv("MODULE_ALLOWED_CALLERS")),
 		EnableBusiness:     strings.EqualFold(strings.TrimSpace(getenv("MODULE_ENABLE_BUSINESS_CONTRACTS")), "true"),
 		Dependencies:       map[string]DependencyConfig{},
+		EventTargets:       map[string]EventFanoutTarget{},
 	}
 	if raw := strings.TrimSpace(getenv("MODULE_DEPENDENCIES_JSON")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.Dependencies); err != nil {
@@ -66,6 +70,21 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		for module, dependency := range cfg.Dependencies {
 			if module != strings.ToUpper(module) || strings.TrimSpace(dependency.URL) == "" || strings.TrimSpace(dependency.Token) == "" {
 				return Config{}, errors.New("MODULE_DEPENDENCIES_JSON contains an invalid dependency")
+			}
+		}
+	}
+	if raw := strings.TrimSpace(getenv("MODULE_EVENT_TARGETS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.EventTargets); err != nil {
+			return Config{}, errors.New("MODULE_EVENT_TARGETS_JSON is invalid")
+		}
+		for module, target := range cfg.EventTargets {
+			if module != strings.ToUpper(module) || strings.TrimSpace(target.Dependency.URL) == "" || strings.TrimSpace(target.Dependency.Token) == "" || len(target.EventTypes) == 0 {
+				return Config{}, errors.New("MODULE_EVENT_TARGETS_JSON contains an invalid target")
+			}
+			for eventType, enabled := range target.EventTypes {
+				if !enabled || !strings.HasPrefix(eventType, strings.ToLower(cfg.ModuleID)+".") || !strings.HasSuffix(eventType, ".v1") {
+					return Config{}, errors.New("MODULE_EVENT_TARGETS_JSON contains an invalid event type")
+				}
 			}
 		}
 	}
@@ -107,6 +126,14 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 		cfg.MaxRequestBytes = bytes
 	}
+	cfg.EventPollInterval = time.Second
+	if value := strings.TrimSpace(getenv("MODULE_EVENT_POLL_INTERVAL_MS")); value != "" {
+		milliseconds, err := strconv.Atoi(value)
+		if err != nil || milliseconds < 10 || milliseconds > 60000 {
+			return Config{}, errors.New("MODULE_EVENT_POLL_INTERVAL_MS must be between 10 and 60000")
+		}
+		cfg.EventPollInterval = time.Duration(milliseconds) * time.Millisecond
+	}
 	if _, err := database.ModuleModels(cfg.ModuleID); err != nil {
 		return Config{}, err
 	}
@@ -123,6 +150,33 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("MODULE_DB_DRIVER must be sqlite or postgres")
 	}
 	return cfg, nil
+}
+
+func (r Runtime) RunEventFanout(ctx context.Context, onError func(error)) {
+	if r.DB == nil || len(r.Config.EventTargets) == 0 {
+		return
+	}
+	interval := r.Config.EventPollInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	dispatcher := NewEventFanoutDispatcher(r.DB, r.Config.ModuleID, r.Config.EventTargets, r.Config.ContractVersion, r.Config.MaxTimeout)
+	deliver := func() {
+		if _, err := dispatcher.DeliverPending(ctx, 100); err != nil && ctx.Err() == nil && onError != nil {
+			onError(err)
+		}
+	}
+	deliver()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			deliver()
+		}
+	}
 }
 
 func parseVersions(value string) map[string]bool {

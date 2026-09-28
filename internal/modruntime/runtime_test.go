@@ -109,3 +109,26 @@ func TestReadinessRejectsMissingSchemaAndSharedConfigFallback(t *testing.T) {
 		t.Fatal(fmt.Errorf("empty readiness response"))
 	}
 }
+
+func TestLoadConfigValidatesEventFanoutTargets(t *testing.T) {
+	values := map[string]string{
+		"MODULE_ID": "CUS", "MODULE_DB_DRIVER": "sqlite", "MODULE_DB_PATH": filepath.Join(t.TempDir(), "cus.db"),
+		"MODULE_AUTH_TOKEN": "test-secret", "MODULE_ALLOWED_CALLERS": "API", "MODULE_EVENT_POLL_INTERVAL_MS": "25",
+		"MODULE_EVENT_TARGETS_JSON": `{"CON":{"dependency":{"url":"http://con:8090","token":"con-secret"},"event_types":{"cus.contact.merged.v1":true}}}`,
+	}
+	cfg, err := LoadConfig(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EventPollInterval != 25*time.Millisecond || !cfg.EventTargets["CON"].EventTypes["cus.contact.merged.v1"] {
+		t.Fatalf("event fanout config=%+v interval=%s", cfg.EventTargets, cfg.EventPollInterval)
+	}
+	values["MODULE_EVENT_TARGETS_JSON"] = `{"con":{"dependency":{"url":"http://con:8090","token":"con-secret"},"event_types":{"cus.contact.merged.v1":true}}}`
+	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("lowercase event target was accepted")
+	}
+	values["MODULE_EVENT_TARGETS_JSON"] = `{"CON":{"dependency":{"url":"http://con:8090","token":"con-secret"},"event_types":{"msg.message.created.v1":true}}}`
+	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("foreign source event type was accepted")
+	}
+}
