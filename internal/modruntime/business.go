@@ -178,6 +178,63 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("chn.inbox.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "inbox" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is required"}
+			}
+			inboxID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || inboxID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target is invalid"}
+			}
+			for key := range command.Input {
+				switch key {
+				case "name", "avatar_url", "greeting_message", "greeting_enabled", "working_hours_enabled", "out_of_office_message", "timezone", "working_hours", "csat_survey_enabled":
+				default:
+					return nil, &ContractFailure{Type: "validation_failed", Message: "inbox update contains an unsupported field"}
+				}
+			}
+			txRepo := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil)
+			inbox, err := txRepo.FindSummaryByID(command.AccountID, uint(inboxID))
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			if value, ok := command.Input["name"].(string); ok && strings.TrimSpace(value) != "" {
+				inbox.Name = strings.TrimSpace(value)
+			}
+			if value, ok := command.Input["avatar_url"].(string); ok {
+				inbox.AvatarURL = value
+			}
+			if value, ok := command.Input["greeting_message"].(string); ok {
+				inbox.GreetingMessage = value
+			}
+			if value, ok := command.Input["greeting_enabled"].(bool); ok {
+				inbox.GreetingEnabled = value
+			}
+			if value, ok := command.Input["working_hours_enabled"].(bool); ok {
+				inbox.WorkingHoursEnabled = value
+			}
+			if value, ok := command.Input["out_of_office_message"].(string); ok {
+				inbox.OutOfOfficeMessage = value
+			}
+			if value, ok := command.Input["timezone"].(string); ok && strings.TrimSpace(value) != "" {
+				inbox.Timezone = strings.TrimSpace(value)
+			}
+			if value, ok := command.Input["working_hours"].(string); ok {
+				inbox.WorkingHours = value
+			}
+			if value, ok := command.Input["csat_survey_enabled"].(bool); ok {
+				inbox.CSATSurveyEnabled = value
+			}
+			if err := txRepo.Update(inbox); err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "inbox could not be updated"}
+			}
+			return inboxFromModel(inbox), nil
+		}); err != nil {
+			return err
+		}
 		dependency, ok := r.Config.Dependencies["TEN"]
 		if !ok {
 			return nil

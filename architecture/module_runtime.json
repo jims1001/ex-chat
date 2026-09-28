@@ -199,7 +199,8 @@
         "chn.inbox.get.v1"
       ],
       "implementedIndependentCommands": [
-        "chn.inbox.create.v1"
+        "chn.inbox.create.v1",
+        "chn.inbox.update.v1"
       ],
       "dependencyStopRecoveryVerified": true
     },

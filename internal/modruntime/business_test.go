@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -217,6 +218,58 @@ func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
 	_ = chnDB.Model(&domain.Inbox{}).Count(&inboxes).Error
 	if inboxes != 1 {
 		t.Fatalf("failed dependency left inbox count=%d", inboxes)
+	}
+}
+
+func TestCHNInboxUpdateBoundsFieldsAccountAndReplay(t *testing.T) {
+	db := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "Before", ChannelType: "Channel::WebWidget", WebsiteToken: "keep-token", ProviderConfig: `{"secret":"keep"}`, Timezone: "UTC"}
+	if err := repository.NewInboxRepositoryWithAccountPort(db, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CHN")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "update-inbox-1", CommandType: "chn.inbox.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "inbox", ID: strconv.FormatUint(uint64(inbox.ID), 10)}, Input: map[string]any{"name": "After", "timezone": "Australia/Sydney", "greeting_enabled": true}, IdempotencyKey: "update-inbox-91", CorrelationID: "correlation-1", CausationID: "create-inbox-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/chn.inbox.update.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := call(command); response.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Australia/Sydney") {
+		t.Fatalf("replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	var stored domain.Inbox
+	if err := db.First(&stored, inbox.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Name != "After" || stored.WebsiteToken != "keep-token" || stored.ProviderConfig != `{"secret":"keep"}` {
+		t.Fatalf("unexpected stored inbox: %+v", stored)
+	}
+
+	foreign := command
+	foreign.CommandID, foreign.IdempotencyKey, foreign.AccountID = "update-inbox-foreign", "update-inbox-foreign", 92
+	if response := call(foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account status=%d body=%s", response.Code, response.Body.String())
+	}
+	unsafe := command
+	unsafe.CommandID, unsafe.IdempotencyKey, unsafe.Input = "update-inbox-unsafe", "update-inbox-unsafe", map[string]any{"provider_config": "replace"}
+	if response := call(unsafe); response.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe update status=%d body=%s", response.Code, response.Body.String())
+	}
+	var receipts int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if receipts != 1 {
+		t.Fatalf("failed updates left receipts=%d", receipts)
 	}
 }
 
