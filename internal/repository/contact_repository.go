@@ -90,6 +90,14 @@ func (r *ContactRepository) FindByEmail(accountID uint, email string) (*domain.C
 	return &contact, nil
 }
 
+func (r *ContactRepository) EmailExists(accountID uint, email string) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.Contact{}).
+		Where("account_id = ? AND LOWER(email) = ?", accountID, strings.ToLower(strings.TrimSpace(email))).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (r *ContactRepository) FindByIdentifier(accountID uint, identifier string) (*domain.Contact, error) {
 	var contact domain.Contact
 	err := r.db.Where("account_id = ? AND identifier = ?", accountID, identifier).First(&contact).Error

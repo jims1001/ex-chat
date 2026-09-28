@@ -2100,6 +2100,16 @@
     {
       "consumer": "MIG",
       "provider": "CUS",
+      "file": "internal/service/data_import_service.go",
+      "symbol": "ContactRepository",
+      "method": "EmailExists",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "CUS",
       "file": "internal/service/migration_service.go",
       "symbol": "ContactRepository",
       "method": "Create",

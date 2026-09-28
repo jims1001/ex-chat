@@ -90,6 +90,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RPT_applied_slas_use_CON_owner_queries", func(t *testing.T) { testAppliedSLAConversationBoundary(t, openStore) })
 	t.Run("RPT_SLA_service_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testSLAServiceOwnerBoundary(t, openStore) })
 	t.Run("RPT_reports_use_CHN_CON_MSG_CUS_owner_queries", func(t *testing.T) { testReportServiceOwnerBoundary(t, openStore) })
+	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1910,6 +1911,59 @@ func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string
 	}
 	if conDB.Migrator().HasTable(&domain.Label{}) {
 		t.Fatal("CON store contains CUS authority tables")
+	}
+}
+
+func testDataImportContactOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	migDB, cusDB := openStore("MIG"), openStore("CUS")
+	for _, contact := range []domain.Contact{
+		{AccountID: 1, Name: "Existing", Email: "existing@example.com"},
+		{AccountID: 2, Name: "Other tenant", Email: "other@example.com"},
+	} {
+		if err := cusDB.Create(&contact).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	imports := service.NewDataImportServiceWithContactOwner(migDB, repository.NewContactRepository(cusDB))
+	raw := "name,email\nExisting,existing@example.com\nNew Tenant One,other@example.com\n"
+	validation, err := imports.Prevalidate(1, "contacts", "csv", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !validation.Valid || len(validation.Warnings) != 1 || !strings.Contains(validation.Warnings[0].Reason, "existing@example.com") {
+		t.Fatalf("unexpected owner-backed validation: %+v", validation)
+	}
+
+	dataImport := domain.DataImport{AccountID: 1, ImportType: "contacts", SourceProvider: "csv", RawData: raw}
+	if err := imports.ExecuteImport(context.Background(), 1, &dataImport); err != nil {
+		t.Fatal(err)
+	}
+	if dataImport.Status != "completed" || dataImport.ProcessedRecords != 1 || dataImport.SkippedRecords != 1 {
+		t.Fatalf("unexpected import result: %+v", dataImport)
+	}
+	created, err := repository.NewContactRepository(cusDB).FindByEmail(1, "other@example.com")
+	if err != nil || created == nil {
+		t.Fatalf("CUS owner did not create account-scoped contact: contact=%+v err=%v", created, err)
+	}
+	if migDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("MIG store contains CUS Contact authority table")
+	}
+
+	brokenCUS, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "broken-cus.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailable := service.NewDataImportServiceWithContactOwner(migDB, repository.NewContactRepository(brokenCUS))
+	if _, err := unavailable.Prevalidate(1, "contacts", "csv", "name,email\nUnavailable,unavailable@example.com\n"); err == nil {
+		t.Fatal("CUS owner failure was hidden during prevalidation")
+	}
+	failedImport := domain.DataImport{AccountID: 1, ImportType: "contacts", SourceProvider: "csv", RawData: "name,email\nUnavailable,unavailable@example.com\n"}
+	if err := unavailable.ExecuteImport(context.Background(), 1, &failedImport); err != nil {
+		t.Fatal(err)
+	}
+	if failedImport.Status != "failed" || failedImport.FailedRecords != 1 || !strings.Contains(failedImport.ErrorsJSON, "Contact lookup failed") {
+		t.Fatalf("CUS owner failure was not recorded: %+v", failedImport)
 	}
 }
 

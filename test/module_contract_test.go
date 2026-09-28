@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v30 records public API owner-port orchestration.
-	const approvedCollaborationSHA = "c4fe032703a4060bdae0fdd5b3d2db507650db7176bfa4e5cdb3b477217c4e8a"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v49 records MIG contact existence reads through CUS.
+	const approvedCollaborationSHA = "9f6c0afa86326a71d8a8a71f2ef9928a7c50df1a2caa2ac2b9fab881dcc400a2"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -410,6 +410,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/report_service.go":                      {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel"},
 		"../internal/service/report_dimensions.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")"},
 		"../internal/service/report_v2_service.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "s.db.Model(&domain.User", "s.db.Model(&domain.AgentBotInbox", "JOIN conversations", "JOIN inboxes", "JOIN messages", "JOIN labels", "JOIN conversation_labels", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")", "Preload(\"Conversation\")"},
+		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

@@ -61,7 +61,11 @@ type DataImportService struct {
 }
 
 func NewDataImportService(db *gorm.DB) *DataImportService {
-	return &DataImportService{db: db, contactRepo: repository.NewContactRepository(db)}
+	return NewDataImportServiceWithContactOwner(db, repository.NewContactRepository(db))
+}
+
+func NewDataImportServiceWithContactOwner(db *gorm.DB, contacts *repository.ContactRepository) *DataImportService {
+	return &DataImportService{db: db, contactRepo: contacts}
 }
 
 // Prevalidate performs deep static and relational verification of raw import data
@@ -205,9 +209,11 @@ func (s *DataImportService) prevalidateCSV(accountID uint, importType, rawCSV st
 				}
 
 				// Check DB existence
-				var count int64
-				s.db.Model(&domain.Contact{}).Where("account_id = ? AND email = ?", accountID, email).Count(&count)
-				if count > 0 {
+				exists, err := s.contactRepo.EmailExists(accountID, email)
+				if err != nil {
+					return nil, err
+				}
+				if exists {
 					result.Warnings = append(result.Warnings, ValidationWarningItem{
 						Line:       i + 1,
 						Field:      "email",
@@ -329,9 +335,11 @@ func (s *DataImportService) prevalidateJSON(accountID uint, importType, rawJSON 
 					seenEmailsInBatch[email] = i + 1
 				}
 
-				var count int64
-				s.db.Model(&domain.Contact{}).Where("account_id = ? AND email = ?", accountID, email).Count(&count)
-				if count > 0 {
+				exists, err := s.contactRepo.EmailExists(accountID, email)
+				if err != nil {
+					return nil, err
+				}
+				if exists {
 					result.Warnings = append(result.Warnings, ValidationWarningItem{
 						Line:       i + 1,
 						Field:      "email",
@@ -532,9 +540,12 @@ func (s *DataImportService) executeCSVImport(accountID uint, importType, rawCSV 
 			}
 			seenEmails[email] = true
 
-			// Check DB duplicate
-			var existing domain.Contact
-			if err := s.db.Where("account_id = ? AND email = ?", accountID, email).First(&existing).Error; err == nil && existing.ID > 0 {
+			exists, err := s.contactRepo.EmailExists(accountID, email)
+			if err != nil {
+				errorsList = append(errorsList, ErrorRecord{Line: i + 1, Data: rowStr, Reason: fmt.Sprintf("Contact lookup failed: %s", err.Error())})
+				continue
+			}
+			if exists {
 				skippedList = append(skippedList, SkippedRecord{
 					Line:   i + 1,
 					Data:   rowStr,
@@ -645,8 +656,12 @@ func (s *DataImportService) executeJSONImport(accountID uint, importType, rawJSO
 			}
 			seenEmails[email] = true
 
-			var existing domain.Contact
-			if err := s.db.Where("account_id = ? AND email = ?", accountID, email).First(&existing).Error; err == nil && existing.ID > 0 {
+			exists, err := s.contactRepo.EmailExists(accountID, email)
+			if err != nil {
+				errorsList = append(errorsList, ErrorRecord{Line: i + 1, Data: rawStr, Reason: fmt.Sprintf("Contact lookup failed: %s", err.Error())})
+				continue
+			}
+			if exists {
 				skippedList = append(skippedList, SkippedRecord{
 					Line:   i + 1,
 					Data:   rawStr,

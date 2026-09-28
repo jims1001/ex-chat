@@ -195,7 +195,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	authEnterpriseHandler := handler.NewAuthEnterpriseHandler(channelEnterpriseRepo, userRepo, accountRepo, portalRepo, contactRepo, inboxRepo, convRepo, cfg)
 	migrationService := service.NewMigrationService(db)
 	authEnterpriseHandler.SetMigrationService(migrationService)
-	dataImportService := service.NewDataImportService(db)
+	dataImportService := service.NewDataImportServiceWithContactOwner(db, contactRepo)
 	authEnterpriseHandler.SetDataImportService(dataImportService)
 	authHandler.SetEnterpriseRepo(channelEnterpriseRepo)
 	authHandler.SetEmailService(emailService)
