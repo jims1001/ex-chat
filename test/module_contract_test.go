@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v52 records SRH searches through CUS, CON, and MSG.
-	const approvedCollaborationSHA = "0df3818f279ee5eb9556859c12747d82b89d4eaa3fcc09a75685f44d30304aea"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v53 records SRH article search through KB.
+	const approvedCollaborationSHA = "80eee4df04e8d82a7579b3a861b3234bae6241f67867da6ba0536232fd0d6ca5"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -412,7 +412,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/report_v2_service.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "s.db.Model(&domain.User", "s.db.Model(&domain.AgentBotInbox", "JOIN conversations", "JOIN inboxes", "JOIN messages", "JOIN labels", "JOIN conversation_labels", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")", "Preload(\"Conversation\")"},
 		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
-		"../internal/handler/search_handler.go":                      {"h.db.Where(\"account_id = ? AND (name LIKE ? OR email LIKE ? OR phone_number LIKE ?)", "h.db.Where(\"account_id = ? AND content LIKE ?", "h.db.Where(\"account_id = ? AND custom_attributes LIKE ?", "h.db.Where(\"account_id = ? AND (custom_attributes LIKE ? OR status LIKE ?)"},
+		"../internal/handler/search_handler.go":                      {"h.db.Where"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

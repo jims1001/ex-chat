@@ -7,18 +7,17 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type SearchHandler struct {
-	db            *gorm.DB
 	contacts      *repository.ContactRepository
 	conversations *repository.ConversationRepository
 	messages      *repository.MessageRepository
+	articles      *repository.PortalRepository
 }
 
-func NewSearchHandler(db *gorm.DB, contacts *repository.ContactRepository, conversations *repository.ConversationRepository, messages *repository.MessageRepository) *SearchHandler {
-	return &SearchHandler{db: db, contacts: contacts, conversations: conversations, messages: messages}
+func NewSearchHandler(contacts *repository.ContactRepository, conversations *repository.ConversationRepository, messages *repository.MessageRepository, articles *repository.PortalRepository) *SearchHandler {
+	return &SearchHandler{contacts: contacts, conversations: conversations, messages: messages, articles: articles}
 }
 
 func (h *SearchHandler) GlobalSearch(c *gin.Context) {
@@ -55,9 +54,11 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 		return
 	}
 
-	likePattern := "%" + q + "%"
-	var articles []domain.Article
-	_ = h.db.Where("account_id = ? AND (title LIKE ? OR content LIKE ?)", accountID, likePattern, likePattern).Limit(20).Find(&articles).Error
+	articles, err := h.articles.SearchArticlesForGlobal(uint(accountID), q, 20)
+	if err != nil {
+		response.InternalError(c, "Failed to search articles")
+		return
+	}
 
 	response.Success(c, gin.H{
 		"contacts":      contacts,
@@ -122,11 +123,11 @@ func (h *SearchHandler) SearchArticles(c *gin.Context) {
 		return
 	}
 
-	q := c.Query("q")
-	likePattern := "%" + q + "%"
-
-	var articles []domain.Article
-	_ = h.db.Where("account_id = ? AND (title LIKE ? OR content LIKE ?)", accountID, likePattern, likePattern).Limit(50).Find(&articles).Error
+	articles, err := h.articles.SearchArticlesForGlobal(uint(accountID), c.Query("q"), 50)
+	if err != nil {
+		response.InternalError(c, "Failed to search articles")
+		return
+	}
 
 	response.Success(c, articles)
 }

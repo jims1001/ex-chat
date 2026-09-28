@@ -468,6 +468,16 @@
       "replicaEvent": "msg.message.created.v1"
     },
     {
+      "consumer": "SRH",
+      "provider": "KB",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "PortalRepository",
+      "method": "SearchArticlesForGlobal",
+      "use": "read",
+      "contract": "kb.content.get.v1",
+      "replicaEvent": "kb.knowledge.changed.v1"
+    },
+    {
       "consumer": "API",
       "provider": "MSG",
       "file": "internal/handler/email_log_handler.go",

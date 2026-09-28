@@ -96,4 +96,5 @@
 - 已完成并验证：CampaignService 通过 CUS 解析账号范围内的标签 ID、通过 CON 查询会话标签对应联系人，OPS 不再跨 CON/CUS 联表筛选活动受众（E-ARCH-08-v50）。
 - 已完成并验证：CampaignService 通过 CON 按账号、联系人和收件箱查找既有会话，只在明确未找到时创建，OPS 不再直接读取 Conversation（E-ARCH-08-v51）。
 - 已完成并验证：SearchHandler 的全局及专项入口分别通过 CUS/CON/MSG 所有者执行联系人、会话和消息搜索，SRH 不再读取三类外部权威表（E-ARCH-08-v52）。
-- 下一项：SearchHandler 的 KB 文章搜索读取边界。
+- 已完成并验证：SearchHandler 的全局及文章专项入口通过 KB 所有者执行账号范围内的文章搜索，SRH 不再读取 Article（E-ARCH-08-v53）。
+- 下一项：WidgetHandler 的 CON/MSG 消息读取边界。

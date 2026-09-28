@@ -24,7 +24,7 @@
     {"name":"AIC","layer":4,"order":19,"synchronous":["TEN","ENT","BIL","KB","CHN","CON","MSG","TKT","EXT","OPS"],"events":[],"shared":["KB"],"startup":[]},
     {"name":"MIG","layer":4,"order":20,"synchronous":["TEN","CHN","CUS","MED","CON","MSG"],"events":[],"shared":[],"startup":[]},
     {"name":"RPT","layer":4,"order":21,"synchronous":["IAM","TEN","CHN","CUS","CON","MSG","EXT"],"events":["CHN","CUS","CON","MSG","RTE","TKT","QLT","AUT","OPS","AIC","EXT","BIL","MIG"],"shared":[],"startup":[]},
-    {"name":"SRH","layer":4,"order":22,"synchronous":["TEN","CUS","CON","MSG"],"events":["CUS","CON","MSG","TKT","KB"],"shared":[],"startup":[]},
+    {"name":"SRH","layer":4,"order":22,"synchronous":["TEN","CUS","CON","MSG","KB"],"events":["CUS","CON","MSG","TKT","KB"],"shared":[],"startup":[]},
     {"name":"ORC","layer":5,"order":23,"synchronous":["IAM","TEN","ENT","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH"],"events":[],"shared":[],"startup":[]},
     {"name":"API","layer":5,"order":24,"synchronous":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC"],"events":[],"shared":[],"startup":["IAM","TEN"]},
     {"name":"RTM","layer":5,"order":25,"synchronous":["IAM","TEN","CHN","CUS","CON","MSG"],"events":["API","CON","MSG","RTE","TKT","QLT","NTF","AUT","OPS"],"shared":[],"startup":[]},

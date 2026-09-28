@@ -97,7 +97,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
-	t.Run("SRH_search_uses_CUS_CON_MSG_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
+	t.Run("SRH_search_uses_CUS_CON_MSG_KB_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1922,7 +1922,7 @@ func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string
 }
 
 func testSearchHandlerOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
-	srhDB, cusDB, conDB, msgDB := openStore("SRH"), openStore("CUS"), openStore("CON"), openStore("MSG")
+	srhDB, cusDB, conDB, msgDB, kbDB := openStore("SRH"), openStore("CUS"), openStore("CON"), openStore("MSG"), openStore("KB")
 	for _, contact := range []domain.Contact{
 		{AccountID: 1, Name: "needle-contact-one", Email: "one@example.com"},
 		{AccountID: 2, Name: "needle-contact-two", Email: "two@example.com"},
@@ -1947,14 +1947,23 @@ func testSearchHandlerOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 			t.Fatal(err)
 		}
 	}
+	for _, article := range []domain.Article{
+		{AccountID: 1, Title: "needle-article-one", Content: "owner search"},
+		{AccountID: 2, Title: "needle-article-two", Content: "other tenant"},
+	} {
+		if err := kbDB.Create(&article).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	search := handler.NewSearchHandler(srhDB, repository.NewContactRepository(cusDB), repository.NewConversationRepository(conDB), repository.NewMessageRepository(msgDB))
+	search := handler.NewSearchHandler(repository.NewContactRepository(cusDB), repository.NewConversationRepository(conDB), repository.NewMessageRepository(msgDB), repository.NewPortalRepository(kbDB))
 	router.GET("/:account_id/search", search.GlobalSearch)
 	router.GET("/:account_id/search/contacts", search.SearchContacts)
 	router.GET("/:account_id/search/conversations", search.SearchConversations)
 	router.GET("/:account_id/search/messages", search.SearchMessages)
+	router.GET("/:account_id/search/articles", search.SearchArticles)
 	checks := []struct {
 		path string
 		want string
@@ -1964,6 +1973,7 @@ func testSearchHandlerOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 		{"/1/search/contacts?q=needle", "needle-contact-one", "needle-contact-two"},
 		{"/1/search/conversations?q=needle", "needle-conversation-one", "needle-conversation-two"},
 		{"/1/search/messages?q=needle", "needle-message-one", "needle-message-two"},
+		{"/1/search/articles?q=needle", "needle-article-one", "needle-article-two"},
 	}
 	for _, check := range checks {
 		req := httptest.NewRequest(http.MethodGet, check.path, nil)
@@ -1973,7 +1983,7 @@ func testSearchHandlerOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 			t.Fatalf("owner search %s returned code=%d body=%s", check.path, res.Code, res.Body.String())
 		}
 	}
-	for name, model := range map[string]any{"CUS Contact": &domain.Contact{}, "CON Conversation": &domain.Conversation{}, "MSG Message": &domain.Message{}} {
+	for name, model := range map[string]any{"CUS Contact": &domain.Contact{}, "CON Conversation": &domain.Conversation{}, "MSG Message": &domain.Message{}, "KB Article": &domain.Article{}} {
 		if srhDB.Migrator().HasTable(model) {
 			t.Fatalf("SRH store contains %s authority table", name)
 		}

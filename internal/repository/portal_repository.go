@@ -109,6 +109,17 @@ func (r *PortalRepository) ListArticles(portalID uint, categoryID *uint, status 
 	return list, nil
 }
 
+func (r *PortalRepository) SearchArticlesForGlobal(accountID uint, search string, limit int) ([]domain.Article, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	pattern := "%" + search + "%"
+	var articles []domain.Article
+	err := r.db.Where("account_id = ? AND (title LIKE ? OR content LIKE ?)", accountID, pattern, pattern).
+		Limit(limit).Find(&articles).Error
+	return articles, err
+}
+
 func (r *PortalRepository) FindArticleBySlug(portalID uint, slug string) (*domain.Article, error) {
 	var a domain.Article
 	err := r.db.Preload("Category").

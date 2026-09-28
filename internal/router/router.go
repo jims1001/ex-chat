@@ -201,7 +201,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	authHandler.SetEnterpriseRepo(channelEnterpriseRepo)
 	authHandler.SetEmailService(emailService)
 	copilotHandler := handler.NewCopilotHandler(db, convRepo, msgRepo, portalRepo, cannedRepo, ticketRepo)
-	searchHandler := handler.NewSearchHandler(db, contactRepo, convRepo, msgRepo)
+	searchHandler := handler.NewSearchHandler(contactRepo, convRepo, msgRepo, portalRepo)
 	assignmentPolicyHandler := handler.NewAssignmentPolicyHandler(assignmentPolicyRepo, inboxRepo)
 	assignmentPolicyHandler.SetFallbackRepositories(accountRepo, teamRepo)
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
