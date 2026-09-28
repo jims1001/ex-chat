@@ -311,6 +311,15 @@ func (r *AccountRepository) ListMembers(accountID uint) ([]domain.AccountUser, e
 	return members, nil
 }
 
+// ListMemberRecords returns TEN-owned membership and role data without
+// hydrating IAM users. Independent TEN runtimes compose identities through the
+// IAM public query contract.
+func (r *AccountRepository) ListMemberRecords(accountID uint) ([]domain.AccountUser, error) {
+	var members []domain.AccountUser
+	err := r.db.Preload("CustomRole").Where("account_id = ?", accountID).Order("user_id ASC").Find(&members).Error
+	return members, err
+}
+
 func (r *AccountRepository) UpdateMember(member *domain.AccountUser) error {
 	return r.db.Omit("User", "AgentCapacityPolicy").Save(member).Error
 }

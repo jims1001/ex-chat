@@ -41,6 +41,8 @@ func NewContractRegistry(moduleID string) *ContractRegistry {
 	return &ContractRegistry{moduleID: strings.ToUpper(moduleID), commands: map[string]CommandHandler{}, queries: map[string]QueryHandler{}}
 }
 
+func (r *ContractRegistry) Count() int { return len(r.commands) + len(r.queries) }
+
 func (r *ContractRegistry) RegisterCommand(capability string, handler CommandHandler) error {
 	if err := r.validateCapability(capability); err != nil {
 		return err

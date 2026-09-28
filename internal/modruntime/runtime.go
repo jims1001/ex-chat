@@ -31,6 +31,13 @@ type Config struct {
 	AllowedCallers  map[string]bool
 	MaxTimeout      time.Duration
 	MaxRequestBytes int64
+	EnableBusiness  bool
+	Dependencies    map[string]DependencyConfig
+}
+
+type DependencyConfig struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -43,6 +50,18 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		ContractVersion: strings.TrimSpace(getenv("MODULE_CONTRACT_VERSION")),
 		AuthToken:       strings.TrimSpace(getenv("MODULE_AUTH_TOKEN")),
 		AllowedCallers:  parseCallers(getenv("MODULE_ALLOWED_CALLERS")),
+		EnableBusiness:  strings.EqualFold(strings.TrimSpace(getenv("MODULE_ENABLE_BUSINESS_CONTRACTS")), "true"),
+		Dependencies:    map[string]DependencyConfig{},
+	}
+	if raw := strings.TrimSpace(getenv("MODULE_DEPENDENCIES_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.Dependencies); err != nil {
+			return Config{}, errors.New("MODULE_DEPENDENCIES_JSON is invalid")
+		}
+		for module, dependency := range cfg.Dependencies {
+			if module != strings.ToUpper(module) || strings.TrimSpace(dependency.URL) == "" || strings.TrimSpace(dependency.Token) == "" {
+				return Config{}, errors.New("MODULE_DEPENDENCIES_JSON contains an invalid dependency")
+			}
+		}
 	}
 	if cfg.Address == "" {
 		cfg.Address = ":8090"
@@ -177,5 +196,11 @@ func FromEnvironment() (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
-	return Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry(cfg.ModuleID), StartedAt: time.Now().UTC()}, nil
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry(cfg.ModuleID), StartedAt: time.Now().UTC()}
+	if cfg.EnableBusiness {
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			return Runtime{}, err
+		}
+	}
+	return runtime, nil
 }

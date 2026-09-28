@@ -60,7 +60,11 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "iam.identity.get.v1"
+      ],
+      "dependencyStopRecoveryVerified": true
     },
     {
       "module": "TEN",
@@ -88,7 +92,11 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "ten.members.list.v1"
+      ],
+      "dependencyStopRecoveryVerified": true
     },
     {
       "module": "ENT",
@@ -935,5 +943,7 @@
     "requestLimitConfig": "MODULE_MAX_REQUEST_BYTES",
     "errorEnvelope": "foundation.ContractError"
   },
-  "contractTransportImplemented": true
+  "contractTransportImplemented": true,
+  "businessContractConfig": "MODULE_ENABLE_BUSINESS_CONTRACTS",
+  "dependencyConfig": "MODULE_DEPENDENCIES_JSON"
 }
