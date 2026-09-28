@@ -1142,7 +1142,7 @@
       "provider": "CON",
       "file": "internal/handler/widget_handler.go",
       "symbol": "ConversationRepository",
-      "method": "FindWidgetMessageScope",
+      "method": "FindWidgetConversation",
       "use": "read",
       "contract": "con.conversation.get.v1",
       "replicaEvent": "con.conversation.changed.v1"

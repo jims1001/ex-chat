@@ -119,6 +119,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_widget_uses_CHN_CUS_CON_OPS_MSG_owner_contracts", func(t *testing.T) { testWidgetRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_widget_message_read_uses_CON_MSG_owner_queries", func(t *testing.T) { testWidgetMessageReadOwnerBoundary(t, openStore) })
 	t.Run("API_widget_members_use_CHN_IAM_owner_queries", func(t *testing.T) { testWidgetInboxMemberOwnerBoundary(t, openStore) })
+	t.Run("API_widget_conversation_validation_uses_CON_owner", func(t *testing.T) { testWidgetConversationValidationBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1304,15 +1305,15 @@ func testWidgetMessageReadOwnerBoundary(t *testing.T, openStore func(string) *go
 		t.Fatalf("MSG widget message lookup failed: message=%+v err=%v", gotMessage, err)
 	}
 	contactID := uint(31)
-	gotConversation, err := conversations.FindWidgetMessageScope(92, 21, gotMessage.ConversationID, &contactID)
+	gotConversation, err := conversations.FindWidgetConversation(92, 21, gotMessage.ConversationID, &contactID)
 	if err != nil || gotConversation == nil || gotConversation.ID != conversation.ID {
 		t.Fatalf("CON widget scope lookup failed: conversation=%+v err=%v", gotConversation, err)
 	}
 	wrongContactID := uint(32)
-	if got, err := conversations.FindWidgetMessageScope(92, 21, gotMessage.ConversationID, &wrongContactID); err != nil || got != nil {
+	if got, err := conversations.FindWidgetConversation(92, 21, gotMessage.ConversationID, &wrongContactID); err != nil || got != nil {
 		t.Fatalf("CON exposed another visitor conversation: conversation=%+v err=%v", got, err)
 	}
-	if got, err := conversations.FindWidgetMessageScope(92, 22, gotMessage.ConversationID, nil); err != nil || got != nil {
+	if got, err := conversations.FindWidgetConversation(92, 22, gotMessage.ConversationID, nil); err != nil || got != nil {
 		t.Fatalf("CON exposed another inbox conversation: conversation=%+v err=%v", got, err)
 	}
 	if got, err := messages.FindByID(93, message.ID); err != nil || got != nil {
@@ -1363,6 +1364,34 @@ func testWidgetInboxMemberOwnerBoundary(t *testing.T, openStore func(string) *go
 	}
 	if chnDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.Inbox{}) || iamDB.Migrator().HasTable(&domain.InboxMember{}) {
 		t.Fatal("CHN/IAM isolated stores contain a foreign authority table")
+	}
+}
+
+func testWidgetConversationValidationBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB := openStore("CON")
+	conversation := domain.Conversation{AccountID: 95, InboxID: 41, ContactID: 51, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewConversationRepository(conDB)
+	contactID := uint(51)
+	got, err := repo.FindWidgetConversation(95, 41, conversation.ID, &contactID)
+	if err != nil || got == nil || got.ID != conversation.ID {
+		t.Fatalf("CON widget conversation validation failed: conversation=%+v err=%v", got, err)
+	}
+	wrongContactID := uint(52)
+	for name, scope := range map[string]struct {
+		accountID uint
+		inboxID   uint
+		contactID *uint
+	}{
+		"account": {96, 41, &contactID},
+		"inbox":   {95, 42, &contactID},
+		"contact": {95, 41, &wrongContactID},
+	} {
+		if got, err := repo.FindWidgetConversation(scope.accountID, scope.inboxID, conversation.ID, scope.contactID); err != nil || got != nil {
+			t.Fatalf("CON exposed widget conversation across %s boundary: conversation=%+v err=%v", name, got, err)
+		}
 	}
 }
 

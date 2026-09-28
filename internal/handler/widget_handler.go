@@ -28,7 +28,6 @@ import (
 
 // WidgetHandler manages visitor-facing widget endpoints
 type WidgetHandler struct {
-	db          *gorm.DB
 	widgetRepo  *repository.WidgetRepository
 	convRepo    *repository.ConversationRepository
 	contactRepo *repository.ContactRepository
@@ -41,7 +40,6 @@ type WidgetHandler struct {
 
 // NewWidgetHandler creates a new WidgetHandler instance
 func NewWidgetHandler(
-	db *gorm.DB,
 	widgetRepo *repository.WidgetRepository,
 	convRepo *repository.ConversationRepository,
 	contactRepo *repository.ContactRepository,
@@ -50,7 +48,6 @@ func NewWidgetHandler(
 	userRepo *repository.UserRepository,
 ) *WidgetHandler {
 	return &WidgetHandler{
-		db:          db,
 		widgetRepo:  widgetRepo,
 		convRepo:    convRepo,
 		contactRepo: contactRepo,
@@ -535,8 +532,8 @@ func (h *WidgetHandler) ListEvents(c *gin.Context) {
 		if cv, err := strconv.ParseUint(cvStr, 10, 64); err == nil {
 			u := uint(cv)
 			// Verify conversation belongs to this visitor and inbox
-			var conv domain.Conversation
-			if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", u, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+			conv, err := h.convRepo.FindWidgetConversation(inbox.AccountID, inbox.ID, u, contactID)
+			if err != nil || conv == nil {
 				response.NotFound(c, "Conversation not found")
 				return
 			}
@@ -589,8 +586,8 @@ func (h *WidgetHandler) GetLabels(c *gin.Context) {
 	if convStr := c.Query("conversation_id"); convStr != "" {
 		if convID, err := strconv.ParseUint(convStr, 10, 64); err == nil {
 			u := uint(convID)
-			var conv domain.Conversation
-			if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", u, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+			conv, err := h.convRepo.FindWidgetConversation(inbox.AccountID, inbox.ID, u, &contact.ID)
+			if err != nil || conv == nil {
 				response.NotFound(c, "Conversation not found")
 				return
 			}
@@ -647,8 +644,8 @@ func (h *WidgetHandler) AddLabels(c *gin.Context) {
 
 	// If conversation_id is specified, verify it belongs to this visitor and inbox
 	if req.ConversationID != nil && *req.ConversationID > 0 {
-		var conv domain.Conversation
-		if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", *req.ConversationID, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+		conv, err := h.convRepo.FindWidgetConversation(inbox.AccountID, inbox.ID, *req.ConversationID, &contact.ID)
+		if err != nil || conv == nil {
 			response.NotFound(c, "Conversation not found")
 			return
 		}
@@ -704,8 +701,8 @@ func (h *WidgetHandler) RemoveLabels(c *gin.Context) {
 
 	// If conversation_id is specified, verify it belongs to this visitor and inbox
 	if req.ConversationID != nil && *req.ConversationID > 0 {
-		var conv domain.Conversation
-		if err := h.db.Where("id = ? AND account_id = ? AND inbox_id = ? AND contact_id = ?", *req.ConversationID, inbox.AccountID, inbox.ID, contact.ID).First(&conv).Error; err != nil {
+		conv, err := h.convRepo.FindWidgetConversation(inbox.AccountID, inbox.ID, *req.ConversationID, &contact.ID)
+		if err != nil || conv == nil {
 			response.NotFound(c, "Conversation not found")
 			return
 		}
@@ -1370,7 +1367,7 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 		}
 		contactID = &contact.ID
 	}
-	conversation, err := h.convRepo.FindWidgetMessageScope(inbox.AccountID, inbox.ID, msg.ConversationID, contactID)
+	conversation, err := h.convRepo.FindWidgetConversation(inbox.AccountID, inbox.ID, msg.ConversationID, contactID)
 	if err != nil || conversation == nil {
 		response.NotFound(c, "Message not found")
 		return

@@ -99,4 +99,5 @@
 - 已完成并验证：SearchHandler 的全局及文章专项入口通过 KB 所有者执行账号范围内的文章搜索，SRH 不再读取 Article（E-ARCH-08-v53）。
 - 已完成并验证：WidgetHandler 更新消息时通过 MSG 按账号读取消息，并由 CON 校验账号、收件箱及访客会话归属，API 不再联表读取 Message/Conversation（E-ARCH-08-v54）。
 - 已完成并验证：WidgetHandler 通过 CHN 按账号和收件箱读取成员 ID，再由 IAM 批量读取公开用户资料，API 不再联表读取 InboxMember/User（E-ARCH-08-v55）。
-- 下一项：WidgetHandler 的 CON 访客会话校验边界。
+- 已完成并验证：WidgetHandler 的事件及标签入口通过 CON 校验账号、收件箱和访客会话归属，且不再持有数据库句柄（E-ARCH-08-v56）。
+- 下一项：CRMOpsAdvancedHandler 批量分配坐席时的 TEN/IAM 访问边界。
