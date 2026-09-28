@@ -184,6 +184,43 @@ func TestCUSContactQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
 	}
 }
 
+func TestCUSIdentityResolveUsesAccountScopedPriority(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	repo := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil)
+	contacts := []domain.Contact{
+		{AccountID: 91, Name: "Email Match", Email: "match@example.test", Identifier: "identifier-a", PhoneNumber: "+6101", PubsubToken: "secret-a"},
+		{AccountID: 91, Name: "Identifier Match", Email: "other@example.test", Identifier: "identifier-b", PhoneNumber: "+6102"},
+		{AccountID: 92, Name: "Foreign", Email: "match@example.test", Identifier: "identifier-b", PhoneNumber: "+6101"},
+	}
+	for i := range contacts {
+		if err := repo.Create(&contacts[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := businessConfig("CUS")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(accountID uint, filter map[string]any) *httptest.ResponseRecorder {
+		query := foundation.QueryEnvelope{QueryType: "cus.identity.resolve.v1", AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+		return performContractRequest(runtime.Handler(), "/contracts/queries/cus.identity.resolve.v1", query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	response := call(91, map[string]any{"email": "match@example.test", "identifier": "identifier-b"})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Email Match") || strings.Contains(response.Body.String(), "secret-a") {
+		t.Fatalf("priority resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(92, map[string]any{"email": "other@example.test"}); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(91, map[string]any{}); response.Code != http.StatusBadRequest {
+		t.Fatalf("empty resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

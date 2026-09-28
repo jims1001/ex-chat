@@ -147,4 +147,5 @@
 - 已完成并验证：CUS `cus.contact.get.v1` 从所有者库返回账号范围内安全联系人摘要，不返回 PubsubToken 和未请求的自定义属性（E-ARCH-08-v102）。
 - 已完成并验证：CUS `cus.contact.create.v1` 白名单创建联系人，业务、收据和 `cus.contact.created.v1` 事件同事务且重启重放不重复（E-ARCH-08-v103）。
 - 已完成并验证：CUS `cus.contact.update.v1` 强制账号归属和字段白名单，对象版本递增且收据、`cus.contact.changed.v1` 事件原子提交（E-ARCH-08-v104）。
-- 下一项：CUS 联系人身份解析查询。
+- 已完成并验证：CUS `cus.identity.resolve.v1` 在账号内按邮箱、标识、电话及姓名解析联系人，空条件和跨账号查询失败且不泄露令牌（E-ARCH-08-v105）。
+- 下一项：CUS 公司查询与更新合同。

@@ -265,6 +265,26 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterQuery("cus.identity.resolve.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			email, _ := query.Filter["email"].(string)
+			identifier, _ := query.Filter["identifier"].(string)
+			phone, _ := query.Filter["phone_number"].(string)
+			name, _ := query.Filter["name"].(string)
+			email, identifier, phone, name = strings.TrimSpace(email), strings.TrimSpace(identifier), strings.TrimSpace(phone), strings.TrimSpace(name)
+			if email == "" && identifier == "" && phone == "" && name == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact identity is required"}
+			}
+			contact, err := contacts.FindImportMatch(query.AccountID, email, identifier, phone, name)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact identity store is unavailable"}
+			}
+			if contact == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact identity was not found"}
+			}
+			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterCommand("cus.contact.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
