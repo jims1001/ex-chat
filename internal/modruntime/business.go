@@ -38,6 +38,14 @@ type memberView struct {
 	Identity     *identityView `json:"identity"`
 }
 
+type accountView struct {
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	Locale   string `json:"locale"`
+	Status   string `json:"status"`
+	Timezone string `json:"timezone"`
+}
+
 type inboxView struct {
 	ID                  uint   `json:"id"`
 	AccountID           uint   `json:"account_id"`
@@ -92,6 +100,18 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}
 		accounts := repository.NewAccountRepositoryWithUserPort(r.DB, nil)
 		client := newModuleClient("TEN", dependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		if err := r.Contracts.RegisterQuery("ten.account.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			account, err := accounts.FindByID(query.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "account store is unavailable"}
+			}
+			if account == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "account was not found"}
+			}
+			return accountFromModel(account), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ten.members.list.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
 			members, err := accounts.ListMemberRecords(query.AccountID)
 			if err != nil {
@@ -142,7 +162,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		return r.Contracts.RegisterEvent("iam.identity.changed.v1", func(context.Context, foundation.EventEnvelope) error { return nil })
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
-		return r.Contracts.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		if err := r.Contracts.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, err := uintFilter(query.Filter, "id")
 			if err != nil {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox id is required"}
@@ -155,10 +175,42 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
 			}
 			return inboxFromModel(inbox), nil
+		}); err != nil {
+			return err
+		}
+		dependency, ok := r.Config.Dependencies["TEN"]
+		if !ok {
+			return nil
+		}
+		client := newModuleClient("CHN", dependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		return r.Contracts.RegisterCommand("chn.inbox.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox target must match account"}
+			}
+			if _, err := client.getAccount(ctx, command.AccountID, command.Actor); err != nil {
+				return nil, err
+			}
+			name, _ := command.Input["name"].(string)
+			if strings.TrimSpace(name) == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox name is required"}
+			}
+			channelType, _ := command.Input["channel_type"].(string)
+			if channelType == "" {
+				channelType = "Channel::WebWidget"
+			}
+			inbox := &domain.Inbox{AccountID: command.AccountID, Name: strings.TrimSpace(name), ChannelType: channelType, WebsiteToken: foundation.GenerateUUID(), Timezone: "UTC", GreetingEnabled: true}
+			if err := repository.NewInboxRepositoryWithAccountPort(Transaction(ctx, r.DB), nil).Create(inbox); err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "inbox could not be created"}
+			}
+			return inboxFromModel(inbox), nil
 		})
 	default:
 		return fmt.Errorf("business contracts are not implemented for %s", r.Config.ModuleID)
 	}
+}
+
+func accountFromModel(account *domain.Account) *accountView {
+	return &accountView{ID: account.ID, Name: account.Name, Locale: account.Locale, Status: account.Status, Timezone: account.Timezone}
 }
 
 func inboxFromModel(inbox *domain.Inbox) *inboxView {
@@ -243,6 +295,39 @@ func (c *moduleClient) getIdentity(ctx context.Context, parent foundation.QueryE
 		return nil, &ContractFailure{Type: "resource_not_found", Message: "identity was not found"}
 	}
 	return identity, nil
+}
+
+func (c *moduleClient) getAccount(ctx context.Context, accountID uint, actor foundation.ContractActor) (*accountView, error) {
+	correlationID := foundation.GenerateUUID()
+	envelope := foundation.QueryEnvelope{QueryType: "ten.account.get.v1", AccountID: accountID, Actor: actor, Filter: map[string]any{}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name", "locale", "status", "timezone"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	body, _ := json.Marshal(envelope)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/contracts/queries/ten.account.get.v1", bytes.NewReader(body))
+	if err != nil {
+		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN request could not be created"}
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set(headerCaller, c.caller)
+	request.Header.Set(headerContractVersion, c.version)
+	request.Header.Set(headerCorrelationID, correlationID)
+	response, err := c.client.Do(request)
+	if err != nil {
+		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN dependency is unavailable"}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var failure foundation.ContractError
+		if json.NewDecoder(response.Body).Decode(&failure) == nil && failure.Validate() == nil {
+			return nil, &ContractFailure{Type: failure.Type, Message: failure.Message, RetryAfterMS: failure.RetryAfterMS, Details: failure.Details}
+		}
+		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN returned an invalid response"}
+	}
+	var payload struct {
+		Data accountView `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || payload.Data.ID != accountID {
+		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN returned an invalid account"}
+	}
+	return &payload.Data, nil
 }
 
 func (c *moduleClient) getIdentities(ctx context.Context, parent foundation.QueryEnvelope, userIDs []uint) (map[uint]*identityView, error) {

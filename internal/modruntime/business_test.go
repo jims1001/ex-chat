@@ -149,6 +149,77 @@ func TestCHNInboxQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
 	}
 }
 
+func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
+	iamDB := newModuleTestDB(t, "IAM")
+	iamCfg := businessConfig("IAM")
+	iamRuntime := Runtime{Config: iamCfg, DB: iamDB, Contracts: NewContractRegistry("IAM")}
+	if err := iamRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	iamServer, iamAddress := startHTTPServer(t, "127.0.0.1:0", iamRuntime.Handler())
+	defer iamServer.Shutdown(context.Background())
+
+	tenDB := newModuleTestDB(t, "TEN")
+	if err := tenDB.Create(&domain.Account{ID: 91, Name: "Tenant", Locale: "en", Status: "active", Timezone: "UTC"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["CHN"] = true
+	tenCfg.Dependencies["IAM"] = DependencyConfig{URL: "http://" + iamAddress, Token: iamCfg.AuthToken}
+	tenRuntime := Runtime{Config: tenCfg, DB: tenDB, Contracts: NewContractRegistry("TEN")}
+	if err := tenRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", tenRuntime.Handler())
+
+	chnDB := newModuleTestDB(t, "CHN")
+	chnCfg := businessConfig("CHN")
+	chnCfg.Dependencies["TEN"] = DependencyConfig{URL: "http://" + tenAddress, Token: tenCfg.AuthToken}
+	newCHNRuntime := func() Runtime {
+		runtime := Runtime{Config: chnCfg, DB: chnDB, Contracts: NewContractRegistry("CHN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "create-inbox-1", CommandType: "chn.inbox.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"name": "Support", "channel_type": "Channel::WebWidget"}, IdempotencyKey: "create-inbox-91-support", CorrelationID: "correlation-1", CausationID: "account-91", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "chn.inbox.get.v1"}}
+	call := func(runtime Runtime, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/chn.inbox.create.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+chnCfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	first := call(newCHNRuntime(), command)
+	if first.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", first.Code, first.Body.String())
+	}
+	replay := call(newCHNRuntime(), command)
+	if replay.Code != http.StatusOK || !strings.Contains(replay.Body.String(), `"id":1`) {
+		t.Fatalf("replay mismatch first=%s replay=%s", first.Body.String(), replay.Body.String())
+	}
+	var inboxes, receipts int64
+	_ = chnDB.Model(&domain.Inbox{}).Where("account_id = ?", 91).Count(&inboxes).Error
+	_ = chnDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if inboxes != 1 || receipts != 1 {
+		t.Fatalf("inboxes=%d receipts=%d", inboxes, receipts)
+	}
+
+	if err := tenServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	missing := command
+	missing.CommandID, missing.IdempotencyKey, missing.CorrelationID = "create-inbox-2", "create-inbox-92", "correlation-1"
+	missing.AccountID, missing.Target.ID = 92, "92"
+	failed := call(newCHNRuntime(), missing)
+	if failed.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stopped TEN status=%d body=%s", failed.Code, failed.Body.String())
+	}
+	_ = chnDB.Model(&domain.Inbox{}).Count(&inboxes).Error
+	if inboxes != 1 {
+		t.Fatalf("failed dependency left inbox count=%d", inboxes)
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

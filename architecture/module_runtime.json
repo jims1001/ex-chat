@@ -98,7 +98,8 @@
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
-        "ten.members.list.v1"
+        "ten.members.list.v1",
+        "ten.account.get.v1"
       ],
       "dependencyStopRecoveryVerified": true,
       "implementedIndependentCommands": [
@@ -196,7 +197,11 @@
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "chn.inbox.get.v1"
-      ]
+      ],
+      "implementedIndependentCommands": [
+        "chn.inbox.create.v1"
+      ],
+      "dependencyStopRecoveryVerified": true
     },
     {
       "module": "CUS",
