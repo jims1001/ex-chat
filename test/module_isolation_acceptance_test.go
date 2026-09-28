@@ -131,6 +131,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_contact_notes_use_CUS_IAM_owner_queries", func(t *testing.T) { testAdvancedContactNoteOwnerBoundary(t, openStore) })
 	t.Run("ORC_legacy_capacity_uses_RTE_owner_queries", func(t *testing.T) { testAdvancedLegacyCapacityOwnerBoundary(t, openStore) })
 	t.Run("ORC_integrations_use_EXT_owner_queries", func(t *testing.T) { testAdvancedIntegrationOwnerBoundary(t, openStore) })
+	t.Run("ORC_shopify_uses_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedShopifyContactOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1797,6 +1798,48 @@ func testAdvancedIntegrationOwnerBoundary(t *testing.T, openStore func(string) *
 	}
 	if extDB.Migrator().HasTable(&domain.Conversation{}) || extDB.Migrator().HasTable(&domain.Contact{}) {
 		t.Fatal("EXT store contains CON/CUS authority table")
+	}
+}
+
+func testAdvancedShopifyContactOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, cusDB := openStore("CON"), openStore("CUS")
+	contacts := repository.NewContactRepository(cusDB)
+	conversations := repository.NewConversationRepository(conDB)
+	contact := domain.Contact{AccountID: 721, Name: "Shopify Contact", Email: "shopify-owner@example.test"}
+	foreignContact := domain.Contact{AccountID: 722, Name: "Foreign Contact", Email: "foreign@example.test"}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&foreignContact).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 721, ContactID: contact.ID, InboxID: 31, Status: domain.ConversationStatusOpen}
+	foreignConversation := domain.Conversation{AccountID: 722, ContactID: foreignContact.ID, InboxID: 32, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&foreignConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	ownedConversation, err := conversations.FindSummaryByID(721, conversation.ID)
+	if err != nil || ownedConversation == nil {
+		t.Fatalf("CON Shopify conversation lookup failed: conversation=%+v err=%v", ownedConversation, err)
+	}
+	ownedContact, err := contacts.FindSummaryByID(721, ownedConversation.ContactID)
+	if err != nil || ownedContact == nil || ownedContact.Email != contact.Email {
+		t.Fatalf("CUS Shopify contact lookup failed: contact=%+v err=%v", ownedContact, err)
+	}
+	for _, scope := range [][2]uint{{722, conversation.ID}, {721, foreignConversation.ID}} {
+		found, err := conversations.FindSummaryByID(scope[0], scope[1])
+		if !errors.Is(err, gorm.ErrRecordNotFound) || found != nil {
+			t.Fatalf("CON exposed Shopify conversation outside account scope %v: conversation=%+v err=%v", scope, found, err)
+		}
+	}
+	if found, err := contacts.FindSummaryByID(721, foreignContact.ID); err != nil || found != nil {
+		t.Fatalf("CUS exposed Shopify contact across accounts: contact=%+v err=%v", found, err)
+	}
+	if conDB.Migrator().HasTable(&domain.Contact{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CON/CUS Shopify stores contain a foreign authority table")
 	}
 }
 

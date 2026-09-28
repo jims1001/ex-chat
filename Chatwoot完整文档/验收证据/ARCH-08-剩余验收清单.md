@@ -111,4 +111,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler 联系人备注通过 CUS 执行归属及增删改查，并由 IAM 批量组合作者，ORC 不再直接查询 Contact/ContactNote 或预加载 User（E-ARCH-08-v65）。
 - 已完成并验证：CRMOpsAdvancedHandler 旧版坐席容量策略通过 RTE AgentCapacityPolicyRepository 保存、更新和按账号列表，ORC 不再直接读写 CapacityPolicy（E-ARCH-08-v66）。
 - 已完成并验证：CRMOpsAdvancedHandler 集成目录、Shopify 和 Dialogflow 配置通过 EXT IntegrationRepository 按账号读取，ORC 不再直接查询 IntegrationInstallation（E-ARCH-08-v67）。
-- 下一项：CRMOpsAdvancedHandler.ShopifyOrders 的 CON/CUS 会话联系人读取边界。
+- 已完成并验证：CRMOpsAdvancedHandler.ShopifyOrders 通过 CON 获取账号内会话摘要、通过 CUS 获取联系人邮箱，ORC 不再预加载 Conversation.Contact（E-ARCH-08-v68）。
+- 下一项：CRMOpsAdvancedHandler.DialogflowProcess 的 OPS CannedResponse 读取边界。

@@ -135,6 +135,10 @@ func (h *AdvancedHandler) SetIntegrationRepo(repo *repository.IntegrationReposit
 	h.integrationRepo = repo
 }
 
+func (h *AdvancedHandler) SetContactRepo(repo *repository.ContactRepository) {
+	h.contactRepo = repo
+}
+
 func (h *AdvancedHandler) SetMessageRepo(repo *repository.MessageRepository) {
 	h.messageRepo = repo
 }
@@ -2207,10 +2211,19 @@ func (h *AdvancedHandler) ShopifyOrders(c *gin.Context) {
 	// If email is empty but conversation_id is provided, resolve customer email from conversation
 	if email == "" && convIDStr != "" {
 		if convID, err := strconv.ParseUint(convIDStr, 10, 64); err == nil {
-			var conv domain.Conversation
-			if err := h.db.Preload("Contact").Where("account_id = ? AND id = ?", accID, convID).First(&conv).Error; err == nil {
-				if conv.Contact != nil && conv.Contact.Email != "" {
-					email = conv.Contact.Email
+			conv, err := h.convRepo.FindSummaryByID(accID, uint(convID))
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				response.InternalError(c, err.Error())
+				return
+			}
+			if conv != nil {
+				contact, err := h.contactRepo.FindSummaryByID(accID, conv.ContactID)
+				if err != nil {
+					response.InternalError(c, err.Error())
+					return
+				}
+				if contact != nil && contact.Email != "" {
+					email = contact.Email
 				}
 			}
 		}

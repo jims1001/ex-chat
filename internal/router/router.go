@@ -195,6 +195,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	advancedHandler.SetTeamRepo(teamRepo)
 	advancedHandler.SetCapacityPolicyRepo(agentCapacityPolicyRepo)
 	advancedHandler.SetIntegrationRepo(integrationRepo)
+	advancedHandler.SetContactRepo(contactRepo)
 	advancedHandler.SetMessageRepo(msgRepo)
 	if options.AdvancedHTTPClient != nil {
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)

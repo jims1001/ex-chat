@@ -3299,6 +3299,26 @@
     },
     {
       "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CUS",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "ContactRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "ORC",
       "provider": "EXT",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "IntegrationRepository",
