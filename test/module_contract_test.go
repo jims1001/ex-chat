@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v79 records Copilot order reads through BIL.
-	const approvedCollaborationSHA = "aec9f71550038e4793c60d98e38d6eee612852b5faea7e964099c1844d93ed2a"
+	// ARCH-04 remains REOPENED; the next ARCH-08 evidence records custom tool order reads through BIL.
+	const approvedCollaborationSHA = "166ba30f70139538c3036687c042874f82118023858b74fb8be9dbf89b504c66"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -414,6 +414,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/email_service.go":                       {"var branded domain.BrandedEmailLayout", "s.db.Where(\"account_id = ?\", conv.AccountID).First(&branded)"},
 		"../internal/service/migration_service.go":                   {"s.db", "query := s.db.Where(\"account_id = ?\", accountID)", "s.db.Where(\"account_id = ? AND email = ?\", accountID, item.ContactEmail)", "s.db.Where(\"account_id = ? AND identifier = ?\", accountID, item.ContactIdentifier)"},
 		"../internal/handler/copilot_handler.go":                     {"h.db.Where(\"account_id = ? AND (order_id = ? OR tracking_number = ?)\"", "h.db.Where(\"account_id = ? AND order_id = ?\"", "h.db.Where(\"account_id = ? AND (tracking_number = ? OR order_id = ?)\""},
+		"../internal/handler/ai_custom_tool_handler.go":              {"h.db.Where(\"account_id = ? AND (order_id = ? OR tracking_number = ?)\"", "h.db.Where(\"account_id = ? AND order_id = ?\"", "h.db.Where(\"account_id = ? AND (tracking_number = ? OR order_id = ?)\""},
 		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},

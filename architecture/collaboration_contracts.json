@@ -537,6 +537,16 @@
     {
       "consumer": "AIC",
       "provider": "BIL",
+      "file": "internal/handler/ai_custom_tool_handler.go",
+      "symbol": "OrderRepository",
+      "method": "FindForTool",
+      "use": "read",
+      "contract": "bil.order.get.v1",
+      "replicaEvent": "bil.order.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "BIL",
       "file": "internal/handler/copilot_handler.go",
       "symbol": "OrderRepository",
       "method": "Update",

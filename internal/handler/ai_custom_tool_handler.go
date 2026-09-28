@@ -703,9 +703,11 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 			return nil, fmt.Errorf("order_id parameter is required")
 		}
 
-		var order domain.Order
-		err := h.db.Where("account_id = ? AND (order_id = ? OR tracking_number = ?)", accountID, orderID, orderID).First(&order).Error
+		order, err := h.orderRepo.FindForTool(accountID, orderID, orderID)
 		if err != nil {
+			return nil, fmt.Errorf("failed to query order: %w", err)
+		}
+		if order == nil {
 			return nil, fmt.Errorf("order '%s' not found in database", orderID)
 		}
 
@@ -751,9 +753,11 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 			return nil, fmt.Errorf("order_id and new_address parameters are required")
 		}
 
-		var order domain.Order
-		err := h.db.Where("account_id = ? AND order_id = ?", accountID, orderID).First(&order).Error
+		order, err := h.orderRepo.FindForTool(accountID, orderID, "")
 		if err != nil {
+			return nil, fmt.Errorf("failed to query order: %w", err)
+		}
+		if order == nil {
 			return nil, fmt.Errorf("cannot update address: order '%s' not found in database", orderID)
 		}
 
@@ -765,7 +769,7 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 		if convID != nil && *convID > 0 {
 			order.ConversationID = convID
 		}
-		if saveErr := h.orderRepo.Update(accountID, &order); saveErr != nil {
+		if saveErr := h.orderRepo.Update(accountID, order); saveErr != nil {
 			return nil, fmt.Errorf("failed to update order in database: %w", saveErr)
 		}
 
@@ -857,9 +861,11 @@ func (h *AICustomToolHandler) executeInternalTool(accountID uint, userID uint, c
 			return nil, fmt.Errorf("tracking_number or order_id parameter is required for logistics lookup")
 		}
 
-		var order domain.Order
-		err := h.db.Where("account_id = ? AND (tracking_number = ? OR order_id = ?)", accountID, trackingNo, orderID).First(&order).Error
+		order, err := h.orderRepo.FindForTool(accountID, orderID, trackingNo)
 		if err != nil {
+			return nil, fmt.Errorf("failed to query logistics: %w", err)
+		}
+		if order == nil {
 			return nil, fmt.Errorf("logistics record not found for tracking_number='%s' or order_id='%s'", trackingNo, orderID)
 		}
 
