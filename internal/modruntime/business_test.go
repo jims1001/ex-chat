@@ -110,6 +110,45 @@ func TestTENMembersContractUsesIndependentIAMRuntimeAndRecovers(t *testing.T) {
 	assertMembers(http.StatusOK)
 }
 
+func TestCHNInboxQueryRunsFromOwnerDatabaseOnly(t *testing.T) {
+	db := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "Support", ChannelType: "Channel::WebWidget", WebsiteToken: "private-token", HMACToken: "private-hmac", ProviderConfig: `{"secret":"hidden"}`, GreetingMessage: "Hello", GreetingEnabled: true, Timezone: "Australia/Sydney"}
+	if err := repository.NewInboxRepositoryWithAccountPort(db, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CHN")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CHN")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	query := foundation.QueryEnvelope{QueryType: "chn.inbox.get.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: map[string]any{"id": inbox.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name", "channel_type"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	response := performContractRequest(runtime.Handler(), "/contracts/queries/chn.inbox.get.v1", query, func(request *http.Request) {
+		request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+		request.Header.Set(headerCaller, "API")
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("inbox query status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Support") || strings.Contains(body, "private-token") || strings.Contains(body, "private-hmac") || strings.Contains(body, "hidden") {
+		t.Fatalf("inbox public view is unsafe or incomplete: %s", body)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Conversation{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("CHN runtime created foreign table %T", foreign)
+		}
+	}
+
+	query.AccountID = 92
+	response = performContractRequest(runtime.Handler(), "/contracts/queries/chn.inbox.get.v1", query, func(request *http.Request) {
+		request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+		request.Header.Set(headerCaller, "API")
+	})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account inbox query status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	slowRegistry := NewContractRegistry("IAM")
 	if err := slowRegistry.RegisterQuery("iam.identity.get.v1", func(ctx context.Context, _ foundation.QueryEnvelope) (any, error) {

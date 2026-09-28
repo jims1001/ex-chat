@@ -38,6 +38,21 @@ type memberView struct {
 	Identity     *identityView `json:"identity"`
 }
 
+type inboxView struct {
+	ID                  uint   `json:"id"`
+	AccountID           uint   `json:"account_id"`
+	Name                string `json:"name"`
+	ChannelType         string `json:"channel_type"`
+	AvatarURL           string `json:"avatar_url"`
+	GreetingMessage     string `json:"greeting_message"`
+	GreetingEnabled     bool   `json:"greeting_enabled"`
+	WorkingHoursEnabled bool   `json:"working_hours_enabled"`
+	OutOfOfficeMessage  string `json:"out_of_office_message"`
+	Timezone            string `json:"timezone"`
+	WorkingHours        string `json:"working_hours"`
+	CSATSurveyEnabled   bool   `json:"csat_survey_enabled"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -125,9 +140,29 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return err
 		}
 		return r.Contracts.RegisterEvent("iam.identity.changed.v1", func(context.Context, foundation.EventEnvelope) error { return nil })
+	case "CHN":
+		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
+		return r.Contracts.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox id is required"}
+			}
+			inbox, err := inboxes.FindSummaryByID(query.AccountID, id)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox store is unavailable"}
+			}
+			if inbox == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+			}
+			return inboxFromModel(inbox), nil
+		})
 	default:
 		return fmt.Errorf("business contracts are not implemented for %s", r.Config.ModuleID)
 	}
+}
+
+func inboxFromModel(inbox *domain.Inbox) *inboxView {
+	return &inboxView{ID: inbox.ID, AccountID: inbox.AccountID, Name: inbox.Name, ChannelType: inbox.ChannelType, AvatarURL: inbox.AvatarURL, GreetingMessage: inbox.GreetingMessage, GreetingEnabled: inbox.GreetingEnabled, WorkingHoursEnabled: inbox.WorkingHoursEnabled, OutOfOfficeMessage: inbox.OutOfOfficeMessage, Timezone: inbox.Timezone, WorkingHours: inbox.WorkingHours, CSATSurveyEnabled: inbox.CSATSurveyEnabled}
 }
 
 func identityFromUser(user *domain.User) *identityView {

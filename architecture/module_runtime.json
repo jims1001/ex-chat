@@ -193,7 +193,10 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "chn.inbox.get.v1"
+      ]
     },
     {
       "module": "CUS",
