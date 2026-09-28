@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
+	"gorm.io/gorm"
 )
 
 const (
@@ -35,6 +36,7 @@ type ContractRegistry struct {
 	moduleID string
 	commands map[string]CommandHandler
 	queries  map[string]QueryHandler
+	receipts *CommandReceiptStore
 }
 
 func NewContractRegistry(moduleID string) *ContractRegistry {
@@ -42,6 +44,10 @@ func NewContractRegistry(moduleID string) *ContractRegistry {
 }
 
 func (r *ContractRegistry) Count() int { return len(r.commands) + len(r.queries) }
+
+func (r *ContractRegistry) UseCommandReceipts(db *gorm.DB) {
+	r.receipts = NewCommandReceiptStore(db, r.moduleID)
+}
 
 func (r *ContractRegistry) RegisterCommand(capability string, handler CommandHandler) error {
 	if err := r.validateCapability(capability); err != nil {
@@ -136,7 +142,12 @@ func (r *ContractRegistry) handleCommand(w http.ResponseWriter, request *http.Re
 	if timeout > cfg.MaxTimeout {
 		timeout = cfg.MaxTimeout
 	}
-	invoke(w, request, timeout, correlationID, func(ctx context.Context) (any, error) { return handler(ctx, envelope) }, fail)
+	invoke(w, request, timeout, correlationID, func(ctx context.Context) (any, error) {
+		if r.receipts == nil {
+			return nil, &ContractFailure{Type: "dependency_unavailable", Message: "command receipt store is unavailable"}
+		}
+		return r.receipts.Execute(ctx, envelope, func(txContext context.Context) (any, error) { return handler(txContext, envelope) })
+	}, fail)
 }
 
 func (r *ContractRegistry) handleQuery(w http.ResponseWriter, request *http.Request, capability, correlationID string, cfg Config, fail func(int, *ContractFailure)) {

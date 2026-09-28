@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,59 @@ func TestTENMembersContractBoundsIAMTimeout(t *testing.T) {
 	}
 	if time.Since(started) > 500*time.Millisecond {
 		t.Fatalf("dependency timeout was not bounded: %s", time.Since(started))
+	}
+}
+
+func TestTENMembershipCommandPersistsIdempotencyAcrossRuntimeRestart(t *testing.T) {
+	iamDB := newModuleTestDB(t, "IAM")
+	user := domain.User{Name: "Agent", Email: "command-agent@example.test", PasswordHash: "secret", Role: domain.RoleAgent}
+	if err := repository.NewUserRepository(iamDB).Create(&user); err != nil {
+		t.Fatal(err)
+	}
+	iamConfig := businessConfig("IAM")
+	iamRuntime := Runtime{Config: iamConfig, DB: iamDB, Contracts: NewContractRegistry("IAM")}
+	if err := iamRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	iamServer, address := startHTTPServer(t, "127.0.0.1:0", iamRuntime.Handler())
+	defer iamServer.Shutdown(context.Background())
+
+	tenDB := newModuleTestDB(t, "TEN")
+	if err := tenDB.Create(&domain.Account{ID: 91, Name: "Tenant"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	tenConfig := businessConfig("TEN")
+	tenConfig.Dependencies["IAM"] = DependencyConfig{URL: "http://" + address, Token: iamConfig.AuthToken}
+	newTENRuntime := func() Runtime {
+		runtime := Runtime{Config: tenConfig, DB: tenDB, Contracts: NewContractRegistry("TEN")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "command-add-1", CommandType: "ten.membership.add.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"user_id": user.ID, "role": domain.RoleAgent}, IdempotencyKey: "membership-91-1", CorrelationID: "correlation-1", CausationID: "cause-1", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ten.members.list.v1"}}
+	call := func(runtime Runtime, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/ten.membership.add.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+tenConfig.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	first := call(newTENRuntime(), command)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first command status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := call(newTENRuntime(), command)
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), user.Email) {
+		t.Fatalf("restart replay mismatch first=%s second=%s", first.Body.String(), second.Body.String())
+	}
+	var count int64
+	if err := tenDB.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", 91, user.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("membership count=%d err=%v", count, err)
+	}
+	command.Input["role"] = domain.RoleAdministrator
+	conflict := call(newTENRuntime(), command)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("changed replay status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
 }
 

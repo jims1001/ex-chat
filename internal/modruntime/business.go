@@ -66,7 +66,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}
 		accounts := repository.NewAccountRepositoryWithUserPort(r.DB, nil)
 		client := newModuleClient("TEN", dependency, r.Config.ContractVersion, r.Config.MaxTimeout)
-		return r.Contracts.RegisterQuery("ten.members.list.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
+		if err := r.Contracts.RegisterQuery("ten.members.list.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
 			members, err := accounts.ListMemberRecords(query.AccountID)
 			if err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "membership store is unavailable"}
@@ -80,6 +80,28 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				result = append(result, memberView{ID: member.ID, AccountID: member.AccountID, UserID: member.UserID, Role: member.Role, Availability: member.Availability, Identity: identity})
 			}
 			return result, nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("ten.membership.add.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "membership target must match account"}
+			}
+			userID, err := uintFilter(command.Input, "user_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "membership user_id is required"}
+			}
+			identity, err := client.getIdentity(ctx, foundation.QueryEnvelope{AccountID: command.AccountID, Actor: command.Actor, Consistency: "strong"}, userID)
+			if err != nil {
+				return nil, err
+			}
+			role, _ := command.Input["role"].(string)
+			txAccounts := repository.NewAccountRepositoryWithUserPort(Transaction(ctx, r.DB), nil)
+			member, err := txAccounts.CreateMemberRecord(command.AccountID, userID, role)
+			if err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "membership could not be created"}
+			}
+			return memberView{ID: member.ID, AccountID: member.AccountID, UserID: member.UserID, Role: member.Role, Availability: member.Availability, Identity: identity}, nil
 		})
 	default:
 		return fmt.Errorf("business contracts are not implemented for %s", r.Config.ModuleID)

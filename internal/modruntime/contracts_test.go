@@ -74,6 +74,7 @@ func TestContractTransportAuthenticatesVersionsAndDispatchesOwnedCapability(t *t
 
 func TestContractTransportValidatesEnvelopeAndBoundsTimeout(t *testing.T) {
 	registry := NewContractRegistry("IAM")
+	registry.UseCommandReceipts(newModuleTestDB(t, "IAM"))
 	if err := registry.RegisterCommand("iam.user.manage.v1", func(ctx context.Context, _ foundation.CommandEnvelope) (any, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()

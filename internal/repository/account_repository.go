@@ -320,6 +320,26 @@ func (r *AccountRepository) ListMemberRecords(accountID uint) ([]domain.AccountU
 	return members, err
 }
 
+// CreateMemberRecord persists only TEN-owned membership data. IAM identity
+// validation must be completed through the IAM contract before this method.
+func (r *AccountRepository) CreateMemberRecord(accountID, userID uint, role string) (*domain.AccountUser, error) {
+	account, err := r.FindByID(accountID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if role == "" {
+		role = domain.RoleAgent
+	}
+	member := &domain.AccountUser{AccountID: accountID, UserID: userID, Role: role, Availability: domain.AvailabilityOnline}
+	if err := r.db.Create(member).Error; err != nil {
+		return nil, err
+	}
+	return member, nil
+}
+
 func (r *AccountRepository) UpdateMember(member *domain.AccountUser) error {
 	return r.db.Omit("User", "AgentCapacityPolicy").Save(member).Error
 }

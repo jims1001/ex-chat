@@ -96,7 +96,10 @@
       "implementedIndependentQueries": [
         "ten.members.list.v1"
       ],
-      "dependencyStopRecoveryVerified": true
+      "dependencyStopRecoveryVerified": true,
+      "implementedIndependentCommands": [
+        "ten.membership.add.v1"
+      ]
     },
     {
       "module": "ENT",
@@ -945,5 +948,11 @@
   },
   "contractTransportImplemented": true,
   "businessContractConfig": "MODULE_ENABLE_BUSINESS_CONTRACTS",
-  "dependencyConfig": "MODULE_DEPENDENCIES_JSON"
+  "dependencyConfig": "MODULE_DEPENDENCIES_JSON",
+  "commandIdempotency": {
+    "store": "LocalChangeJournal in owner database",
+    "atomicWithBusinessWrite": true,
+    "replayAfterRestart": true,
+    "payloadConflictRejected": true
+  }
 }

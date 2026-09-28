@@ -165,6 +165,9 @@ func (r Runtime) Readiness() error {
 }
 
 func (r Runtime) Handler() http.Handler {
+	if r.Contracts != nil && r.DB != nil {
+		r.Contracts.UseCommandReceipts(r.DB)
+	}
 	mux := http.NewServeMux()
 	write := func(w http.ResponseWriter, status int, payload any) {
 		w.Header().Set("Content-Type", "application/json")
