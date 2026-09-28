@@ -254,20 +254,22 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-label-manage",
+      "acceptanceStatus": "partial-account-anonymize",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "cus.contact.get.v1",
         "cus.identity.resolve.v1",
         "cus.company.get.v1",
-        "cus.label.get.v1"
+        "cus.label.get.v1",
+        "cus.account_deletion_status.get.v1"
       ],
       "implementedIndependentCommands": [
         "cus.contact.create.v1",
         "cus.contact.update.v1",
         "cus.company.update.v1",
-        "cus.label.manage.v1"
+        "cus.label.manage.v1",
+        "cus.account_contacts.anonymize.v1"
       ],
       "implementedIndependentEvents": [
         "cus.contact.created.v1",

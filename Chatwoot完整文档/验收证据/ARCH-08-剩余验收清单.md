@@ -151,4 +151,5 @@
 - 已完成并验证：CUS `cus.company.get.v1` 按账号读取公司安全摘要与本地联系人计数，不返回自定义和内部附加属性（E-ARCH-08-v106）。
 - 已完成并验证：CUS `cus.company.update.v1` 显式创建/更新公司，拒绝跨账号与非法属性，业务、收据和 `cus.company.changed.v1` 事件同事务（E-ARCH-08-v107）。
 - 已完成并验证：CUS `cus.label.get.v1` 与 `cus.label.manage.v1` 支持账号范围查询、显式创建/更新和 `cus.label.changed.v1` 原子事件（E-ARCH-08-v108）。
+- 已完成并验证：CUS `cus.account_contacts.anonymize.v1` 清除账号联系人 PII、身份映射、标签和备注；删除状态查询给出残留计数且不影响其他账号（E-ARCH-08-v109）。
 - 下一项：CUS 联系人合并命令的跨所有者投影重分配。

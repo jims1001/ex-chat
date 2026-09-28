@@ -355,6 +355,71 @@ func TestCUSLabelQueryManageAreAccountScopedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestCUSAccountContactAnonymizeAndDeletionStatusAreOwnerLocal(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	repo := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil)
+	owned := domain.Contact{AccountID: 91, Name: "Private Name", Email: "private@example.test", PhoneNumber: "+6100", Identifier: "private-id", AvatarURL: "https://example.test/private.png", PubsubToken: "private-token", CustomAttributes: `{"secret":true}`, ObjectVersion: 2}
+	foreign := domain.Contact{AccountID: 92, Name: "Foreign", Email: "foreign@example.test", PubsubToken: "foreign-token"}
+	if err := repo.Create(&owned); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateContactInbox(&domain.ContactInbox{ContactID: owned.ID, InboxID: 301, SourceID: "source-private"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateNote(&domain.ContactNote{AccountID: 91, ContactID: owned.ID, UserID: 1, Content: "private note"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	query := func(accountID uint) *httptest.ResponseRecorder {
+		envelope := foundation.QueryEnvelope{QueryType: "cus.account_deletion_status.get.v1", AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: map[string]any{}, Sort: []string{"id"}, Page: "1", Fields: []string{"ready"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+		return performContractRequest(newRuntime().Handler(), "/contracts/queries/cus.account_deletion_status.get.v1", envelope, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := query(91); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) {
+		t.Fatalf("pre-anonymize status=%d body=%s", response.Code, response.Body.String())
+	}
+	command := foundation.CommandEnvelope{CommandID: "contacts-anonymize-91", CommandType: "cus.account_contacts.anonymize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "contacts-anonymize-91", CorrelationID: "anonymize-correlation", CausationID: "account-delete", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.account_deletion_status.get.v1"}}
+	for i := 0; i < 2; i++ {
+		response := performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.account_contacts.anonymize.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":true`) {
+			t.Fatalf("anonymize status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if response := query(91); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"pii_contact_count":0`) || !strings.Contains(response.Body.String(), `"identity_link_count":0`) || !strings.Contains(response.Body.String(), `"ready":true`) {
+		t.Fatalf("post-anonymize status=%d body=%s", response.Code, response.Body.String())
+	}
+	var storedOwned, storedForeign domain.Contact
+	_ = db.First(&storedOwned, owned.ID).Error
+	_ = db.First(&storedForeign, foreign.ID).Error
+	var links, notes, receipts, events int64
+	_ = db.Model(&domain.ContactInbox{}).Where("contact_id = ?", owned.ID).Count(&links).Error
+	_ = db.Model(&domain.ContactNote{}).Where("contact_id = ?", owned.ID).Count(&notes).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.changed.v1%").Count(&events).Error
+	if storedOwned.Email != "" || storedOwned.PubsubToken != "" || storedOwned.Name != "Deleted Contact" || !storedOwned.Blocked || storedOwned.ObjectVersion != 3 || links != 0 || notes != 0 || receipts != 1 || events != 1 {
+		t.Fatalf("owned=%+v links=%d notes=%d receipts=%d events=%d", storedOwned, links, notes, receipts, events)
+	}
+	if storedForeign.Email != foreign.Email || storedForeign.PubsubToken != foreign.PubsubToken {
+		t.Fatalf("foreign account changed: %+v", storedForeign)
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

@@ -134,6 +134,14 @@ type labelView struct {
 	ShowOnSidebar bool   `json:"show_on_sidebar"`
 }
 
+type contactDeletionStatusView struct {
+	AccountID         uint  `json:"account_id"`
+	ContactCount      int64 `json:"contact_count"`
+	IdentityLinkCount int64 `json:"identity_link_count"`
+	PIIContactCount   int64 `json:"pii_contact_count"`
+	Ready             bool  `json:"ready"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -284,6 +292,15 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
 			}
 			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("cus.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			status, err := contactDeletionStatus(r.DB, query.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact deletion status is unavailable"}
+			}
+			return status, nil
 		}); err != nil {
 			return err
 		}
@@ -498,7 +515,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("cus.label.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("cus.label.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			action, _ := command.Input["action"].(string)
 			tx := Transaction(ctx, r.DB)
 			txLabels := repository.NewLabelRepositoryWithConversationPort(tx, nil)
@@ -564,6 +581,41 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, err
 			}
 			return labelFromModel(label), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("cus.account_contacts.anonymize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var contactIDs []uint
+			if err := tx.Model(&domain.Contact{}).Where("account_id = ?", command.AccountID).Pluck("id", &contactIDs).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact store is unavailable"}
+			}
+			if len(contactIDs) > 0 {
+				if err := tx.Where("contact_id IN ?", contactIDs).Delete(&domain.ContactInbox{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "contact identities could not be removed"}
+				}
+				if err := tx.Where("contact_id IN ?", contactIDs).Delete(&domain.ContactLabel{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "contact labels could not be removed"}
+				}
+				if err := tx.Where("account_id = ? AND contact_id IN ?", command.AccountID, contactIDs).Delete(&domain.ContactNote{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "contact notes could not be removed"}
+				}
+			}
+			updates := map[string]any{"company_id": nil, "name": "Deleted Contact", "email": "", "phone_number": "", "identifier": "", "avatar_url": "", "pubsub_token": "", "custom_attributes": "", "blocked": true, "object_version": gorm.Expr("object_version + 1")}
+			if err := tx.Model(&domain.Contact{}).Where("account_id = ?", command.AccountID).Updates(updates).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contacts could not be anonymized"}
+			}
+			status, err := contactDeletionStatus(tx, command.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact deletion status is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "cus.contact.changed.v1", "AccountContacts", command.Target.ID, []string{"anonymized"}, map[string]any{"account_id": command.AccountID, "operation": "anonymized", "contact_count": status.ContactCount}); err != nil {
+				return nil, err
+			}
+			return status, nil
 		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
@@ -991,6 +1043,21 @@ func validJSONObject(value any) bool {
 	}
 	var object map[string]any
 	return json.Unmarshal([]byte(raw), &object) == nil && object != nil
+}
+
+func contactDeletionStatus(db *gorm.DB, accountID uint) (contactDeletionStatusView, error) {
+	status := contactDeletionStatusView{AccountID: accountID}
+	if err := db.Model(&domain.Contact{}).Where("account_id = ?", accountID).Count(&status.ContactCount).Error; err != nil {
+		return status, err
+	}
+	if err := db.Model(&domain.Contact{}).Where("account_id = ? AND (email <> '' OR phone_number <> '' OR identifier <> '' OR avatar_url <> '' OR pubsub_token <> '' OR custom_attributes <> '' OR name <> ? OR blocked = ?)", accountID, "Deleted Contact", false).Count(&status.PIIContactCount).Error; err != nil {
+		return status, err
+	}
+	if err := db.Model(&domain.ContactInbox{}).Joins("JOIN contacts ON contacts.id = contact_inboxes.contact_id").Where("contacts.account_id = ?", accountID).Count(&status.IdentityLinkCount).Error; err != nil {
+		return status, err
+	}
+	status.Ready = status.PIIContactCount == 0 && status.IdentityLinkCount == 0
+	return status, nil
 }
 
 func accountFromModel(account *domain.Account) *accountView {
