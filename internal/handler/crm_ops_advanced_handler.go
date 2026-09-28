@@ -44,6 +44,7 @@ type AdvancedHandler struct {
 	contactRepo        *repository.ContactRepository
 	cannedRepo         *repository.CannedResponseRepository
 	integrationRepo    *repository.IntegrationRepository
+	customFilterRepo   *repository.CustomFilterRepository
 	campaignService    *service.CampaignService
 	slaService         *service.SLAService
 	httpClient         *http.Client
@@ -147,6 +148,10 @@ func (h *AdvancedHandler) SetCannedResponseRepo(repo *repository.CannedResponseR
 
 func (h *AdvancedHandler) SetMessageRepo(repo *repository.MessageRepository) {
 	h.messageRepo = repo
+}
+
+func (h *AdvancedHandler) SetCustomFilterRepo(repo *repository.CustomFilterRepository) {
+	h.customFilterRepo = repo
 }
 
 func (h *AdvancedHandler) listAgentBotInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {

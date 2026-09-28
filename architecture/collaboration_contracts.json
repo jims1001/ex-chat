@@ -434,6 +434,13 @@
       "readQuery": "rte.assignment.get.v1",
       "writeCommand": "rte.assignment.transfer.v1",
       "replicaEvent": "rte.assignment.changed.v1"
+    },
+    {
+      "symbol": "CustomFilterRepository",
+      "provider": "SRH",
+      "readQuery": "srh.custom_filter.get.v1",
+      "writeCommand": "srh.custom_filter.manage.v1",
+      "replicaEvent": "srh.custom_filter.changed.v1"
     }
   ],
   "edgeBindings": [

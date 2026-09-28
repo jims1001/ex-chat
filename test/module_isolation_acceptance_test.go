@@ -135,6 +135,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_dialogflow_uses_OPS_canned_response_query", func(t *testing.T) { testAdvancedDialogflowCannedResponseOwnerBoundary(t, openStore) })
 	t.Run("ORC_automation_rules_use_AUT_owner_service", func(t *testing.T) { testAdvancedAutomationRuleOwnerBoundary(t, openStore) })
 	t.Run("ORC_participants_use_CON_owner_commands", func(t *testing.T) { testAdvancedParticipantOwnerBoundary(t, openStore) })
+	t.Run("ORC_custom_filters_use_SRH_owner_commands", func(t *testing.T) { testAdvancedCustomFilterOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1957,6 +1958,43 @@ func testAdvancedParticipantOwnerBoundary(t *testing.T, openStore func(string) *
 	}
 	if conDB.Migrator().HasTable(&domain.User{}) || conDB.Migrator().HasTable(&domain.AccountUser{}) {
 		t.Fatal("CON participant store contains IAM/TEN authority table")
+	}
+}
+
+func testAdvancedCustomFilterOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	srhDB := openStore("SRH")
+	filters := repository.NewCustomFilterRepository(srhDB)
+	ctx := context.Background()
+	personal := domain.CustomFilter{AccountID: 761, UserID: 11, Name: "Mine", FilterType: "conversation", Query: `{"status":"open"}`}
+	shared := domain.CustomFilter{AccountID: 761, UserID: 0, Name: "Shared", FilterType: "conversation", Query: `{"status":"pending"}`}
+	foreign := domain.CustomFilter{AccountID: 762, UserID: 11, Name: "Foreign", FilterType: "conversation", Query: `{}`}
+	for _, filter := range []*domain.CustomFilter{&personal, &shared, &foreign} {
+		if err := filters.Create(ctx, filter); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := filters.List(ctx, 761, 11, "conversation")
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("SRH custom filter list failed: filters=%+v err=%v", listed, err)
+	}
+	if found, err := filters.Find(ctx, 762, personal.ID); !errors.Is(err, gorm.ErrRecordNotFound) || found != nil {
+		t.Fatalf("SRH exposed cross-account filter: filter=%+v err=%v", found, err)
+	}
+	personal.Name = "Updated"
+	if err := filters.Save(ctx, 761, &personal); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := filters.Find(ctx, 761, personal.ID); err != nil || found.Name != "Updated" {
+		t.Fatalf("SRH custom filter update failed: filter=%+v err=%v", found, err)
+	}
+	if deleted, err := filters.Delete(ctx, 761, foreign.ID); err != nil || deleted {
+		t.Fatalf("SRH accepted cross-account delete: deleted=%t err=%v", deleted, err)
+	}
+	if deleted, err := filters.Delete(ctx, 761, personal.ID); err != nil || !deleted {
+		t.Fatalf("SRH custom filter delete failed: deleted=%t err=%v", deleted, err)
+	}
+	if srhDB.Migrator().HasTable(&domain.Conversation{}) || srhDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("SRH custom-filter store contains CON/CUS authority table")
 	}
 }
 

@@ -496,17 +496,20 @@
         "srh.index.rebuild.v1",
         "srh.checkpoint.update.v1",
         "srh.index_item.delete.v1",
-        "srh.account_index.purge.v1"
+        "srh.account_index.purge.v1",
+        "srh.custom_filter.manage.v1"
       ],
       "queries": [
         "srh.search.v1",
         "srh.index_status.get.v1",
         "srh.checkpoint.get.v1",
-        "srh.account_deletion_status.get.v1"
+        "srh.account_deletion_status.get.v1",
+        "srh.custom_filter.get.v1"
       ],
       "events": [
         "srh.index.rebuilt.v1",
-        "srh.index.failed.v1"
+        "srh.index.failed.v1",
+        "srh.custom_filter.changed.v1"
       ]
     },
     {

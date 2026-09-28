@@ -54,7 +54,7 @@ func TestModuleContractRegistryIsCompleteAndFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedSHA = "276292d05d5b55e3244f3ee23891fcba00b240e2e450267f49c4d98c80e3b277"
+	const approvedSHA = "76772e4a573bdafc1ac609469ac2fd774eb6505e24d3fa0fdafff99b0eb7699a"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedSHA {
 		t.Fatalf("module contracts changed (%s); reopen ARCH-04 and approve a new fingerprint", got)
 	}
@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v71 records conversation participants through CON.
-	const approvedCollaborationSHA = "195f278a52063a3ec726f75f38c12ddadfc9e9476abfe2014620d9ad57f4988d"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v72 records custom filters through SRH.
+	const approvedCollaborationSHA = "d0d7eba3a3e6308c5764e556965885a41c817a51102c3049d064191bd193d56c"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -416,6 +416,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/handler/widget_handler.go":                      {"h.db.Where", "JOIN conversations ON conversations.id = messages.conversation_id", "messages.id = ? AND conversations.inbox_id", "JOIN inbox_members ON inbox_members.user_id = users.id", "inbox_members.inbox_id = ?"},
 		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")", "account_id = ? AND id = ?\", accID, *req.Fields.TeamID", "h.db.Where(\"account_id = ? AND (title = ? OR id = ?)", "h.db.WithContext(c.Request.Context()).Preload(\"Company\").Preload(\"Labels\")", "Where(\"account_id = ? AND id = ? AND company_id = ?\", accID, contactID, comp.ID)", "h.db.Preload(\"Inbox\").Where(\"account_id = ? AND id = ?\", accID, convID)", "h.db.Where(\"account_id = ? AND conversation_id = ? AND id = ?", "h.db.WithContext(c.Request.Context()).Where(\"account_id = ? AND conversation_id = ? AND user_id = ?", "Preload(\"User\").First(&note", "Assign(domain.CapacityPolicy", "h.db.Where(\"account_id = ?\", accID).Find(&installed)", "h.db.Where(\"account_id = ? AND app_id = ? AND status = ?", "h.db.Preload(\"Contact\")", "h.db.WithContext(c.Request.Context())"},
 		"../internal/handler/conversation_participant_handler.go":    {"h.db"},
+		"../internal/handler/custom_filter_handler.go":               {"h.db"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

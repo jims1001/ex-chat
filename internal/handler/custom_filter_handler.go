@@ -79,7 +79,7 @@ func (h *AdvancedHandler) CreateCustomFilter(c *gin.Context) {
 		UpdatedAt:  time.Now().UTC(),
 	}
 
-	if err := h.db.WithContext(c.Request.Context()).Create(&filter).Error; err != nil {
+	if err := h.customFilterRepo.Create(c.Request.Context(), &filter); err != nil {
 		logger.WithComponent("custom_filter").Error("database error creating custom filter",
 			"account_id", accID,
 			"user_id", userID,
@@ -106,16 +106,8 @@ func (h *AdvancedHandler) ListCustomFilters(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	filterType := strings.TrimSpace(c.Query("filter_type"))
 
-	query := h.db.WithContext(c.Request.Context()).Where("account_id = ?", accID)
-	if userID > 0 {
-		query = query.Where("user_id = ? OR user_id = 0", userID)
-	}
-	if filterType != "" {
-		query = query.Where("filter_type = ?", filterType)
-	}
-
-	var filters []domain.CustomFilter
-	if err := query.Order("id DESC").Find(&filters).Error; err != nil {
+	filters, err := h.customFilterRepo.List(c.Request.Context(), uint(accID), userID, filterType)
+	if err != nil {
 		logger.WithComponent("custom_filter").Error("database error listing custom filters",
 			"account_id", accID,
 			"user_id", userID,
@@ -141,10 +133,7 @@ func (h *AdvancedHandler) GetCustomFilter(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
 
-	var filter domain.CustomFilter
-	err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND id = ?", accID, id).
-		First(&filter).Error
+	filter, err := h.customFilterRepo.Find(c.Request.Context(), uint(accID), uint(id))
 
 	if err != nil {
 		logger.WithComponent("custom_filter").Warn("custom filter not found or access denied",
@@ -173,10 +162,8 @@ func (h *AdvancedHandler) UpdateCustomFilter(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
 
-	var filter domain.CustomFilter
-	if err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND id = ?", accID, id).
-		First(&filter).Error; err != nil {
+	filter, err := h.customFilterRepo.Find(c.Request.Context(), uint(accID), uint(id))
+	if err != nil {
 		logger.WithComponent("custom_filter").Warn("custom filter to update not found or access denied",
 			"account_id", accID,
 			"filter_id", id,
@@ -212,7 +199,7 @@ func (h *AdvancedHandler) UpdateCustomFilter(c *gin.Context) {
 	}
 	filter.UpdatedAt = time.Now().UTC()
 
-	if err := h.db.WithContext(c.Request.Context()).Save(&filter).Error; err != nil {
+	if err := h.customFilterRepo.Save(c.Request.Context(), uint(accID), filter); err != nil {
 		logger.WithComponent("custom_filter").Error("database error updating custom filter",
 			"account_id", accID,
 			"filter_id", id,
@@ -240,22 +227,19 @@ func (h *AdvancedHandler) DeleteCustomFilter(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
 
-	res := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND id = ?", accID, id).
-		Delete(&domain.CustomFilter{})
-
-	if res.Error != nil {
+	deleted, err := h.customFilterRepo.Delete(c.Request.Context(), uint(accID), uint(id))
+	if err != nil {
 		logger.WithComponent("custom_filter").Error("database error deleting custom filter",
 			"account_id", accID,
 			"filter_id", id,
 			"user_id", userID,
-			"error", res.Error.Error(),
+			"error", err.Error(),
 		)
-		response.Error(c, http.StatusInternalServerError, res.Error.Error())
+		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	if res.RowsAffected == 0 {
+	if !deleted {
 		logger.WithComponent("custom_filter").Warn("custom filter to delete not found",
 			"account_id", accID,
 			"filter_id", id,

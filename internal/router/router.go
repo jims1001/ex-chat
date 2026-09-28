@@ -113,6 +113,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	ticketRepo := repository.NewTicketRepository(db)
 	qaRepo := repository.NewQARepositoryWithOwnerPortsAndUsers(db, ticketRepo, convRepo, userRepo)
 	emailLogRepo := repository.NewEmailLogRepository(db)
+	customFilterRepo := repository.NewCustomFilterRepository(db)
 
 	// 核心业务服务 (Services)
 	routingService := service.NewRoutingService(db, convRepo, hub)
@@ -198,6 +199,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	advancedHandler.SetContactRepo(contactRepo)
 	advancedHandler.SetCannedResponseRepo(cannedRepo)
 	advancedHandler.SetMessageRepo(msgRepo)
+	advancedHandler.SetCustomFilterRepo(customFilterRepo)
 	if options.AdvancedHTTPClient != nil {
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)
 	}
