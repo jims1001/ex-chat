@@ -434,6 +434,44 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("cus.contact.delete.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "contact" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact target is required"}
+			}
+			parsedID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsedID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact target is invalid"}
+			}
+			contactID := uint(parsedID)
+			tx := Transaction(ctx, r.DB)
+			txContacts := repository.NewContactRepositoryWithOwnerPorts(tx, nil, nil, nil, nil, nil)
+			contact, err := txContacts.FindSummaryByID(command.AccountID, contactID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact store is unavailable"}
+			}
+			if contact == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
+			}
+			if err := tx.Where("contact_id = ?", contactID).Delete(&domain.ContactInbox{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contact identities could not be removed"}
+			}
+			if err := tx.Where("contact_id = ?", contactID).Delete(&domain.ContactLabel{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contact labels could not be removed"}
+			}
+			if err := tx.Where("account_id = ? AND contact_id = ?", command.AccountID, contactID).Delete(&domain.ContactNote{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contact notes could not be removed"}
+			}
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, contactID).Delete(&domain.Contact{})
+			if result.Error != nil || result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contact could not be deleted"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "cus.contact.deleted.v1", "Contact", command.Target.ID, []string{"deleted"}, map[string]any{"contact_id": contactID, "operation": "deleted"}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"contact_id": contactID, "deleted": true}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterCommand("cus.company.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			action, _ := command.Input["action"].(string)
 			tx := Transaction(ctx, r.DB)

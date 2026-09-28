@@ -825,6 +825,76 @@ func TestCUSContactUpdateEnforcesOwnerAndWritableFields(t *testing.T) {
 	}
 }
 
+func TestCUSContactDeleteRemovesOwnerFactsAndPublishesEvent(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	contact := domain.Contact{AccountID: 91, Name: "Delete me", Email: "delete@example.test", ObjectVersion: 3}
+	foreign := domain.Contact{AccountID: 92, Name: "Keep me"}
+	if err := db.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	label := domain.Label{AccountID: 91, Title: "delete-label", Color: "#111111"}
+	if err := db.Create(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []any{
+		&domain.ContactInbox{ContactID: contact.ID, InboxID: 7, SourceID: "delete-source"},
+		&domain.ContactLabel{ContactID: contact.ID, LabelID: label.ID},
+		&domain.ContactNote{AccountID: 91, ContactID: contact.ID, Content: "delete-note"},
+	} {
+		if err := db.Create(record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "contact-delete-1", CommandType: "cus.contact.delete.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "contact", ID: strconv.FormatUint(uint64(contact.ID), 10)}, Input: map[string]any{}, IdempotencyKey: "contact-delete-91", CorrelationID: "delete-correlation", CausationID: "delete-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.contact.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.contact.delete.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for i := 0; i < 2; i++ {
+		if response := call(command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"deleted":true`) {
+			t.Fatalf("contact delete status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	for _, model := range []any{&domain.ContactInbox{}, &domain.ContactLabel{}, &domain.ContactNote{}} {
+		var count int64
+		if err := db.Model(model).Where("contact_id = ?", contact.ID).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("owner relation %T count=%d err=%v", model, count, err)
+		}
+	}
+	var deletedContact, foreignContacts, receipts, events int64
+	_ = db.Model(&domain.Contact{}).Where("id = ?", contact.ID).Count(&deletedContact).Error
+	_ = db.Model(&domain.Contact{}).Where("id = ? AND account_id = ?", foreign.ID, foreign.AccountID).Count(&foreignContacts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.deleted.v1%").Count(&events).Error
+	if deletedContact != 0 || foreignContacts != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("deleted=%d foreign=%d receipts=%d events=%d", deletedContact, foreignContacts, receipts, events)
+	}
+	foreignDelete := command
+	foreignDelete.CommandID, foreignDelete.IdempotencyKey, foreignDelete.AccountID = "contact-delete-foreign", "contact-delete-foreign", 93
+	if response := call(foreignDelete); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, external := range []any{&domain.Conversation{}, &domain.Message{}, &domain.Ticket{}, &domain.Order{}, &domain.CampaignDelivery{}} {
+		if db.Migrator().HasTable(external) {
+			t.Fatalf("CUS delete runtime created foreign table %T", external)
+		}
+	}
+}
+
 func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
 	iamDB := newModuleTestDB(t, "IAM")
 	iamCfg := businessConfig("IAM")

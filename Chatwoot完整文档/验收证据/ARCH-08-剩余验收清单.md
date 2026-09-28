@@ -157,4 +157,5 @@
 - 已完成并验证：MSG 消费合并事件只重分配本账号 Contact 类型消息发送者，User 消息和其他账号保持不变，重复事件去重（E-ARCH-08-v112）。
 - 已完成并验证：TKT/BIL/OPS 分别消费合并事件并只更新本账号 Ticket/TicketComment、Order、CampaignDelivery 联系人投影，重复事件去重且无 Contact 表（E-ARCH-08-v113）。
 - 已完成并验证：CUS 合并事件按合同路由扇出至 CON/MSG/TKT/BIL/OPS，每目标持久化投递收据；部分目标停机时 outbox 保持 pending，恢复后只补投未完成目标（E-ARCH-08-v114）。
-- 下一项：CUS 单联系人删除命令及 `cus.contact.deleted.v1` 事件。
+- 已完成并验证：CUS `cus.contact.delete.v1` 在 CON 已完成活跃会话检查与历史会话分离后，原子删除联系人及所有者关系数据，并发布 `cus.contact.deleted.v1`（E-ARCH-08-v115）。
+- 下一项：CUS 公开声明面完整性复验，然后补齐事件自动调度接线。
