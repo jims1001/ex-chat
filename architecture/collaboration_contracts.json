@@ -5043,6 +5043,16 @@
       "use": "read",
       "contract": "iam.identity.get.v1",
       "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "MSG",
+      "provider": "ENT",
+      "file": "internal/service/email_service.go",
+      "symbol": "ChannelENTRepository",
+      "method": "GetBrandedEmailLayout",
+      "use": "read",
+      "contract": "ent.capability.check.v1",
+      "replicaEvent": "ent.entitlement.changed.v1"
     }
   ]
 }

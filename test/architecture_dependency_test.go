@@ -103,8 +103,8 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// E-ARCH-08-v53 registers the SRH article search read from KB.
-	const approvedManifestSHA256 = "20ea1e19a280eb3ea89b132e865ac82ed760b6c27ab843d90f71115b9332a54c"
+	// E-ARCH-08-v75 registers the MSG email branding read from ENT.
+	const approvedManifestSHA256 = "0ead677bd70ffdf2830af74964f01858962531956481727c96a4ff76d834c499"
 	if actual := fmt.Sprintf("%x", sha256.Sum256(raw)); actual != approvedManifestSHA256 {
 		t.Fatalf("dependency manifest changed (%s); reopen ARCH-03 and approve a new fingerprint", actual)
 	}

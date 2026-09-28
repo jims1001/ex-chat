@@ -136,6 +136,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	campaignService.SetAudienceOwner(labelRepo)
 	campaignService.SetHub(hub)
 	emailService := service.NewEmailService(db)
+	emailService.SetEnterpriseRepo(channelEnterpriseRepo)
 	if cfg != nil && cfg.Environment == "test" {
 		emailService.SetAllowMock(true)
 	}

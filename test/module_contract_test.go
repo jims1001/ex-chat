@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v74 records push timezone reads through IAM.
-	const approvedCollaborationSHA = "2da0d22e0d1938460f43312a0cc6cc70a79b972fc647c90ee65b7f1423a64c55"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v75 records email branding reads through ENT.
+	const approvedCollaborationSHA = "571be1bd9b73d03e6a71c892c784427f26b70f6aae4d61e338c5fa7a7fdbe812"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -411,6 +411,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/report_dimensions.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")"},
 		"../internal/service/report_v2_service.go":                   {"s.db.Model(&domain.Contact", "s.db.Model(&domain.Conversation", "s.db.Model(&domain.Inbox", "s.db.Model(&domain.Message", "s.db.Model(&domain.Label", "s.db.Model(&domain.ConversationLabel", "s.db.Model(&domain.AccountUser", "s.db.Model(&domain.Team", "s.db.Model(&domain.TeamMember", "s.db.Model(&domain.User", "s.db.Model(&domain.AgentBotInbox", "JOIN conversations", "JOIN inboxes", "JOIN messages", "JOIN labels", "JOIN conversation_labels", "Preload(\"User\")", "Preload(\"Inbox\")", "Preload(\"Contact\")", "Preload(\"Conversation\")"},
 		"../internal/service/push_service.go":                        {"var u domain.User", "s.db.Where(\"id = ?\", userID)"},
+		"../internal/service/email_service.go":                       {"var branded domain.BrandedEmailLayout", "s.db.Where(\"account_id = ?\", conv.AccountID).First(&branded)"},
 		"../internal/service/data_import_service.go":                 {"s.db.Model(&domain.Contact", "s.db.Where(\"account_id = ? AND email = ?", "var existing domain.Contact"},
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},

@@ -111,6 +111,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_public_uses_CHN_CUS_CON_MSG_owner_contracts", func(t *testing.T) { testPublicRepositoryOwnerBoundary(t, openStore) })
 	t.Run("API_public_contact_echo_use_CUS_MSG_owner_queries", func(t *testing.T) { testPublicContactEchoOwnerBoundary(t, openStore) })
 	t.Run("NTF_push_quiet_hours_use_IAM_timezone_query", func(t *testing.T) { testPushTimezoneOwnerBoundary(t, openStore) })
+	t.Run("MSG_email_branding_uses_ENT_owner_query", func(t *testing.T) { testEmailBrandingOwnerBoundary(t, openStore) })
 	t.Run("QLT_sampling_uses_TKT_CON_owner_queries", func(t *testing.T) { testQARepositoryOwnerBoundary(t, openStore) })
 	t.Run("QLT_QA_views_use_IAM_owner_queries", func(t *testing.T) { testQAUserOwnerBoundary(t, openStore) })
 	t.Run("KB_articles_use_IAM_author_query", func(t *testing.T) { testPortalAuthorOwnerBoundary(t, openStore) })
@@ -2449,6 +2450,28 @@ func testPushTimezoneOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB
 	}
 	if ntfDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.NotificationSetting{}) {
 		t.Fatal("NTF/IAM timezone boundary contains a foreign authority table")
+	}
+}
+
+func testEmailBrandingOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	msgDB, entDB := openStore("MSG"), openStore("ENT")
+	enterprise := repository.NewChannelAuthEnterpriseRepository(entDB)
+	layout := domain.BrandedEmailLayout{AccountID: 791, HeaderColor: "#123456", LogoURL: "https://example.test/logo.png?a=1&b=2"}
+	if err := entDB.Create(&layout).Error; err != nil {
+		t.Fatal(err)
+	}
+	email := service.NewEmailService(msgDB)
+	email.SetEnterpriseRepo(enterprise)
+	html := email.RenderTranscriptHTML(&domain.Conversation{AccountID: 791, DisplayID: 7}, nil)
+	if !strings.Contains(html, "background: #123456") || !strings.Contains(html, "https://example.test/logo.png?a=1&amp;b=2") {
+		t.Fatalf("MSG email renderer did not use ENT branding: %s", html)
+	}
+	foreignHTML := email.RenderTranscriptHTML(&domain.Conversation{AccountID: 792, DisplayID: 8}, nil)
+	if strings.Contains(foreignHTML, "#123456") || strings.Contains(foreignHTML, "logo.png") {
+		t.Fatal("ENT branding leaked across accounts")
+	}
+	if msgDB.Migrator().HasTable(&domain.BrandedEmailLayout{}) || entDB.Migrator().HasTable(&domain.EmailLog{}) {
+		t.Fatal("MSG/ENT email branding boundary contains a foreign authority table")
 	}
 }
 

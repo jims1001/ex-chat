@@ -13,6 +13,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
@@ -357,6 +358,7 @@ func TestConversationTranscriptEmailDeliveryAndAudit(t *testing.T) {
 		db.Save(&branded)
 
 		emailSvc := service.NewEmailService(db)
+		emailSvc.SetEnterpriseRepo(repository.NewChannelAuthEnterpriseRepository(db))
 		var conv domain.Conversation
 		db.Where("id = ?", convID).First(&conv)
 		var msgs []domain.Message

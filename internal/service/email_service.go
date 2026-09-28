@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -24,6 +25,11 @@ type EmailService struct {
 	fromEmail  string
 	configured bool
 	allowMock  bool
+	enterprise repository.ChannelENTRepository
+}
+
+func (s *EmailService) SetEnterpriseRepo(repo repository.ChannelENTRepository) {
+	s.enterprise = repo
 }
 
 type InboxSMTPConfig struct {
@@ -283,9 +289,8 @@ func (s *EmailService) RenderTranscriptHTML(conv *domain.Conversation, messages 
 	// Check branded layout header color if available
 	headerColor := "#1f93ff"
 	logoHTML := ""
-	if s.db != nil && conv.AccountID > 0 {
-		var branded domain.BrandedEmailLayout
-		if err := s.db.Where("account_id = ?", conv.AccountID).First(&branded).Error; err == nil {
+	if s.enterprise != nil && conv.AccountID > 0 {
+		if branded, err := s.enterprise.GetBrandedEmailLayout(conv.AccountID); err == nil && branded != nil {
 			if branded.HeaderColor != "" {
 				headerColor = branded.HeaderColor
 			}

@@ -242,6 +242,7 @@
       "startupRequired": [],
       "capabilityDependencies": [
         "TEN",
+        "ENT",
         "CHN",
         "CON",
         "MED"
