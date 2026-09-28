@@ -221,6 +221,37 @@ func TestCUSIdentityResolveUsesAccountScopedPriority(t *testing.T) {
 	}
 }
 
+func TestCUSCompanyQueryUsesOwnerDatabaseAndSafeView(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	company := domain.Company{AccountID: 91, Name: "Acme", Domain: "acme.example", Industry: "Retail", Description: "Customer company", AvatarURL: "https://example.test/acme.png", CustomAttributes: `{"private":"value"}`, AdditionalAttributes: `{"internal":"value"}`}
+	if err := repository.NewCompanyRepository(db).Create(context.Background(), &company); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil).Create(&domain.Contact{AccountID: 91, CompanyID: &company.ID, Name: "Member"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CUS")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	query := foundation.QueryEnvelope{QueryType: "cus.company.get.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: map[string]any{"id": company.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	call := func(accountID uint) *httptest.ResponseRecorder {
+		query.AccountID = accountID
+		return performContractRequest(runtime.Handler(), "/contracts/queries/cus.company.get.v1", query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	response := call(91)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Acme") || !strings.Contains(response.Body.String(), `"contacts_count":1`) || strings.Contains(response.Body.String(), "private") || strings.Contains(response.Body.String(), "internal") {
+		t.Fatalf("company query status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(92); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account company status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

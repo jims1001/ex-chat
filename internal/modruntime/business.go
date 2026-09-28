@@ -114,6 +114,17 @@ type contactView struct {
 	ObjectVersion int    `json:"object_version"`
 }
 
+type companyView struct {
+	ID            uint   `json:"id"`
+	AccountID     uint   `json:"account_id"`
+	Name          string `json:"name"`
+	Domain        string `json:"domain"`
+	Industry      string `json:"industry"`
+	Description   string `json:"description"`
+	AvatarURL     string `json:"avatar_url"`
+	ContactsCount int64  `json:"contacts_count"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -249,6 +260,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		})
 	case "CUS":
 		contacts := repository.NewContactRepositoryWithOwnerPorts(r.DB, nil, nil, nil, nil, nil)
+		companies := repository.NewCompanyRepository(r.DB)
 		if err := r.Contracts.RegisterQuery("cus.contact.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			contactID, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -262,6 +274,22 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
 			}
 			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("cus.company.get.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
+			companyID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "company id is required"}
+			}
+			company, err := companies.GetByID(ctx, query.AccountID, companyID)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "company was not found"}
+			}
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "company store is unavailable"}
+			}
+			return companyFromModel(company), nil
 		}); err != nil {
 			return err
 		}
@@ -754,6 +782,13 @@ func contactFromModel(contact *domain.Contact) *contactView {
 		return nil
 	}
 	return &contactView{ID: contact.ID, AccountID: contact.AccountID, CompanyID: contact.CompanyID, Name: contact.Name, Email: contact.Email, PhoneNumber: contact.PhoneNumber, Identifier: contact.Identifier, AvatarURL: contact.AvatarURL, Blocked: contact.Blocked, ObjectVersion: contact.ObjectVersion}
+}
+
+func companyFromModel(company *domain.Company) *companyView {
+	if company == nil {
+		return nil
+	}
+	return &companyView{ID: company.ID, AccountID: company.AccountID, Name: company.Name, Domain: company.Domain, Industry: company.Industry, Description: company.Description, AvatarURL: company.AvatarURL, ContactsCount: company.ContactsCount}
 }
 
 func accountFromModel(account *domain.Account) *accountView {
