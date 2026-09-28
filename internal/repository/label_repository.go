@@ -68,6 +68,16 @@ func (r *LabelRepository) FindByTitle(accountID uint, title string) (*domain.Lab
 	return &label, err
 }
 
+func (r *LabelRepository) FindIDsByTitleOrID(accountID uint, title string, id uint) ([]uint, error) {
+	ids := make([]uint, 0)
+	query := r.db.Model(&domain.Label{}).Where("account_id = ? AND title = ?", accountID, title)
+	if id > 0 {
+		query = r.db.Model(&domain.Label{}).Where("account_id = ? AND (title = ? OR id = ?)", accountID, title, id)
+	}
+	err := query.Order("id ASC").Pluck("id", &ids).Error
+	return ids, err
+}
+
 func (r *LabelRepository) FindOrCreateByTitle(accountID uint, title string) (*domain.Label, error) {
 	label := domain.Label{AccountID: accountID, Title: title}
 	if err := r.db.Where("account_id = ? AND title = ?", accountID, title).FirstOrCreate(&label).Error; err != nil {

@@ -123,6 +123,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_bulk_assignment_uses_TEN_IAM_owner_query", func(t *testing.T) { testAdvancedBulkAssignmentOwnerBoundary(t, openStore) })
 	t.Run("ORC_bulk_status_uses_CON_CHN_IAM_owner_queries", func(t *testing.T) { testAdvancedBulkStatusOwnerBoundary(t, openStore) })
 	t.Run("ORC_bulk_team_assignment_uses_TEN_CON_owner_queries", func(t *testing.T) { testAdvancedBulkTeamOwnerBoundary(t, openStore) })
+	t.Run("ORC_bulk_labels_use_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedBulkLabelOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1497,6 +1498,44 @@ func testAdvancedBulkTeamOwnerBoundary(t *testing.T, openStore func(string) *gor
 	}
 	if tenDB.Migrator().HasTable(&domain.Conversation{}) || conDB.Migrator().HasTable(&domain.Team{}) {
 		t.Fatal("TEN/CON isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedBulkLabelOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, cusDB := openStore("CON"), openStore("CUS")
+	conversation := domain.Conversation{AccountID: 101, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	otherConversation := domain.Conversation{AccountID: 102, InboxID: 2, ContactID: 2, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&otherConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	labels := repository.NewLabelRepository(cusDB)
+	label, err := labels.FindOrCreateByTitle(101, "bulk-label")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversations := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, nil, nil, nil, nil, labels)
+	rows, err := conversations.ListByIDs(101, []uint{conversation.ID, otherConversation.ID})
+	if err != nil || len(rows) != 1 || rows[0].ID != conversation.ID {
+		t.Fatalf("CON bulk label conversation lookup failed: conversations=%+v err=%v", rows, err)
+	}
+	if err := conversations.AttachLabel(101, conversation.ID, label.ID); err != nil {
+		t.Fatalf("CON/CUS bulk label attach failed: %v", err)
+	}
+	ids, err := labels.FindIDsByTitleOrID(101, "bulk-label", 0)
+	if err != nil || len(ids) != 1 || ids[0] != label.ID {
+		t.Fatalf("CUS bulk label title lookup failed: ids=%v err=%v", ids, err)
+	}
+	if ids, err := labels.FindIDsByTitleOrID(102, "bulk-label", label.ID); err != nil || len(ids) != 0 {
+		t.Fatalf("CUS exposed cross-account label: ids=%v err=%v", ids, err)
+	}
+	if err := conversations.DetachLabel(101, conversation.ID, label.ID); err != nil {
+		t.Fatalf("CON bulk label detach failed: %v", err)
+	}
+	if conDB.Migrator().HasTable(&domain.Label{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.ConversationLabel{}) {
+		t.Fatal("CON/CUS isolated stores contain a foreign authority table")
 	}
 }
 

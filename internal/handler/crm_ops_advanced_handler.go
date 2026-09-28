@@ -1983,10 +1983,8 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 			response.BadRequest(c, "labels.add cannot be empty")
 			return
 		}
-		var conversations []domain.Conversation
-		if err := h.db.WithContext(c.Request.Context()).
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Find(&conversations).Error; err != nil {
+		conversations, err := h.convRepo.ListByIDs(uint(accID), req.IDs)
+		if err != nil {
 			response.Error(c, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -2030,10 +2028,8 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 			response.BadRequest(c, "labels to remove cannot be empty")
 			return
 		}
-		var conversations []domain.Conversation
-		if err := h.db.WithContext(c.Request.Context()).
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Find(&conversations).Error; err != nil {
+		conversations, err := h.convRepo.ListByIDs(uint(accID), req.IDs)
+		if err != nil {
 			response.Error(c, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -2046,16 +2042,15 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 				}
 				var idNum uint
 				_, _ = fmt.Sscanf(title, "%d", &idNum)
-				var labels []domain.Label
-				if idNum > 0 {
-					_ = h.db.Where("account_id = ? AND (title = ? OR id = ?)", accID, title, idNum).Find(&labels).Error
-				} else {
-					_ = h.db.Where("account_id = ? AND title = ?", accID, title).Find(&labels).Error
+				labelIDs, err := h.labelRepo.FindIDsByTitleOrID(uint(accID), title, idNum)
+				if err != nil {
+					response.InternalError(c, "Failed to resolve labels")
+					return
 				}
-				for _, lbl := range labels {
-					_ = h.convRepo.DetachLabel(uint(accID), conv.ID, lbl.ID)
+				for _, labelID := range labelIDs {
+					_ = h.convRepo.DetachLabel(uint(accID), conv.ID, labelID)
 				}
-				if len(labels) == 0 && idNum > 0 {
+				if len(labelIDs) == 0 && idNum > 0 {
 					_ = h.convRepo.DetachLabel(uint(accID), conv.ID, idNum)
 				}
 			}
