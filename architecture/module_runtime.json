@@ -254,17 +254,19 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-contact-create",
+      "acceptanceStatus": "partial-contact-update",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "cus.contact.get.v1"
       ],
       "implementedIndependentCommands": [
-        "cus.contact.create.v1"
+        "cus.contact.create.v1",
+        "cus.contact.update.v1"
       ],
       "implementedIndependentEvents": [
-        "cus.contact.created.v1"
+        "cus.contact.created.v1",
+        "cus.contact.changed.v1"
       ],
       "outboxAtomicWithCommands": true
     },

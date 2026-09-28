@@ -14,6 +14,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"gorm.io/gorm"
 )
 
 type identityView struct {
@@ -264,7 +265,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("cus.contact.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("cus.contact.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
 			}
@@ -282,6 +283,53 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "contact could not be created"}
 			}
 			if err := r.appendBusinessEvent(ctx, command, "cus.contact.created.v1", "Contact", strconv.FormatUint(uint64(contact.ID), 10), []string{"created"}, map[string]any{"contact_id": contact.ID, "operation": "created"}); err != nil {
+				return nil, err
+			}
+			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("cus.contact.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "contact" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact target is required"}
+			}
+			parsedID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsedID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact target is invalid"}
+			}
+			contactID := uint(parsedID)
+			tx := Transaction(ctx, r.DB)
+			txRepo := repository.NewContactRepositoryWithOwnerPorts(tx, nil, nil, nil, nil, nil)
+			contact, err := txRepo.FindSummaryByID(command.AccountID, contactID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "contact store is unavailable"}
+			}
+			if contact == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
+			}
+			allowed := map[string]string{"name": "name", "email": "email", "phone_number": "phone_number", "identifier": "identifier", "avatar_url": "avatar_url", "blocked": "blocked"}
+			updates := map[string]any{}
+			changed := make([]string, 0, len(command.Input))
+			for key, value := range command.Input {
+				column, ok := allowed[key]
+				if !ok {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "contact field is not writable"}
+				}
+				updates[column] = value
+				changed = append(changed, key)
+			}
+			if len(updates) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact update is empty"}
+			}
+			updates["object_version"] = gorm.Expr("object_version + 1")
+			if err := tx.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", command.AccountID, contactID).Updates(updates).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "contact could not be updated"}
+			}
+			contact, err = txRepo.FindSummaryByID(command.AccountID, contactID)
+			if err != nil || contact == nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "updated contact is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "cus.contact.changed.v1", "Contact", command.Target.ID, changed, map[string]any{"contact_id": contact.ID, "operation": "updated", "object_version": contact.ObjectVersion}); err != nil {
 				return nil, err
 			}
 			return contactFromModel(contact), nil

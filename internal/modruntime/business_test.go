@@ -230,6 +230,55 @@ func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	}
 }
 
+func TestCUSContactUpdateEnforcesOwnerAndWritableFields(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	contact := domain.Contact{AccountID: 91, Name: "Before", Email: "before@example.test", PubsubToken: "preserve-secret", CustomAttributes: `{"tier":"gold"}`, ObjectVersion: 2}
+	if err := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil).Create(&contact); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "contact-update-1", CommandType: "cus.contact.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "contact", ID: strconv.FormatUint(uint64(contact.ID), 10)}, Input: map[string]any{"name": "After", "blocked": true}, IdempotencyKey: "contact-update-91", CorrelationID: "update-correlation", CausationID: "update-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.contact.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.contact.update.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for i := 0; i < 2; i++ {
+		if response := call(command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "After") {
+			t.Fatalf("contact update status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var stored domain.Contact
+	if err := db.First(&stored, contact.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var receipts, events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.contact.changed.v1%").Count(&events).Error
+	if stored.Name != "After" || !stored.Blocked || stored.ObjectVersion != 3 || stored.PubsubToken != "preserve-secret" || stored.CustomAttributes != `{"tier":"gold"}` || receipts != 1 || events != 1 {
+		t.Fatalf("stored=%+v receipts=%d events=%d", stored, receipts, events)
+	}
+	foreign := command
+	foreign.CommandID, foreign.IdempotencyKey, foreign.AccountID = "contact-update-foreign", "contact-update-foreign", 92
+	if response := call(foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign update status=%d body=%s", response.Code, response.Body.String())
+	}
+	unsafe := command
+	unsafe.CommandID, unsafe.IdempotencyKey, unsafe.Input = "contact-update-unsafe", "contact-update-unsafe", map[string]any{"pubsub_token": "replace"}
+	if response := call(unsafe); response.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe update status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCHNInboxCreateValidatesTENAndPersistsIdempotently(t *testing.T) {
 	iamDB := newModuleTestDB(t, "IAM")
 	iamCfg := businessConfig("IAM")
