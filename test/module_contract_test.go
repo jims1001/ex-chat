@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
 	"sort"
@@ -37,6 +38,18 @@ type moduleContractRegistry struct {
 		Queries  []string `json:"queries"`
 		Events   []string `json:"events"`
 	} `json:"modules"`
+}
+
+func TestDirectStorageOwnershipAudit(t *testing.T) {
+	for _, args := range [][]string{
+		{"../scripts/audit-module-storage.py", "--self-test"},
+		{"../scripts/audit-module-storage.py", "--direct", "--fail-on-violation"},
+	} {
+		cmd := exec.Command("python3", args...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("direct storage ownership audit failed: %v\n%s", err, output)
+		}
+	}
 }
 
 func jsonFields(value any) map[string]bool {
