@@ -1503,11 +1503,8 @@ func (h *AdvancedHandler) GetDraft(c *gin.Context) {
 	convID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	userID := c.GetUint("user_id")
 
-	var draft domain.DraftMessage
-	err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND conversation_id = ? AND user_id = ?", accID, convID, userID).
-		First(&draft).Error
-	if err != nil {
+	draft, err := h.messageRepo.FindDraft(uint(accID), uint(convID), userID)
+	if err != nil || draft == nil {
 		response.Success(c, gin.H{"message": ""})
 		return
 	}

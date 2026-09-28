@@ -127,6 +127,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_company_contact_links_use_CUS_owner_queries", func(t *testing.T) { testAdvancedCompanyContactOwnerBoundary(t, openStore) })
 	t.Run("ORC_conversation_SLA_uses_CON_CHN_owner_queries", func(t *testing.T) { testAdvancedConversationSLAOwnerBoundary(t, openStore) })
 	t.Run("ORC_attachment_targets_use_CON_MSG_owner_queries", func(t *testing.T) { testAdvancedAttachmentTargetOwnerBoundary(t, openStore) })
+	t.Run("ORC_draft_reads_use_MSG_owner_query", func(t *testing.T) { testAdvancedDraftOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1664,6 +1665,37 @@ func testAdvancedAttachmentTargetOwnerBoundary(t *testing.T, openStore func(stri
 	}
 	if conDB.Migrator().HasTable(&domain.Message{}) || msgDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CON/MSG isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedDraftOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	msgDB := openStore("MSG")
+	messages := repository.NewMessageRepository(msgDB)
+	if _, err := messages.SaveDraft(501, 11, 21, "owned draft"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := messages.SaveDraft(502, 13, 21, "foreign account draft"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := messages.SaveDraft(501, 12, 21, "other conversation draft"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := messages.SaveDraft(501, 11, 22, "other user draft"); err != nil {
+		t.Fatal(err)
+	}
+
+	draft, err := messages.FindDraft(501, 11, 21)
+	if err != nil || draft == nil || draft.Message != "owned draft" {
+		t.Fatalf("MSG draft lookup failed: draft=%+v err=%v", draft, err)
+	}
+	for _, scope := range [][3]uint{{501, 13, 21}, {501, 12, 22}, {501, 11, 23}} {
+		draft, err = messages.FindDraft(scope[0], scope[1], scope[2])
+		if err != nil || draft != nil {
+			t.Fatalf("MSG exposed draft outside exact scope %v: draft=%+v err=%v", scope, draft, err)
+		}
+	}
+	if msgDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("MSG isolated store contains CON authority table")
 	}
 }
 

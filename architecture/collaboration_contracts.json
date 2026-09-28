@@ -3499,6 +3499,16 @@
     },
     {
       "consumer": "ORC",
+      "provider": "MSG",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "MessageRepository",
+      "method": "FindDraft",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.changed.v1"
+    },
+    {
+      "consumer": "ORC",
       "provider": "CON",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "ConversationRepository",

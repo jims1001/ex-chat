@@ -357,6 +357,18 @@ func (r *MessageRepository) DeleteDraft(accountID, conversationID, userID uint) 
 	return r.db.Where("account_id = ? AND conversation_id = ? AND user_id = ?", accountID, conversationID, userID).Delete(&domain.DraftMessage{}).Error
 }
 
+func (r *MessageRepository) FindDraft(accountID, conversationID, userID uint) (*domain.DraftMessage, error) {
+	var draft domain.DraftMessage
+	err := r.db.Where("account_id = ? AND conversation_id = ? AND user_id = ?", accountID, conversationID, userID).First(&draft).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
 // IncomingUnreadWindow is an MSG-owned query for CON's mark-unread command.
 func (r *MessageRepository) IncomingUnreadWindow(accountID, conversationID uint) (time.Time, int64, bool, error) {
 	var latest domain.Message
