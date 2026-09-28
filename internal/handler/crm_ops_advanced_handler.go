@@ -35,6 +35,7 @@ type AdvancedHandler struct {
 	agentBotRepo      *repository.AgentBotRepository
 	inboxRepo         *repository.InboxRepository
 	accountRepo       *repository.AccountRepository
+	userRepo          *repository.UserRepository
 	attachmentRepo    *repository.AttachmentRepository
 	labelRepo         *repository.LabelRepository
 	messageRepo       *repository.MessageRepository
@@ -113,6 +114,10 @@ func (h *AdvancedHandler) SetInboxRepo(repo *repository.InboxRepository) {
 
 func (h *AdvancedHandler) SetAccountRepo(repo *repository.AccountRepository) {
 	h.accountRepo = repo
+}
+
+func (h *AdvancedHandler) SetUserRepo(repo *repository.UserRepository) {
+	h.userRepo = repo
 }
 
 func (h *AdvancedHandler) listAgentBotInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {
@@ -1735,14 +1740,42 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 			return
 		}
 
-		var conversations []domain.Conversation
-		if err := h.db.WithContext(c.Request.Context()).
-			Preload("Inbox").
-			Preload("Assignee").
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Find(&conversations).Error; err != nil {
+		conversations, err := h.convRepo.ListByIDs(uint(accID), req.IDs)
+		if err != nil {
 			response.Error(c, http.StatusInternalServerError, err.Error())
 			return
+		}
+		inboxIDs := make([]uint, 0, len(conversations))
+		assigneeIDs := make([]uint, 0, len(conversations))
+		for _, conv := range conversations {
+			inboxIDs = append(inboxIDs, conv.InboxID)
+			if conv.AssigneeID != nil {
+				assigneeIDs = append(assigneeIDs, *conv.AssigneeID)
+			}
+		}
+		inboxes, err := h.inboxRepo.FindByIDs(uint(accID), inboxIDs)
+		if err != nil {
+			response.InternalError(c, "Failed to load conversation inboxes")
+			return
+		}
+		assignees, err := h.userRepo.FindByIDs(assigneeIDs)
+		if err != nil {
+			response.InternalError(c, "Failed to load conversation assignees")
+			return
+		}
+		inboxByID := make(map[uint]*domain.Inbox, len(inboxes))
+		for i := range inboxes {
+			inboxByID[inboxes[i].ID] = &inboxes[i]
+		}
+		assigneeByID := make(map[uint]*domain.User, len(assignees))
+		for i := range assignees {
+			assigneeByID[assignees[i].ID] = &assignees[i]
+		}
+		for i := range conversations {
+			conversations[i].Inbox = inboxByID[conversations[i].InboxID]
+			if conversations[i].AssigneeID != nil {
+				conversations[i].Assignee = assigneeByID[*conversations[i].AssigneeID]
+			}
 		}
 
 		now := time.Now().UTC()

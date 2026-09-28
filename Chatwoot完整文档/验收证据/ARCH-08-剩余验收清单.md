@@ -101,4 +101,5 @@
 - 已完成并验证：WidgetHandler 通过 CHN 按账号和收件箱读取成员 ID，再由 IAM 批量读取公开用户资料，API 不再联表读取 InboxMember/User（E-ARCH-08-v55）。
 - 已完成并验证：WidgetHandler 的事件及标签入口通过 CON 校验账号、收件箱和访客会话归属，且不再持有数据库句柄（E-ARCH-08-v56）。
 - 已完成并验证：CRMOpsAdvancedHandler 批量分配坐席通过 TEN/IAM 校验并组合坐席，通过 CON/CHN 获取会话和收件箱，ORC 不再联表或预加载四个所有者数据（E-ARCH-08-v57）。
-- 下一项：CRMOpsAdvancedHandler 批量更新状态时的 CON/CHN/IAM 预加载边界。
+- 已完成并验证：CRMOpsAdvancedHandler 批量状态更新通过 CON/CHN/IAM 批量组合会话、收件箱与坐席，ORC 不再直接查询或预加载三方数据（E-ARCH-08-v58）。
+- 下一项：CRMOpsAdvancedHandler 批量分配团队时的 TEN/CON/CHN/IAM 访问边界。

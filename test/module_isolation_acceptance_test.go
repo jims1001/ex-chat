@@ -121,6 +121,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_widget_members_use_CHN_IAM_owner_queries", func(t *testing.T) { testWidgetInboxMemberOwnerBoundary(t, openStore) })
 	t.Run("API_widget_conversation_validation_uses_CON_owner", func(t *testing.T) { testWidgetConversationValidationBoundary(t, openStore) })
 	t.Run("API_bulk_assignment_uses_TEN_IAM_owner_query", func(t *testing.T) { testAdvancedBulkAssignmentOwnerBoundary(t, openStore) })
+	t.Run("ORC_bulk_status_uses_CON_CHN_IAM_owner_queries", func(t *testing.T) { testAdvancedBulkStatusOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1423,6 +1424,42 @@ func testAdvancedBulkAssignmentOwnerBoundary(t *testing.T, openStore func(string
 	}
 	if tenDB.Migrator().HasTable(&domain.User{}) || iamDB.Migrator().HasTable(&domain.AccountUser{}) {
 		t.Fatal("TEN/IAM isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedBulkStatusOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	conDB, chnDB, iamDB := openStore("CON"), openStore("CHN"), openStore("IAM")
+	inbox := domain.Inbox{AccountID: 97, Name: "Bulk Status", ChannelType: "Channel::WebWidget", WebsiteToken: "bulk-status-token"}
+	assignee := domain.User{Name: "Status Agent", Email: "status-agent@example.test", Role: domain.RoleAgent}
+	if err := chnDB.Create(&inbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := iamDB.Create(&assignee).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 97, InboxID: inbox.ID, ContactID: 1, AssigneeID: &assignee.ID, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	otherConversation := domain.Conversation{AccountID: 98, InboxID: inbox.ID, ContactID: 2, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&otherConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversations, err := repository.NewConversationRepository(conDB).ListByIDs(97, []uint{conversation.ID, otherConversation.ID})
+	if err != nil || len(conversations) != 1 || conversations[0].ID != conversation.ID {
+		t.Fatalf("CON bulk status lookup failed: conversations=%+v err=%v", conversations, err)
+	}
+	inboxes, err := repository.NewInboxRepository(chnDB).FindByIDs(97, []uint{conversations[0].InboxID})
+	if err != nil || len(inboxes) != 1 || inboxes[0].ID != inbox.ID {
+		t.Fatalf("CHN bulk status inbox lookup failed: inboxes=%+v err=%v", inboxes, err)
+	}
+	assignees, err := repository.NewUserRepository(iamDB).FindByIDs([]uint{*conversations[0].AssigneeID})
+	if err != nil || len(assignees) != 1 || assignees[0].ID != assignee.ID {
+		t.Fatalf("IAM bulk status assignee lookup failed: users=%+v err=%v", assignees, err)
+	}
+	if conDB.Migrator().HasTable(&domain.Inbox{}) || conDB.Migrator().HasTable(&domain.User{}) || chnDB.Migrator().HasTable(&domain.Conversation{}) || iamDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CON/CHN/IAM isolated stores contain a foreign authority table")
 	}
 }
 

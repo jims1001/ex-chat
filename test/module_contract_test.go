@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v57 records bulk assignee lookup through TEN/IAM.
-	const approvedCollaborationSHA = "d6186d686974ed98b2c336576ca2d52a86445b889786fd4a1dcb459e0aeea9d6"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v58 records bulk status reads through CON/CHN/IAM.
+	const approvedCollaborationSHA = "7f776e4bbcaf26b3b736de0f90553a6a818ad0b8ceee71dc01d6f65789917853"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -414,7 +414,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},
 		"../internal/handler/widget_handler.go":                      {"h.db.Where", "JOIN conversations ON conversations.id = messages.conversation_id", "messages.id = ? AND conversations.inbox_id", "JOIN inbox_members ON inbox_members.user_id = users.id", "inbox_members.inbox_id = ?"},
-		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?"},
+		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {
