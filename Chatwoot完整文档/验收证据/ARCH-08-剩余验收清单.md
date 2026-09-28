@@ -150,4 +150,5 @@
 - 已完成并验证：CUS `cus.identity.resolve.v1` 在账号内按邮箱、标识、电话及姓名解析联系人，空条件和跨账号查询失败且不泄露令牌（E-ARCH-08-v105）。
 - 已完成并验证：CUS `cus.company.get.v1` 按账号读取公司安全摘要与本地联系人计数，不返回自定义和内部附加属性（E-ARCH-08-v106）。
 - 已完成并验证：CUS `cus.company.update.v1` 显式创建/更新公司，拒绝跨账号与非法属性，业务、收据和 `cus.company.changed.v1` 事件同事务（E-ARCH-08-v107）。
-- 下一项：CUS 标签查询与管理合同。
+- 已完成并验证：CUS `cus.label.get.v1` 与 `cus.label.manage.v1` 支持账号范围查询、显式创建/更新和 `cus.label.changed.v1` 原子事件（E-ARCH-08-v108）。
+- 下一项：CUS 联系人合并命令的跨所有者投影重分配。

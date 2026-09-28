@@ -125,6 +125,15 @@ type companyView struct {
 	ContactsCount int64  `json:"contacts_count"`
 }
 
+type labelView struct {
+	ID            uint   `json:"id"`
+	AccountID     uint   `json:"account_id"`
+	Title         string `json:"title"`
+	Description   string `json:"description"`
+	Color         string `json:"color"`
+	ShowOnSidebar bool   `json:"show_on_sidebar"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -261,6 +270,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 	case "CUS":
 		contacts := repository.NewContactRepositoryWithOwnerPorts(r.DB, nil, nil, nil, nil, nil)
 		companies := repository.NewCompanyRepository(r.DB)
+		labels := repository.NewLabelRepositoryWithConversationPort(r.DB, nil)
 		if err := r.Contracts.RegisterQuery("cus.contact.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			contactID, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -274,6 +284,29 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
 			}
 			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("cus.label.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			if labelID, err := uintFilter(query.Filter, "id"); err == nil {
+				label, err := labels.FindByID(query.AccountID, labelID)
+				if err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "label store is unavailable"}
+				}
+				if label == nil {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "label was not found"}
+				}
+				return labelFromModel(label), nil
+			}
+			found, err := labels.List(query.AccountID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "label store is unavailable"}
+			}
+			views := make([]labelView, 0, len(found))
+			for i := range found {
+				views = append(views, *labelFromModel(&found[i]))
+			}
+			return views, nil
 		}); err != nil {
 			return err
 		}
@@ -384,7 +417,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("cus.company.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("cus.company.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			action, _ := command.Input["action"].(string)
 			tx := Transaction(ctx, r.DB)
 			txCompanies := repository.NewCompanyRepository(tx)
@@ -462,6 +495,75 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, err
 			}
 			return companyFromModel(company), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("cus.label.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			action, _ := command.Input["action"].(string)
+			tx := Transaction(ctx, r.DB)
+			txLabels := repository.NewLabelRepositoryWithConversationPort(tx, nil)
+			if action == "create" {
+				if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+				}
+				title, _ := command.Input["title"].(string)
+				if strings.TrimSpace(title) == "" {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "label title is required"}
+				}
+				label := &domain.Label{AccountID: command.AccountID, Title: strings.TrimSpace(title), Color: "#1f93ff"}
+				label.Description, _ = command.Input["description"].(string)
+				if color, ok := command.Input["color"].(string); ok && strings.TrimSpace(color) != "" {
+					label.Color = strings.TrimSpace(color)
+				}
+				label.ShowOnSidebar, _ = command.Input["show_on_sidebar"].(bool)
+				if err := txLabels.Create(label); err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "label could not be created"}
+				}
+				if err := r.appendBusinessEvent(ctx, command, "cus.label.changed.v1", "Label", strconv.FormatUint(uint64(label.ID), 10), []string{"created"}, map[string]any{"label_id": label.ID, "operation": "created"}); err != nil {
+					return nil, err
+				}
+				return labelFromModel(label), nil
+			}
+			if action != "update" || command.Target.Type != "label" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "label action is invalid"}
+			}
+			parsedID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsedID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "label target is invalid"}
+			}
+			labelID := uint(parsedID)
+			label, err := txLabels.FindByID(command.AccountID, labelID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "label store is unavailable"}
+			}
+			if label == nil {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "label was not found"}
+			}
+			allowed := map[string]string{"title": "title", "description": "description", "color": "color", "show_on_sidebar": "show_on_sidebar"}
+			updates := map[string]any{}
+			changed := make([]string, 0, len(command.Input))
+			for key, value := range command.Input {
+				if key == "action" {
+					continue
+				}
+				column, ok := allowed[key]
+				if !ok {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "label field is not writable"}
+				}
+				updates[column] = value
+				changed = append(changed, key)
+			}
+			if len(updates) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "label update is empty"}
+			}
+			if err := tx.Model(&domain.Label{}).Where("account_id = ? AND id = ?", command.AccountID, labelID).Updates(updates).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "label could not be updated"}
+			}
+			label, _ = txLabels.FindByID(command.AccountID, labelID)
+			if err := r.appendBusinessEvent(ctx, command, "cus.label.changed.v1", "Label", command.Target.ID, changed, map[string]any{"label_id": label.ID, "operation": "updated"}); err != nil {
+				return nil, err
+			}
+			return labelFromModel(label), nil
 		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
@@ -870,6 +972,13 @@ func companyFromModel(company *domain.Company) *companyView {
 		return nil
 	}
 	return &companyView{ID: company.ID, AccountID: company.AccountID, Name: company.Name, Domain: company.Domain, Industry: company.Industry, Description: company.Description, AvatarURL: company.AvatarURL, ContactsCount: company.ContactsCount}
+}
+
+func labelFromModel(label *domain.Label) *labelView {
+	if label == nil {
+		return nil
+	}
+	return &labelView{ID: label.ID, AccountID: label.AccountID, Title: label.Title, Description: label.Description, Color: label.Color, ShowOnSidebar: label.ShowOnSidebar}
 }
 
 func validJSONObject(value any) bool {

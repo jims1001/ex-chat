@@ -299,6 +299,62 @@ func TestCUSCompanyCreateUpdateAreExplicitAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestCUSLabelQueryManageAreAccountScopedAndIdempotent(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	callCommand := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.label.manage.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	create := foundation.CommandEnvelope{CommandID: "label-create-1", CommandType: "cus.label.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"action": "create", "title": "VIP", "color": "#ff0000", "show_on_sidebar": true}, IdempotencyKey: "label-create-91", CorrelationID: "label-correlation", CausationID: "label-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.label.get.v1"}}
+	for i := 0; i < 2; i++ {
+		if response := callCommand(create); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "VIP") {
+			t.Fatalf("label create status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var label domain.Label
+	if err := db.First(&label).Error; err != nil {
+		t.Fatal(err)
+	}
+	update := create
+	update.CommandID, update.IdempotencyKey = "label-update-1", "label-update-91"
+	update.Target, update.Input = foundation.ContractTarget{Type: "label", ID: strconv.FormatUint(uint64(label.ID), 10)}, map[string]any{"action": "update", "title": "Priority", "description": "Important"}
+	if response := callCommand(update); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Priority") {
+		t.Fatalf("label update status=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "cus.label.get.v1", AccountID: 91, Actor: create.Actor, Filter: map[string]any{"id": label.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "title"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	callQuery := func(accountID uint) *httptest.ResponseRecorder {
+		query.AccountID = accountID
+		return performContractRequest(newRuntime().Handler(), "/contracts/queries/cus.label.get.v1", query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := callQuery(91); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Priority") {
+		t.Fatalf("label query status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := callQuery(92); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account label status=%d body=%s", response.Code, response.Body.String())
+	}
+	var labels, receipts, events int64
+	_ = db.Model(&domain.Label{}).Count(&labels).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.label.changed.v1%").Count(&events).Error
+	if labels != 1 || receipts != 2 || events != 2 {
+		t.Fatalf("labels=%d receipts=%d events=%d", labels, receipts, events)
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")
