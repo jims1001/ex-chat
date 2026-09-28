@@ -628,6 +628,17 @@ func (r *ContactRepository) Search(accountID uint, search string, page, pageSize
 	return contacts, total, err
 }
 
+func (r *ContactRepository) SearchForGlobal(accountID uint, search string, limit int) ([]domain.Contact, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	pattern := "%" + search + "%"
+	var contacts []domain.Contact
+	err := r.db.Where("account_id = ? AND (name LIKE ? OR email LIKE ? OR phone_number LIKE ?)", accountID, pattern, pattern, pattern).
+		Limit(limit).Find(&contacts).Error
+	return contacts, err
+}
+
 // Filter applies structured rules to filter contacts dynamically
 func (r *ContactRepository) Filter(accountID uint, filters []domain.FilterRule, page, pageSize int) ([]domain.Contact, int64, error) {
 	var contacts []domain.Contact

@@ -409,6 +409,20 @@ func (r *ConversationRepository) FindByContactAndInbox(accountID, contactID, inb
 	return &conversation, err
 }
 
+func (r *ConversationRepository) SearchForGlobal(accountID uint, search string, includeStatus bool, limit int) ([]domain.Conversation, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	pattern := "%" + search + "%"
+	query := r.db.Where("account_id = ? AND custom_attributes LIKE ?", accountID, pattern)
+	if includeStatus {
+		query = r.db.Where("account_id = ? AND (custom_attributes LIKE ? OR status LIKE ?)", accountID, pattern, pattern)
+	}
+	var conversations []domain.Conversation
+	err := query.Limit(limit).Find(&conversations).Error
+	return conversations, err
+}
+
 func (r *ConversationRepository) List(accountID uint, status, priority string, assigneeID *uint, inboxID *uint, page, pageSize int) ([]domain.Conversation, int64, error) {
 	var conversations []domain.Conversation
 	var total int64

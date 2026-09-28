@@ -95,4 +95,5 @@
 - 已完成并验证：DataImportService 的 CSV/JSON 预校验和执行阶段通过 CUS 查询账号范围内的联系人邮箱并由 CUS 创建联系人，MIG 不再读取 Contact（E-ARCH-08-v49）。
 - 已完成并验证：CampaignService 通过 CUS 解析账号范围内的标签 ID、通过 CON 查询会话标签对应联系人，OPS 不再跨 CON/CUS 联表筛选活动受众（E-ARCH-08-v50）。
 - 已完成并验证：CampaignService 通过 CON 按账号、联系人和收件箱查找既有会话，只在明确未找到时创建，OPS 不再直接读取 Conversation（E-ARCH-08-v51）。
-- 下一项：SearchHandler 的 CUS/CON/MSG 搜索读取边界。
+- 已完成并验证：SearchHandler 的全局及专项入口分别通过 CUS/CON/MSG 所有者执行联系人、会话和消息搜索，SRH 不再读取三类外部权威表（E-ARCH-08-v52）。
+- 下一项：SearchHandler 的 KB 文章搜索读取边界。

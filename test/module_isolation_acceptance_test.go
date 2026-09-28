@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +15,10 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/handler"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -93,6 +97,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
+	t.Run("SRH_search_uses_CUS_CON_MSG_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
@@ -1913,6 +1918,65 @@ func testLabelRepositoryConversationBoundary(t *testing.T, openStore func(string
 	}
 	if conDB.Migrator().HasTable(&domain.Label{}) {
 		t.Fatal("CON store contains CUS authority tables")
+	}
+}
+
+func testSearchHandlerOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	srhDB, cusDB, conDB, msgDB := openStore("SRH"), openStore("CUS"), openStore("CON"), openStore("MSG")
+	for _, contact := range []domain.Contact{
+		{AccountID: 1, Name: "needle-contact-one", Email: "one@example.com"},
+		{AccountID: 2, Name: "needle-contact-two", Email: "two@example.com"},
+	} {
+		if err := cusDB.Create(&contact).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, conversation := range []domain.Conversation{
+		{AccountID: 1, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen, CustomAttributes: `{"search":"needle-conversation-one"}`},
+		{AccountID: 2, InboxID: 2, ContactID: 2, DisplayID: 1, Status: domain.ConversationStatusOpen, CustomAttributes: `{"search":"needle-conversation-two"}`},
+	} {
+		if err := conDB.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, message := range []domain.Message{
+		{AccountID: 1, ConversationID: 1, Content: "needle-message-one", MessageType: domain.MessageTypeIncoming},
+		{AccountID: 2, ConversationID: 2, Content: "needle-message-two", MessageType: domain.MessageTypeIncoming},
+	} {
+		if err := msgDB.Create(&message).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	search := handler.NewSearchHandler(srhDB, repository.NewContactRepository(cusDB), repository.NewConversationRepository(conDB), repository.NewMessageRepository(msgDB))
+	router.GET("/:account_id/search", search.GlobalSearch)
+	router.GET("/:account_id/search/contacts", search.SearchContacts)
+	router.GET("/:account_id/search/conversations", search.SearchConversations)
+	router.GET("/:account_id/search/messages", search.SearchMessages)
+	checks := []struct {
+		path string
+		want string
+		deny string
+	}{
+		{"/1/search?q=needle", "needle-contact-one", "needle-contact-two"},
+		{"/1/search/contacts?q=needle", "needle-contact-one", "needle-contact-two"},
+		{"/1/search/conversations?q=needle", "needle-conversation-one", "needle-conversation-two"},
+		{"/1/search/messages?q=needle", "needle-message-one", "needle-message-two"},
+	}
+	for _, check := range checks {
+		req := httptest.NewRequest(http.MethodGet, check.path, nil)
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), check.want) || strings.Contains(res.Body.String(), check.deny) {
+			t.Fatalf("owner search %s returned code=%d body=%s", check.path, res.Code, res.Body.String())
+		}
+	}
+	for name, model := range map[string]any{"CUS Contact": &domain.Contact{}, "CON Conversation": &domain.Conversation{}, "MSG Message": &domain.Message{}} {
+		if srhDB.Migrator().HasTable(model) {
+			t.Fatalf("SRH store contains %s authority table", name)
+		}
 	}
 }
 

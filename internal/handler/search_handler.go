@@ -4,17 +4,21 @@ import (
 	"strconv"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type SearchHandler struct {
-	db *gorm.DB
+	db            *gorm.DB
+	contacts      *repository.ContactRepository
+	conversations *repository.ConversationRepository
+	messages      *repository.MessageRepository
 }
 
-func NewSearchHandler(db *gorm.DB) *SearchHandler {
-	return &SearchHandler{db: db}
+func NewSearchHandler(db *gorm.DB, contacts *repository.ContactRepository, conversations *repository.ConversationRepository, messages *repository.MessageRepository) *SearchHandler {
+	return &SearchHandler{db: db, contacts: contacts, conversations: conversations, messages: messages}
 }
 
 func (h *SearchHandler) GlobalSearch(c *gin.Context) {
@@ -35,17 +39,23 @@ func (h *SearchHandler) GlobalSearch(c *gin.Context) {
 		return
 	}
 
+	contacts, err := h.contacts.SearchForGlobal(uint(accountID), q, 20)
+	if err != nil {
+		response.InternalError(c, "Failed to search contacts")
+		return
+	}
+	messages, err := h.messages.SearchForGlobal(uint(accountID), q, 20)
+	if err != nil {
+		response.InternalError(c, "Failed to search messages")
+		return
+	}
+	conversations, err := h.conversations.SearchForGlobal(uint(accountID), q, false, 20)
+	if err != nil {
+		response.InternalError(c, "Failed to search conversations")
+		return
+	}
+
 	likePattern := "%" + q + "%"
-
-	var contacts []domain.Contact
-	_ = h.db.Where("account_id = ? AND (name LIKE ? OR email LIKE ? OR phone_number LIKE ?)", accountID, likePattern, likePattern, likePattern).Limit(20).Find(&contacts).Error
-
-	var messages []domain.Message
-	_ = h.db.Where("account_id = ? AND content LIKE ?", accountID, likePattern).Limit(20).Find(&messages).Error
-
-	var conversations []domain.Conversation
-	_ = h.db.Where("account_id = ? AND custom_attributes LIKE ?", accountID, likePattern).Limit(20).Find(&conversations).Error
-
 	var articles []domain.Article
 	_ = h.db.Where("account_id = ? AND (title LIKE ? OR content LIKE ?)", accountID, likePattern, likePattern).Limit(20).Find(&articles).Error
 
@@ -64,11 +74,11 @@ func (h *SearchHandler) SearchContacts(c *gin.Context) {
 		return
 	}
 
-	q := c.Query("q")
-	likePattern := "%" + q + "%"
-
-	var contacts []domain.Contact
-	_ = h.db.Where("account_id = ? AND (name LIKE ? OR email LIKE ? OR phone_number LIKE ?)", accountID, likePattern, likePattern, likePattern).Limit(50).Find(&contacts).Error
+	contacts, err := h.contacts.SearchForGlobal(uint(accountID), c.Query("q"), 50)
+	if err != nil {
+		response.InternalError(c, "Failed to search contacts")
+		return
+	}
 
 	response.Success(c, contacts)
 }
@@ -80,11 +90,11 @@ func (h *SearchHandler) SearchConversations(c *gin.Context) {
 		return
 	}
 
-	q := c.Query("q")
-	likePattern := "%" + q + "%"
-
-	var conversations []domain.Conversation
-	_ = h.db.Where("account_id = ? AND (custom_attributes LIKE ? OR status LIKE ?)", accountID, likePattern, likePattern).Limit(50).Find(&conversations).Error
+	conversations, err := h.conversations.SearchForGlobal(uint(accountID), c.Query("q"), true, 50)
+	if err != nil {
+		response.InternalError(c, "Failed to search conversations")
+		return
+	}
 
 	response.Success(c, conversations)
 }
@@ -96,11 +106,11 @@ func (h *SearchHandler) SearchMessages(c *gin.Context) {
 		return
 	}
 
-	q := c.Query("q")
-	likePattern := "%" + q + "%"
-
-	var messages []domain.Message
-	_ = h.db.Where("account_id = ? AND content LIKE ?", accountID, likePattern).Limit(50).Find(&messages).Error
+	messages, err := h.messages.SearchForGlobal(uint(accountID), c.Query("q"), 50)
+	if err != nil {
+		response.InternalError(c, "Failed to search messages")
+		return
+	}
 
 	response.Success(c, messages)
 }

@@ -438,6 +438,36 @@
   ],
   "edgeBindings": [
     {
+      "consumer": "SRH",
+      "provider": "CUS",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "ContactRepository",
+      "method": "SearchForGlobal",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "SRH",
+      "provider": "CON",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "SearchForGlobal",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "SRH",
+      "provider": "MSG",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "MessageRepository",
+      "method": "SearchForGlobal",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
       "consumer": "API",
       "provider": "MSG",
       "file": "internal/handler/email_log_handler.go",

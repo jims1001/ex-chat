@@ -103,8 +103,8 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// E-ARCH-08-v48 registers the RPT to EXT owner dependency for bot inbox reporting.
-	const approvedManifestSHA256 = "628daf9c68e737c9672217156b4be5bf459d23648c7d2412491e4d0222a1ad8c"
+	// E-ARCH-08-v52 registers SRH owner reads from CUS, CON, and MSG.
+	const approvedManifestSHA256 = "36f894616f33ad3886fe46d628994e76e607a79d1a3b0bedc79c14758f72da3b"
 	if actual := fmt.Sprintf("%x", sha256.Sum256(raw)); actual != approvedManifestSHA256 {
 		t.Fatalf("dependency manifest changed (%s); reopen ARCH-03 and approve a new fingerprint", actual)
 	}

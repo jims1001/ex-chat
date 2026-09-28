@@ -660,7 +660,10 @@
       "capabilitiesRef": "SRH",
       "startupRequired": [],
       "capabilityDependencies": [
-        "TEN"
+        "TEN",
+        "CUS",
+        "CON",
+        "MSG"
       ],
       "asynchronousDependencies": [
         "CUS",

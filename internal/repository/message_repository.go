@@ -191,6 +191,16 @@ func (r *MessageRepository) CountActivityByConversationIDs(accountID uint, conve
 	return messages, attachments, nil
 }
 
+func (r *MessageRepository) SearchForGlobal(accountID uint, search string, limit int) ([]domain.Message, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var messages []domain.Message
+	err := r.db.Where("account_id = ? AND content LIKE ?", accountID, "%"+search+"%").
+		Limit(limit).Find(&messages).Error
+	return messages, err
+}
+
 func (r *MessageRepository) ListAttachmentsByConversationIDs(accountID uint, conversationIDs []uint, filter CompanyAttachmentFilter) ([]ContactAttachmentItem, int64, error) {
 	if len(conversationIDs) == 0 {
 		return []ContactAttachmentItem{}, 0, nil
