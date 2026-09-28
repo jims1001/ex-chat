@@ -127,6 +127,25 @@ func (r *CompanyRepository) AssociateContacts(ctx context.Context, accountID, co
 		Update("company_id", companyID).Error
 }
 
+func (r *CompanyRepository) ListContactsByIDs(ctx context.Context, accountID uint, contactIDs []uint) ([]domain.Contact, error) {
+	if len(contactIDs) == 0 {
+		return []domain.Contact{}, nil
+	}
+	var contacts []domain.Contact
+	err := r.db.WithContext(ctx).Preload("Company").Preload("Labels").
+		Where("account_id = ? AND id IN ?", accountID, contactIDs).
+		Find(&contacts).Error
+	return contacts, err
+}
+
+func (r *CompanyRepository) ContactBelongsToCompany(ctx context.Context, accountID, companyID, contactID uint) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&domain.Contact{}).
+		Where("account_id = ? AND company_id = ? AND id = ?", accountID, companyID, contactID).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (r *CompanyRepository) DisassociateContact(ctx context.Context, accountID, companyID, contactID uint) error {
 	return r.db.WithContext(ctx).Model(&domain.Contact{}).
 		Where("account_id = ? AND company_id = ? AND id = ?", accountID, companyID, contactID).

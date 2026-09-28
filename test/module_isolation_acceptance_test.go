@@ -124,6 +124,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_bulk_status_uses_CON_CHN_IAM_owner_queries", func(t *testing.T) { testAdvancedBulkStatusOwnerBoundary(t, openStore) })
 	t.Run("ORC_bulk_team_assignment_uses_TEN_CON_owner_queries", func(t *testing.T) { testAdvancedBulkTeamOwnerBoundary(t, openStore) })
 	t.Run("ORC_bulk_labels_use_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedBulkLabelOwnerBoundary(t, openStore) })
+	t.Run("ORC_company_contact_links_use_CUS_owner_queries", func(t *testing.T) { testAdvancedCompanyContactOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1536,6 +1537,53 @@ func testAdvancedBulkLabelOwnerBoundary(t *testing.T, openStore func(string) *go
 	}
 	if conDB.Migrator().HasTable(&domain.Label{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.ConversationLabel{}) {
 		t.Fatal("CON/CUS isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedCompanyContactOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	cusDB := openStore("CUS")
+	company := domain.Company{AccountID: 201, Name: "Owner Company"}
+	foreignCompany := domain.Company{AccountID: 202, Name: "Foreign Company"}
+	if err := cusDB.Create(&company).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&foreignCompany).Error; err != nil {
+		t.Fatal(err)
+	}
+	contact := domain.Contact{AccountID: 201, Name: "Owner Contact"}
+	foreignContact := domain.Contact{AccountID: 202, Name: "Foreign Contact", CompanyID: &foreignCompany.ID}
+	if err := cusDB.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := cusDB.Create(&foreignContact).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	companies := repository.NewCompanyRepository(cusDB)
+	if err := companies.AssociateContacts(context.Background(), 201, company.ID, []uint{contact.ID, foreignContact.ID}); err != nil {
+		t.Fatal(err)
+	}
+	contacts, err := companies.ListContactsByIDs(context.Background(), 201, []uint{contact.ID, foreignContact.ID})
+	if err != nil || len(contacts) != 1 || contacts[0].ID != contact.ID || contacts[0].Company == nil || contacts[0].Company.ID != company.ID {
+		t.Fatalf("CUS company contact readback failed: contacts=%+v err=%v", contacts, err)
+	}
+	associated, err := companies.ContactBelongsToCompany(context.Background(), 201, company.ID, contact.ID)
+	if err != nil || !associated {
+		t.Fatalf("CUS company contact association was not found: associated=%v err=%v", associated, err)
+	}
+	associated, err = companies.ContactBelongsToCompany(context.Background(), 201, company.ID, foreignContact.ID)
+	if err != nil || associated {
+		t.Fatalf("CUS exposed cross-account company contact: associated=%v err=%v", associated, err)
+	}
+	if err := companies.DisassociateContact(context.Background(), 201, company.ID, contact.ID); err != nil {
+		t.Fatal(err)
+	}
+	associated, err = companies.ContactBelongsToCompany(context.Background(), 201, company.ID, contact.ID)
+	if err != nil || associated {
+		t.Fatalf("CUS company contact disassociation failed: associated=%v err=%v", associated, err)
+	}
+	if cusDB.Migrator().HasTable(&domain.Conversation{}) {
+		t.Fatal("CUS isolated store contains CON authority table")
 	}
 }
 

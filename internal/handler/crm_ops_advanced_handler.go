@@ -665,10 +665,11 @@ func (h *AdvancedHandler) AddCompanyContacts(c *gin.Context) {
 		return
 	}
 
-	var updatedContacts []domain.Contact
-	_ = h.db.WithContext(c.Request.Context()).Preload("Company").Preload("Labels").
-		Where("account_id = ? AND id IN ?", accID, ids).
-		Find(&updatedContacts).Error
+	updatedContacts, err := h.companyRepo.ListContactsByIDs(c.Request.Context(), uint(accID), ids)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	response.Success(c, updatedContacts)
 }
@@ -684,10 +685,8 @@ func (h *AdvancedHandler) RemoveCompanyContact(c *gin.Context) {
 		return
 	}
 
-	var contact domain.Contact
-	if err := h.db.WithContext(c.Request.Context()).
-		Where("account_id = ? AND id = ? AND company_id = ?", accID, contactID, comp.ID).
-		First(&contact).Error; err != nil {
+	associated, err := h.companyRepo.ContactBelongsToCompany(c.Request.Context(), uint(accID), comp.ID, uint(contactID))
+	if err != nil || !associated {
 		response.NotFound(c, "Contact not associated with this company")
 		return
 	}

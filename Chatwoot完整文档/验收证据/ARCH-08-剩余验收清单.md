@@ -104,4 +104,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler 批量状态更新通过 CON/CHN/IAM 批量组合会话、收件箱与坐席，ORC 不再直接查询或预加载三方数据（E-ARCH-08-v58）。
 - 已完成并验证：CRMOpsAdvancedHandler 批量分配团队通过 TEN 校验团队归属、通过 CON 获取账号范围内会话；核对确认该分支不需要 IAM/CHN 数据（E-ARCH-08-v59）。
 - 已完成并验证：CRMOpsAdvancedHandler 批量添加/删除标签通过 CON 获取账号范围内会话、通过 CUS 创建或解析标签，并由 CON 维护会话标签关系；ORC 不再直接读取 Conversation/Label（E-ARCH-08-v60）。
-- 下一项：CRMOpsAdvancedHandler 公司联系人添加回读及解除关联时的 CUS 访问边界。
+- 已完成并验证：CRMOpsAdvancedHandler 公司联系人添加后的回读和解除前归属检查均通过 CUS CompanyRepository 完成，ORC 不再直接读取 Contact/Company/Labels（E-ARCH-08-v61）。
+- 下一项：CRMOpsAdvancedHandler.GetConversationSLA 的 CON/CHN 会话及收件箱预加载边界。

@@ -2942,6 +2942,16 @@
       "provider": "CUS",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "CompanyRepository",
+      "method": "ContactBelongsToCompany",
+      "use": "read",
+      "contract": "cus.company.get.v1",
+      "replicaEvent": "cus.company.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CUS",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CompanyRepository",
       "method": "Create",
       "use": "write",
       "contract": "cus.company.update.v1",
@@ -3003,6 +3013,16 @@
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "CompanyRepository",
       "method": "ListCompanyContacts",
+      "use": "read",
+      "contract": "cus.company.get.v1",
+      "replicaEvent": "cus.company.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CUS",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CompanyRepository",
+      "method": "ListContactsByIDs",
       "use": "read",
       "contract": "cus.company.get.v1",
       "replicaEvent": "cus.company.changed.v1"
