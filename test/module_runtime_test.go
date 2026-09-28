@@ -16,8 +16,10 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var inventory struct {
-		FoundationVersion string
-		Modules           []struct {
+		FoundationVersion               string
+		ModuleRuntimeEntryPoint         string
+		IndependentReadinessImplemented bool
+		Modules                         []struct {
 			Module                   string
 			DefaultUnit              string
 			ContractVersion          string
@@ -28,6 +30,7 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 			StoredModels             []string
 			LocalJournal             string
 			FailurePolicy            struct{ WhenStopped, Recovery string }
+			RuntimeShellImplemented  bool
 		}
 	}
 	if err := json.Unmarshal(raw, &inventory); err != nil {
@@ -35,6 +38,9 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 	}
 	if inventory.FoundationVersion != "foundation-v1" {
 		t.Fatal("invalid foundation version")
+	}
+	if inventory.ModuleRuntimeEntryPoint != "cmd/module-server" || !inventory.IndependentReadinessImplemented {
+		t.Fatal("independent module runtime shell is not registered")
 	}
 	var dependencies architectureDependencyManifest
 	raw, err = os.ReadFile("../architecture/module_dependencies.json")
@@ -72,6 +78,9 @@ func TestModuleRuntimeInventoryMatchesSourceRegistries(t *testing.T) {
 		}
 		if module.DefaultUnit < "U1" || module.DefaultUnit > "U5" || module.LocalJournal != "LocalChangeJournal" || module.FailurePolicy.WhenStopped == "" || module.FailurePolicy.Recovery == "" {
 			t.Fatalf("incomplete runtime inventory for %s", module.Module)
+		}
+		if !module.RuntimeShellImplemented {
+			t.Fatalf("runtime shell missing for %s", module.Module)
 		}
 		models, err := database.ModuleModels(module.Module)
 		if err != nil {

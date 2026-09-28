@@ -2,10 +2,19 @@
 
 .PHONY: test test-fast test-coverage test-race test-stress test-soak test-docker docker-up docker-down build run lint
 
-.PHONY: test-module-isolation
+.PHONY: test-module-isolation test-module-runtime build-module run-module
 # Staged MSG/CON store acceptance; a pass is not full ARCH-08 acceptance.
 test-module-isolation:
 	EX_CHAT_MODULE_ACCEPTANCE=1 go test ./test/... -run '^TestModuleIsolationAcceptance$$' -count=1 -v
+
+test-module-runtime:
+	go test ./internal/modruntime ./cmd/module-server -count=1 -v
+
+build-module:
+	go build -o bin/module-server ./cmd/module-server
+
+run-module:
+	go run ./cmd/module-server
 
 # Fast test isolating backend packages and avoiding frontend node_modules recursive scanning
 test:

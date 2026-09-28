@@ -8,7 +8,7 @@
 |---|---|---|
 | 存储边界 | 全部业务路径只访问所属权威库，无跨所有者联表、关联写入或事务 | 需审计仓储、handler/service 直接 SQL，以及 Preload/Save 的隐式关联访问 |
 | 公开合同 | Command、Query、Event 的调用、认证、版本、超时、错误语义完整 | 目前新增端口主要仍是进程内适配器 |
-| 运行接线 | 每个模块有独立配置、数据库凭据、监听入口、健康与就绪状态 | 当前业务入口仍为 cmd/server 组合进程；cmd/module-migrate 仅准备架构 |
+| 运行接线 | 每个模块有独立配置、数据库凭据、监听入口、健康与就绪状态 | 26 个模块的独立运行基础单元已完成；业务公开合同处理器尚未迁入 |
 | 故障恢复 | 逐依赖超时、停止恢复、事件重复乱序重放与本地日志恢复通过 | 现有用例只覆盖部分 CON/MSG 故障场景 |
 | 多实例与容量 | 幂等、并发版本、任务单一所有者及容量目标通过 | 全模块扩缩与负载验收未完成 |
 | 升级回退 | 新旧版本并存、向前兼容迁移、灰度、回退后保留新事实 | 全模块版本切换验收未完成 |
@@ -123,4 +123,8 @@
 - 已完成并验证：MigrationService.importContacts 通过 CUS 按账号执行邮箱、标识、电话及姓名查重，MIG 不再直接读取 Contact（E-ARCH-08-v77）。
 - 已完成并验证：MigrationService.ensureDefaultInbox 通过 CHN 按账号复用或创建默认收件箱，MIG 不再直接读取 Inbox（E-ARCH-08-v78）。
 - 已完成并验证：CopilotHandler 工具调用通过 BIL 按账号查询订单和物流并更新地址，AIC 不再直接读取 Order（E-ARCH-08-v79）。
-- 下一项：AICustomToolHandler 工具调用中的 BIL 订单及物流查询边界。
+- 已完成并验证：AICustomToolHandler 工具调用通过 BIL 按账号查询订单、物流并更新地址，AIC 不再直接读取 Order（E-ARCH-08-v80）。
+- 已完成并验证：AdvancedHandler 和 ContactHandler 不再持有共享数据库句柄，CUS 合并事务保留本地日志（E-ARCH-08-v81、v82）。
+- 已完成并验证：直接存储所有权审计门禁覆盖 repository/service/handler，当前违规为零（E-ARCH-08-v83）。
+- 已完成并验证：26 个模块可使用独立 `MODULE_*` 配置、数据库和监听入口启动，健康及表级就绪检查通过（E-ARCH-08-v84）。
+- 下一项：独立模块运行时的公开合同传输、认证、版本、超时和错误语义接线。

@@ -7,14 +7,14 @@
   "capabilityRegistry": "architecture/module_contracts.json",
   "dependencyRegistry": "architecture/module_dependencies.json",
   "currentEntryPoint": "cmd/server",
-  "currentTopology": "combined-single-process",
+  "currentTopology": "combined server plus independently startable module runtime shells",
   "currentDatabaseConfig": [
     "DB_DRIVER",
     "DB_PATH",
     "DB_DSN"
   ],
   "currentHealthPath": "/health",
-  "independentReadinessImplemented": false,
+  "independentReadinessImplemented": true,
   "storagePreparation": "cmd/module-migrate",
   "sharedRequirements": {
     "localJournal": "LocalChangeJournal must share the owner transaction; Central AUD unavailability must not bypass local capture",
@@ -33,7 +33,7 @@
       "error_rate",
       "checkpoint"
     ],
-    "configuration": "Current database and process configuration is shared; isolated per-module credentials and runtime wiring remain unimplemented"
+    "configuration": "Independent module identity, listener, database credentials, health and schema readiness are implemented; business capability handlers remain to be extracted per module."
   },
   "modules": [
     {
@@ -58,7 +58,8 @@
         "recovery": "会话和撤销状态一致"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "TEN",
@@ -84,7 +85,8 @@
         "recovery": "成员和角色版本恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "ENT",
@@ -107,7 +109,8 @@
         "recovery": "额度和 Feature 重新对账"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "SYS",
@@ -133,7 +136,8 @@
         "recovery": "配置版本和缓存一致"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "CHN",
@@ -159,7 +163,8 @@
         "recovery": "健康、Token 和回调补偿"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "CUS",
@@ -188,7 +193,8 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "MED",
@@ -207,7 +213,8 @@
         "recovery": "补传和孤立引用清理"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "CON",
@@ -232,7 +239,8 @@
         "recovery": "状态和事件版本检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "MSG",
@@ -260,7 +268,8 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "RTE",
@@ -289,7 +298,8 @@
         "recovery": "重算队列和容量"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "TKT",
@@ -320,7 +330,8 @@
         "recovery": "关联事件补读"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "QLT",
@@ -355,7 +366,8 @@
         "recovery": "补收允许窗口内结果"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "KB",
@@ -380,7 +392,8 @@
         "recovery": "索引和发布版本同步"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "BIL",
@@ -405,7 +418,8 @@
         "recovery": "支付回调补读和对账"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "EXT",
@@ -438,7 +452,8 @@
         "recovery": "事件保留窗口和授权检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "NTF",
@@ -469,7 +484,8 @@
         "recovery": "投递保留窗口内补偿"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "AUT",
@@ -503,7 +519,8 @@
         "recovery": "从事件游标继续且不重复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "OPS",
@@ -539,7 +556,8 @@
         "recovery": "恢复计划和逐目标状态"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "AIC",
@@ -579,7 +597,8 @@
         "recovery": "模型、额度和知识版本检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "MIG",
@@ -607,7 +626,8 @@
         "recovery": "从检查点恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "RPT",
@@ -652,7 +672,8 @@
         "recovery": "事件补读和指标重算"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "SRH",
@@ -683,7 +704,8 @@
         "recovery": "索引检查点重建"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "ORC",
@@ -722,7 +744,8 @@
         "recovery": "步骤版本和结果查询后继续"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "API",
@@ -768,7 +791,8 @@
         "recovery": "幂等收据和限流状态恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "RTM",
@@ -806,7 +830,8 @@
         "recovery": "游标恢复和重复事件处理"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     },
     {
       "module": "AUD",
@@ -856,7 +881,16 @@
         "recovery": "补投、摘要链验证和完整对账"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending"
+      "acceptanceStatus": "pending",
+      "runtimeShellImplemented": true
     }
-  ]
+  ],
+  "moduleRuntimeEntryPoint": "cmd/module-server",
+  "moduleDatabaseConfig": [
+    "MODULE_DB_DRIVER",
+    "MODULE_DB_PATH",
+    "MODULE_DB_DSN"
+  ],
+  "moduleListenerConfig": "MODULE_ADDR",
+  "moduleIdentityConfig": "MODULE_ID"
 }
