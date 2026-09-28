@@ -722,6 +722,75 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterQuery("med.access.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			assetID, err := uintFilter(query.Filter, "id")
+			subjectType, _ := query.Filter["subject_type"].(string)
+			subjectID, _ := query.Filter["subject_id"].(string)
+			scope, _ := query.Filter["scope"].(string)
+			subjectType, subjectID, scope = strings.TrimSpace(subjectType), strings.TrimSpace(subjectID), strings.TrimSpace(scope)
+			if err != nil || subjectType == "" || subjectID == "" || scope == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "asset access subject and scope are required"}
+			}
+			var asset domain.MediaAsset
+			if err := r.DB.Where("account_id = ? AND id = ?", query.AccountID, assetID).First(&asset).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "asset was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			now := time.Now().UTC()
+			var grants int64
+			if err := r.DB.Model(&domain.AccessGrant{}).Where("account_id = ? AND asset_id = ? AND subject_type = ? AND subject_id = ? AND scope = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)", query.AccountID, assetID, subjectType, subjectID, scope, now).Count(&grants).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media access grants are unavailable"}
+			}
+			allowed := asset.Status == "ready" && asset.SecurityState == "clean" && grants > 0
+			return map[string]any{"asset_id": assetID, "allowed": allowed, "status": asset.Status, "security_state": asset.SecurityState}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("med.security_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			assetID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "asset id is required"}
+			}
+			var asset domain.MediaAsset
+			if err := r.DB.Where("account_id = ? AND id = ?", query.AccountID, assetID).First(&asset).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "asset was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			var scan domain.SecurityScan
+			scanResult := ""
+			var scannedAt *time.Time
+			if err := r.DB.Where("account_id = ? AND asset_id = ?", query.AccountID, assetID).Order("scanned_at DESC, id DESC").First(&scan).Error; err == nil {
+				scanResult, scannedAt = scan.Status, &scan.ScannedAt
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "security scans are unavailable"}
+			}
+			return map[string]any{"asset_id": assetID, "status": asset.Status, "security_state": asset.SecurityState, "latest_scan_result": scanResult, "scanned_at": scannedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("med.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			now := time.Now().UTC()
+			counts := map[string]int64{}
+			queries := map[string]*gorm.DB{
+				"asset_count":           r.DB.Model(&domain.MediaAsset{}).Where("account_id = ? AND status <> ?", query.AccountID, "deleted"),
+				"pending_upload_count":  r.DB.Model(&domain.UploadSession{}).Where("account_id = ? AND status = ? AND expires_at > ?", query.AccountID, "pending", now),
+				"active_grant_count":    r.DB.Model(&domain.AccessGrant{}).Where("account_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)", query.AccountID, now),
+				"security_record_count": r.DB.Model(&domain.SecurityScan{}).Where("account_id = ?", query.AccountID),
+			}
+			for name, statement := range queries {
+				var count int64
+				if err := statement.Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			counts["account_id"] = int64(query.AccountID)
+			return counts, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterCommand("med.upload.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}

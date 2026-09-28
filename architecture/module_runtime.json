@@ -318,11 +318,14 @@
         "recovery": "补传和孤立引用清理"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-confirm-and-security-scan",
+      "acceptanceStatus": "partial-access-and-security-queries",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
-        "med.asset.get.v1"
+        "med.asset.get.v1",
+        "med.access.check.v1",
+        "med.security_status.get.v1",
+        "med.account_deletion_status.get.v1"
       ],
       "implementedIndependentCommands": [
         "med.upload.create.v1",

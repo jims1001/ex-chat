@@ -338,6 +338,75 @@ func TestMEDConfirmAndScanEnforceOwnerStateMachine(t *testing.T) {
 	}
 }
 
+func TestMEDAccessSecurityAndDeletionQueriesExposeSafeDecisions(t *testing.T) {
+	db := newModuleTestDB(t, "MED")
+	now := time.Now().UTC()
+	asset := domain.MediaAsset{AccountID: 91, FileName: "ready.pdf", ContentType: "application/pdf", FileSize: 256, StorageKey: "91/private-ready", Status: "ready", SecurityState: "clean", ObjectVersion: 3, CreatedAt: now, UpdatedAt: now}
+	foreign := domain.MediaAsset{AccountID: 92, FileName: "foreign.pdf", ContentType: "application/pdf", FileSize: 128, StorageKey: "92/private", Status: "ready", SecurityState: "clean", ObjectVersion: 3, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	expires := now.Add(time.Hour)
+	expired := now.Add(-time.Hour)
+	for _, grant := range []domain.AccessGrant{
+		{AccountID: 91, AssetID: asset.ID, SubjectType: "user", SubjectID: "7", Scope: "read", ExpiresAt: &expires, CreatedAt: now},
+		{AccountID: 91, AssetID: asset.ID, SubjectType: "user", SubjectID: "8", Scope: "read", ExpiresAt: &expired, CreatedAt: now},
+	} {
+		if err := db.Create(&grant).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&domain.SecurityScan{AccountID: 91, AssetID: asset.ID, Status: "clean", Threat: "private-engine-detail", ScannedAt: now, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.UploadSession{AccountID: 91, AssetID: asset.ID, TokenHash: "private-token-hash", Status: "pending", ExpiresAt: expires, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MED")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MED")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(path string, query foundation.QueryEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	base := foundation.QueryEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+	access := base
+	access.QueryType = "med.access.check.v1"
+	access.Filter = map[string]any{"id": asset.ID, "subject_type": "user", "subject_id": "7", "scope": "read"}
+	if response := call("/contracts/queries/med.access.check.v1", access); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"allowed":true`) || strings.Contains(response.Body.String(), asset.StorageKey) {
+		t.Fatalf("allowed access status=%d body=%s", response.Code, response.Body.String())
+	}
+	access.Filter["subject_id"] = "8"
+	if response := call("/contracts/queries/med.access.check.v1", access); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"allowed":false`) {
+		t.Fatalf("expired access status=%d body=%s", response.Code, response.Body.String())
+	}
+	security := base
+	security.QueryType = "med.security_status.get.v1"
+	security.Filter = map[string]any{"id": asset.ID}
+	if response := call("/contracts/queries/med.security_status.get.v1", security); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"latest_scan_result":"clean"`) || strings.Contains(response.Body.String(), "private-engine-detail") {
+		t.Fatalf("security status=%d body=%s", response.Code, response.Body.String())
+	}
+	security.AccountID = 92
+	security.Filter = map[string]any{"id": asset.ID}
+	if response := call("/contracts/queries/med.security_status.get.v1", security); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account security status=%d body=%s", response.Code, response.Body.String())
+	}
+	deletion := base
+	deletion.QueryType = "med.account_deletion_status.get.v1"
+	deletion.Filter = map[string]any{}
+	response := call("/contracts/queries/med.account_deletion_status.get.v1", deletion)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"asset_count":1`) || !strings.Contains(response.Body.String(), `"active_grant_count":1`) || !strings.Contains(response.Body.String(), `"pending_upload_count":1`) || !strings.Contains(response.Body.String(), `"security_record_count":1`) || strings.Contains(response.Body.String(), "private-") {
+		t.Fatalf("deletion status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCUSIdentityResolveUsesAccountScopedPriority(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	repo := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil)
