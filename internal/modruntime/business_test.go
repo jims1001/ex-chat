@@ -252,6 +252,53 @@ func TestCUSCompanyQueryUsesOwnerDatabaseAndSafeView(t *testing.T) {
 	}
 }
 
+func TestCUSCompanyCreateUpdateAreExplicitAndIdempotent(t *testing.T) {
+	db := newModuleTestDB(t, "CUS")
+	cfg := businessConfig("CUS")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CUS")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/cus.company.update.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	create := foundation.CommandEnvelope{CommandID: "company-create-1", CommandType: "cus.company.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"action": "create", "name": "Acme", "domain": "acme.example", "custom_attributes": map[string]any{"private": "stored"}}, IdempotencyKey: "company-create-91", CorrelationID: "company-correlation", CausationID: "company-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "cus.company.get.v1"}}
+	for i := 0; i < 2; i++ {
+		if response := call(create); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Acme") || strings.Contains(response.Body.String(), "private") {
+			t.Fatalf("company create status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var company domain.Company
+	if err := db.First(&company).Error; err != nil {
+		t.Fatal(err)
+	}
+	update := create
+	update.CommandID, update.IdempotencyKey, update.Target = "company-update-1", "company-update-91", foundation.ContractTarget{Type: "company", ID: strconv.FormatUint(uint64(company.ID), 10)}
+	update.Input = map[string]any{"action": "update", "name": "Acme Updated", "industry": "Retail"}
+	if response := call(update); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Acme Updated") {
+		t.Fatalf("company update status=%d body=%s", response.Code, response.Body.String())
+	}
+	var companies, receipts, events int64
+	_ = db.Model(&domain.Company{}).Count(&companies).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%cus.company.changed.v1%").Count(&events).Error
+	if companies != 1 || receipts != 2 || events != 2 {
+		t.Fatalf("companies=%d receipts=%d events=%d", companies, receipts, events)
+	}
+	foreign := update
+	foreign.CommandID, foreign.IdempotencyKey, foreign.AccountID = "company-update-foreign", "company-update-foreign", 92
+	if response := call(foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign company update status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCUSContactCreatePersistsReceiptAndEventAtomically(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	cfg := businessConfig("CUS")

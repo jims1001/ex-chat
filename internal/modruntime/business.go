@@ -337,7 +337,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("cus.contact.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("cus.contact.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "contact" {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "contact target is required"}
 			}
@@ -381,6 +381,87 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, err
 			}
 			return contactFromModel(contact), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("cus.company.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			action, _ := command.Input["action"].(string)
+			tx := Transaction(ctx, r.DB)
+			txCompanies := repository.NewCompanyRepository(tx)
+			allowed := map[string]string{"name": "name", "domain": "domain", "industry": "industry", "description": "description", "avatar_url": "avatar_url", "custom_attributes": "custom_attributes", "additional_attributes": "additional_attributes"}
+			updates := map[string]any{}
+			changed := make([]string, 0, len(command.Input))
+			for key, value := range command.Input {
+				if key == "action" {
+					continue
+				}
+				column, ok := allowed[key]
+				if !ok {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "company field is not writable"}
+				}
+				if (key == "custom_attributes" || key == "additional_attributes") && !validJSONObject(value) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "company attributes must be a JSON object"}
+				}
+				if key == "custom_attributes" || key == "additional_attributes" {
+					if encoded, ok := value.(map[string]any); ok {
+						valueJSON, _ := json.Marshal(encoded)
+						value = string(valueJSON)
+					}
+				}
+				updates[column] = value
+				changed = append(changed, key)
+			}
+			if action == "create" {
+				if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+				}
+				name, _ := updates["name"].(string)
+				if strings.TrimSpace(name) == "" {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "company name is required"}
+				}
+				company := &domain.Company{AccountID: command.AccountID, Name: name}
+				company.Domain, _ = updates["domain"].(string)
+				company.Industry, _ = updates["industry"].(string)
+				company.Description, _ = updates["description"].(string)
+				company.AvatarURL, _ = updates["avatar_url"].(string)
+				company.CustomAttributes, _ = updates["custom_attributes"].(string)
+				company.AdditionalAttributes, _ = updates["additional_attributes"].(string)
+				if err := tx.Create(company).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "company could not be created"}
+				}
+				company, err := txCompanies.GetByID(ctx, command.AccountID, company.ID)
+				if err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "created company is unavailable"}
+				}
+				if err := r.appendBusinessEvent(ctx, command, "cus.company.changed.v1", "Company", strconv.FormatUint(uint64(company.ID), 10), []string{"created"}, map[string]any{"company_id": company.ID, "operation": "created"}); err != nil {
+					return nil, err
+				}
+				return companyFromModel(company), nil
+			}
+			if action != "update" || command.Target.Type != "company" || len(updates) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "company update is invalid"}
+			}
+			parsedID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsedID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "company target is invalid"}
+			}
+			companyID := uint(parsedID)
+			if _, err := txCompanies.GetByID(ctx, command.AccountID, companyID); errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "company was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "company store is unavailable"}
+			}
+			if err := tx.Model(&domain.Company{}).Where("account_id = ? AND id = ?", command.AccountID, companyID).Updates(updates).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "company could not be updated"}
+			}
+			company, err := txCompanies.GetByID(ctx, command.AccountID, companyID)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "updated company is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "cus.company.changed.v1", "Company", command.Target.ID, changed, map[string]any{"company_id": company.ID, "operation": "updated"}); err != nil {
+				return nil, err
+			}
+			return companyFromModel(company), nil
 		})
 	case "CHN":
 		inboxes := repository.NewInboxRepositoryWithAccountPort(r.DB, nil)
@@ -789,6 +870,18 @@ func companyFromModel(company *domain.Company) *companyView {
 		return nil
 	}
 	return &companyView{ID: company.ID, AccountID: company.AccountID, Name: company.Name, Domain: company.Domain, Industry: company.Industry, Description: company.Description, AvatarURL: company.AvatarURL, ContactsCount: company.ContactsCount}
+}
+
+func validJSONObject(value any) bool {
+	if _, ok := value.(map[string]any); ok {
+		return true
+	}
+	raw, ok := value.(string)
+	if !ok {
+		return false
+	}
+	var object map[string]any
+	return json.Unmarshal([]byte(raw), &object) == nil && object != nil
 }
 
 func accountFromModel(account *domain.Account) *accountView {

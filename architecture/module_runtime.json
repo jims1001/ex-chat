@@ -254,7 +254,7 @@
         "recovery": "身份去重后再恢复入站"
       },
       "independentRuntimeImplemented": true,
-      "acceptanceStatus": "partial-company-query",
+      "acceptanceStatus": "partial-company-write",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -264,11 +264,13 @@
       ],
       "implementedIndependentCommands": [
         "cus.contact.create.v1",
-        "cus.contact.update.v1"
+        "cus.contact.update.v1",
+        "cus.company.update.v1"
       ],
       "implementedIndependentEvents": [
         "cus.contact.created.v1",
-        "cus.contact.changed.v1"
+        "cus.contact.changed.v1",
+        "cus.company.changed.v1"
       ],
       "outboxAtomicWithCommands": true
     },
