@@ -109,7 +109,10 @@
         "iam.identity.changed.v1"
       ],
       "eventGapRecoveryVerified": true,
-      "mixedVersionUpgradeRollbackVerified": true
+      "mixedVersionUpgradeRollbackVerified": true,
+      "ownerBackupRestoreVerified": true,
+      "projectionRebuildVerified": true,
+      "recoveryReadinessGateVerified": true
     },
     {
       "module": "ENT",
@@ -936,7 +939,8 @@
   "moduleDatabaseConfig": [
     "MODULE_DB_DRIVER",
     "MODULE_DB_PATH",
-    "MODULE_DB_DSN"
+    "MODULE_DB_DSN",
+    "MODULE_RECOVERY_GENERATION"
   ],
   "moduleListenerConfig": "MODULE_ADDR",
   "moduleIdentityConfig": "MODULE_ID",
@@ -984,5 +988,14 @@
     ],
     "rollbackPreservesNewFacts": true,
     "rollbackReplaysNewReceipts": true
+  },
+  "recoveryVerification": {
+    "snapshotScope": "owner models plus LocalChangeJournal only",
+    "integrity": "SHA-256 checksum and exact module, generation and table-set validation",
+    "atomicRestore": true,
+    "projectionRebuild": "ordered replay from durable event_consumed payloads",
+    "readinessGate": "matching recovery_complete marker required when MODULE_RECOVERY_GENERATION is set",
+    "foreignTableRejected": true,
+    "verifiedModule": "TEN"
   }
 }

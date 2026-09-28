@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
+	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -21,20 +22,21 @@ import (
 const FoundationVersion = "foundation-v1"
 
 type Config struct {
-	ModuleID         string
-	Address          string
-	DBDriver         string
-	DBPath           string
-	DBDSN            string
-	ContractVersion  string
-	ReleaseVersion   string
-	AcceptedVersions map[string]bool
-	AuthToken        string
-	AllowedCallers   map[string]bool
-	MaxTimeout       time.Duration
-	MaxRequestBytes  int64
-	EnableBusiness   bool
-	Dependencies     map[string]DependencyConfig
+	ModuleID           string
+	Address            string
+	DBDriver           string
+	DBPath             string
+	DBDSN              string
+	ContractVersion    string
+	ReleaseVersion     string
+	RecoveryGeneration string
+	AcceptedVersions   map[string]bool
+	AuthToken          string
+	AllowedCallers     map[string]bool
+	MaxTimeout         time.Duration
+	MaxRequestBytes    int64
+	EnableBusiness     bool
+	Dependencies       map[string]DependencyConfig
 }
 
 type DependencyConfig struct {
@@ -44,17 +46,18 @@ type DependencyConfig struct {
 
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		ModuleID:        strings.ToUpper(strings.TrimSpace(getenv("MODULE_ID"))),
-		Address:         strings.TrimSpace(getenv("MODULE_ADDR")),
-		DBDriver:        strings.ToLower(strings.TrimSpace(getenv("MODULE_DB_DRIVER"))),
-		DBPath:          strings.TrimSpace(getenv("MODULE_DB_PATH")),
-		DBDSN:           strings.TrimSpace(getenv("MODULE_DB_DSN")),
-		ContractVersion: strings.TrimSpace(getenv("MODULE_CONTRACT_VERSION")),
-		ReleaseVersion:  strings.TrimSpace(getenv("MODULE_RELEASE_VERSION")),
-		AuthToken:       strings.TrimSpace(getenv("MODULE_AUTH_TOKEN")),
-		AllowedCallers:  parseCallers(getenv("MODULE_ALLOWED_CALLERS")),
-		EnableBusiness:  strings.EqualFold(strings.TrimSpace(getenv("MODULE_ENABLE_BUSINESS_CONTRACTS")), "true"),
-		Dependencies:    map[string]DependencyConfig{},
+		ModuleID:           strings.ToUpper(strings.TrimSpace(getenv("MODULE_ID"))),
+		Address:            strings.TrimSpace(getenv("MODULE_ADDR")),
+		DBDriver:           strings.ToLower(strings.TrimSpace(getenv("MODULE_DB_DRIVER"))),
+		DBPath:             strings.TrimSpace(getenv("MODULE_DB_PATH")),
+		DBDSN:              strings.TrimSpace(getenv("MODULE_DB_DSN")),
+		ContractVersion:    strings.TrimSpace(getenv("MODULE_CONTRACT_VERSION")),
+		ReleaseVersion:     strings.TrimSpace(getenv("MODULE_RELEASE_VERSION")),
+		RecoveryGeneration: strings.TrimSpace(getenv("MODULE_RECOVERY_GENERATION")),
+		AuthToken:          strings.TrimSpace(getenv("MODULE_AUTH_TOKEN")),
+		AllowedCallers:     parseCallers(getenv("MODULE_ALLOWED_CALLERS")),
+		EnableBusiness:     strings.EqualFold(strings.TrimSpace(getenv("MODULE_ENABLE_BUSINESS_CONTRACTS")), "true"),
+		Dependencies:       map[string]DependencyConfig{},
 	}
 	if raw := strings.TrimSpace(getenv("MODULE_DEPENDENCIES_JSON")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.Dependencies); err != nil {
@@ -183,6 +186,12 @@ func (r Runtime) Readiness() error {
 	for _, model := range models {
 		if !r.DB.Migrator().HasTable(model) {
 			return fmt.Errorf("module table missing: %s", reflect.TypeOf(model).Elem().Name())
+		}
+	}
+	if generation := strings.TrimSpace(r.Config.RecoveryGeneration); generation != "" {
+		var count int64
+		if err := r.DB.Model(&domain.LocalChangeJournal{}).Where("source_module = ? AND action = ? AND object_display_id = ? AND status = ?", r.Config.ModuleID, "recovery_complete", generation, "delivered").Count(&count).Error; err != nil || count != 1 {
+			return errors.New("module recovery generation is incomplete")
 		}
 	}
 	return nil

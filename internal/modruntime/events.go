@@ -114,7 +114,11 @@ func (i *EventInbox) Consume(ctx context.Context, event foundation.EventEnvelope
 	hash := sha256.Sum256([]byte(event.EventID))
 	changeID := "in-" + hex.EncodeToString(hash[:])[:48]
 	result := map[string]any{"event_id": event.EventID, "status": "applied"}
-	err := i.db.Transaction(func(tx *gorm.DB) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return nil, &ContractFailure{Type: "validation_failed", Message: "event envelope is invalid"}
+	}
+	err = i.db.Transaction(func(tx *gorm.DB) error {
 		var existing int64
 		if err := tx.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", changeID).Count(&existing).Error; err != nil {
 			return err
@@ -134,7 +138,7 @@ func (i *EventInbox) Consume(ctx context.Context, event foundation.EventEnvelope
 			return err
 		}
 		now := time.Now().UTC()
-		return tx.Create(&domain.LocalChangeJournal{ChangeID: changeID, SourceModule: i.moduleID, SourceType: event.SourceModule, AccountID: event.AccountID, ObjectType: event.AggregateType, ObjectDisplayID: event.AggregateID, ObjectVersionAfter: int(event.AggregateVersion), Action: "event_consumed", ActorType: event.Actor.Type, EventID: event.EventID, CorrelationID: event.CorrelationID, CausationID: event.CausationID, OccurredAt: event.OccurredAt, RecordedAt: now, IngestedAt: now, CreatedAt: now, Result: "applied", Status: "delivered"}).Error
+		return tx.Create(&domain.LocalChangeJournal{ChangeID: changeID, SourceModule: i.moduleID, SourceType: event.SourceModule, AccountID: event.AccountID, ObjectType: event.AggregateType, ObjectDisplayID: event.AggregateID, ObjectVersionAfter: int(event.AggregateVersion), Action: "event_consumed", AfterState: string(payload), ActorType: event.Actor.Type, EventID: event.EventID, CorrelationID: event.CorrelationID, CausationID: event.CausationID, OccurredAt: event.OccurredAt, RecordedAt: now, IngestedAt: now, CreatedAt: now, Result: "applied", Status: "delivered"}).Error
 	})
 	if err != nil {
 		var failure *ContractFailure
@@ -144,4 +148,23 @@ func (i *EventInbox) Consume(ctx context.Context, event foundation.EventEnvelope
 		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "event inbox transaction failed"}
 	}
 	return result, nil
+}
+
+// ReplayConsumedEvents rebuilds local projections from the consumer's durable inbox.
+// Call it inside a recovery transaction so a failed projection leaves no partial state.
+func ReplayConsumedEvents(ctx context.Context, db *gorm.DB, moduleID string, apply func(context.Context, foundation.EventEnvelope) error) error {
+	var records []domain.LocalChangeJournal
+	if err := db.Where("source_module = ? AND action = ? AND status = ?", moduleID, "event_consumed", "delivered").Order("source_type ASC, object_type ASC, object_display_id ASC, object_version_after ASC, id ASC").Find(&records).Error; err != nil {
+		return err
+	}
+	for _, record := range records {
+		var event foundation.EventEnvelope
+		if record.AfterState == "" || json.Unmarshal([]byte(record.AfterState), &event) != nil || event.Validate() != nil {
+			return errors.New("event inbox contains an invalid replay payload")
+		}
+		if err := apply(context.WithValue(ctx, transactionKey{}, db), event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
