@@ -37,6 +37,26 @@ func NewMigrationService(db *gorm.DB) *MigrationService {
 	}
 }
 
+// SetOwnerRepositories wires repositories backed by their owning module stores.
+// It supports staged extraction while remaining compatible with the combined server.
+func (s *MigrationService) SetOwnerRepositories(contactRepo *repository.ContactRepository, conversationRepo *repository.ConversationRepository, messageRepo *repository.MessageRepository, attachmentRepo *repository.AttachmentRepository, inboxRepo *repository.InboxRepository) {
+	if contactRepo != nil {
+		s.contactRepo = contactRepo
+	}
+	if conversationRepo != nil {
+		s.conversationRepo = conversationRepo
+	}
+	if messageRepo != nil {
+		s.messageRepo = messageRepo
+	}
+	if attachmentRepo != nil {
+		s.attachmentRepo = attachmentRepo
+	}
+	if inboxRepo != nil {
+		s.inboxRepo = inboxRepo
+	}
+}
+
 func toIDString(v any) string {
 	if v == nil {
 		return ""
@@ -280,9 +300,13 @@ func (s *MigrationService) importConversations(accountID uint, convs []Migration
 			if cid, ok := legacyContactMap[item.ContactEmail]; ok {
 				contactID = cid
 			} else {
-				var c domain.Contact
-				if err := s.db.Where("account_id = ? AND email = ?", accountID, item.ContactEmail).First(&c).Error; err == nil {
-					contactID = c.ID
+				contact, err := s.contactRepo.FindByEmail(accountID, item.ContactEmail)
+				if err != nil {
+					stats.Errors = append(stats.Errors, "failed to match conversation contact by email: "+err.Error())
+					continue
+				}
+				if contact != nil {
+					contactID = contact.ID
 				}
 			}
 		}
@@ -290,9 +314,13 @@ func (s *MigrationService) importConversations(accountID uint, convs []Migration
 			if cid, ok := legacyContactMap[item.ContactIdentifier]; ok {
 				contactID = cid
 			} else {
-				var c domain.Contact
-				if err := s.db.Where("account_id = ? AND identifier = ?", accountID, item.ContactIdentifier).First(&c).Error; err == nil {
-					contactID = c.ID
+				contact, err := s.contactRepo.FindByIdentifier(accountID, item.ContactIdentifier)
+				if err != nil {
+					stats.Errors = append(stats.Errors, "failed to match conversation contact by identifier: "+err.Error())
+					continue
+				}
+				if contact != nil {
+					contactID = contact.ID
 				}
 			}
 		}

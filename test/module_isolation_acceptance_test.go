@@ -95,6 +95,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("RPT_SLA_service_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testSLAServiceOwnerBoundary(t, openStore) })
 	t.Run("RPT_reports_use_CHN_CON_MSG_CUS_owner_queries", func(t *testing.T) { testReportServiceOwnerBoundary(t, openStore) })
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
+	t.Run("MIG_conversation_contact_matching_uses_CUS_owner", func(t *testing.T) { testMigrationConversationContactOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
 	t.Run("SRH_search_uses_CUS_CON_MSG_KB_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
@@ -2472,6 +2473,56 @@ func testEmailBrandingOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	}
 	if msgDB.Migrator().HasTable(&domain.BrandedEmailLayout{}) || entDB.Migrator().HasTable(&domain.EmailLog{}) {
 		t.Fatal("MSG/ENT email branding boundary contains a foreign authority table")
+	}
+}
+
+func testMigrationConversationContactOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	migDB, cusDB, chnDB, conDB := openStore("MIG"), openStore("CUS"), openStore("CHN"), openStore("CON")
+	contacts := repository.NewContactRepository(cusDB)
+	inboxes := repository.NewInboxRepository(chnDB)
+	inbox := domain.Inbox{AccountID: 801, Name: "Migration inbox", ChannelType: domain.ChannelWebWidget}
+	if err := inboxes.Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	conversations := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, inboxes, contacts, nil, nil, nil)
+	emailContact := domain.Contact{AccountID: 801, Name: "Email owner", Email: "migration-owner@example.test", Identifier: "email-owner"}
+	identifierContact := domain.Contact{AccountID: 801, Name: "Identifier owner", Email: "identifier-owner@example.test", Identifier: "migration-identifier"}
+	foreignContact := domain.Contact{AccountID: 802, Name: "Foreign owner", Email: "foreign@example.test", Identifier: "foreign-identifier"}
+	for _, contact := range []*domain.Contact{&emailContact, &identifierContact, &foreignContact} {
+		if err := contacts.Create(contact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migration := service.NewMigrationService(migDB)
+	migration.SetOwnerRepositories(contacts, conversations, nil, nil, nil)
+	payload := fmt.Sprintf(`[
+		{"id":"email-conversation","contact_email":%q,"inbox_id":%d},
+		{"id":"identifier-conversation","contact_identifier":%q,"inbox_id":%d},
+		{"id":"foreign-conversation","contact_email":%q,"inbox_id":%d}
+	]`, emailContact.Email, inbox.ID, identifierContact.Identifier, inbox.ID, foreignContact.Email, inbox.ID)
+	stats, err := migration.Migrate(context.Background(), 801, "conversations", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ConversationsCount != 3 || stats.ContactsCount != 1 || len(stats.Errors) != 0 {
+		t.Fatalf("MIG conversation import stats=%+v", stats)
+	}
+	var imported []domain.Conversation
+	if err := conDB.Where("account_id = ?", 801).Order("id ASC").Find(&imported).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(imported) != 3 || imported[0].ContactID != emailContact.ID || imported[1].ContactID != identifierContact.ID || imported[2].ContactID == foreignContact.ID {
+		t.Fatalf("CUS contact matching was not account scoped: %+v", imported)
+	}
+	var foreignFallback domain.Contact
+	if err := cusDB.Where("account_id = ? AND email = ?", 801, foreignContact.Email).First(&foreignFallback).Error; err != nil {
+		t.Fatalf("missing account-local fallback contact: %v", err)
+	}
+	if imported[2].ContactID != foreignFallback.ID {
+		t.Fatalf("foreign contact leaked into import: got=%d want=%d", imported[2].ContactID, foreignFallback.ID)
+	}
+	if migDB.Migrator().HasTable(&domain.Contact{}) || migDB.Migrator().HasTable(&domain.Conversation{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) || chnDB.Migrator().HasTable(&domain.Contact{}) || conDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("MIG/CUS/CHN/CON conversation matching boundary contains a foreign authority table")
 	}
 }
 

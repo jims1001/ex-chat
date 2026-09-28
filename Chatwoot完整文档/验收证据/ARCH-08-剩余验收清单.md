@@ -119,4 +119,5 @@
 - 已完成并验证：PublicHandler 创建联系人后的属性回读复用 CUS 所有者结果，消息 echo_id 通过 MSG 按账号和会话查询，处理器不再持有数据库句柄（E-ARCH-08-v73）。
 - 已完成并验证：PushService 通过 IAM UserRepository 获取用户时区，NTF 静默时段判断不再直接读取 User（E-ARCH-08-v74）。
 - 已完成并验证：EmailService 通过 ENT ChannelENTRepository 读取 BrandedEmailLayout，MSG 不再直接访问品牌配置权威表（E-ARCH-08-v75）。
-- 下一项：MigrationService 导入会话时的 CUS 联系人邮箱及标识匹配边界。
+- 已完成并验证：MigrationService 导入会话时通过 CUS 按账号匹配联系人邮箱及标识，MIG 不再直接读取 Contact（E-ARCH-08-v76）。
+- 下一项：MigrationService.importContacts 导入联系人时的 CUS 邮箱、标识、电话及姓名查重边界。
