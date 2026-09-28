@@ -54,7 +54,7 @@ func TestModuleContractRegistryIsCompleteAndFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedSHA = "e477ec629d8ccc3712b386657b32966b74f3a93f0c2fd5068e60410da5c4993d"
+	const approvedSHA = "276292d05d5b55e3244f3ee23891fcba00b240e2e450267f49c4d98c80e3b277"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedSHA {
 		t.Fatalf("module contracts changed (%s); reopen ARCH-04 and approve a new fingerprint", got)
 	}
@@ -234,7 +234,7 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v69 records Dialogflow canned responses through OPS.
+	// ARCH-04 remains REOPENED; E-ARCH-08-v70 records automation rule storage through AUT.
 	const approvedCollaborationSHA = "195f278a52063a3ec726f75f38c12ddadfc9e9476abfe2014620d9ad57f4988d"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)

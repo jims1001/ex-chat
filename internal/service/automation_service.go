@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -83,6 +84,60 @@ func NewAutomationServiceWithOwnerPorts(db *gorm.DB, convRepo *repository.Conver
 		contacts:   contacts,
 		recentExec: make(map[string]time.Time),
 	}
+}
+
+func (s *AutomationService) ListRules(accountID uint) ([]domain.AutomationRule, error) {
+	rules := make([]domain.AutomationRule, 0)
+	err := s.db.Where("account_id = ?", accountID).Order("id ASC").Find(&rules).Error
+	return rules, err
+}
+
+func (s *AutomationService) CreateRule(rule *domain.AutomationRule) error {
+	return s.db.Select("AccountID", "Name", "Description", "EventName", "Conditions", "Actions", "Active").Create(rule).Error
+}
+
+func (s *AutomationService) FindRule(accountID, ruleID uint) (*domain.AutomationRule, error) {
+	var rule domain.AutomationRule
+	err := s.db.Where("account_id = ? AND id = ?", accountID, ruleID).First(&rule).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &rule, err
+}
+
+func (s *AutomationService) UpdateRule(rule *domain.AutomationRule, updates map[string]any) error {
+	delete(updates, "id")
+	delete(updates, "account_id")
+	return s.db.Model(rule).Updates(updates).Error
+}
+
+func (s *AutomationService) DeleteRule(accountID, ruleID uint) error {
+	return s.db.Where("account_id = ? AND id = ?", accountID, ruleID).Delete(&domain.AutomationRule{}).Error
+}
+
+func (s *AutomationService) ListExecutions(accountID uint, ruleID, conversationID, status string) ([]domain.AutomationRuleExecution, error) {
+	query := s.db.Where("account_id = ?", accountID)
+	if ruleID != "" {
+		query = query.Where("rule_id = ?", ruleID)
+	}
+	if conversationID != "" {
+		query = query.Where("conversation_id = ?", conversationID)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	executions := make([]domain.AutomationRuleExecution, 0)
+	err := query.Order("triggered_at DESC").Limit(100).Find(&executions).Error
+	return executions, err
+}
+
+func (s *AutomationService) FindExecution(accountID, executionID uint) (*domain.AutomationRuleExecution, error) {
+	var execution domain.AutomationRuleExecution
+	err := s.db.Where("account_id = ? AND id = ?", accountID, executionID).First(&execution).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &execution, err
 }
 
 func (s *AutomationService) ownerContact(conv *domain.Conversation) *domain.Contact {

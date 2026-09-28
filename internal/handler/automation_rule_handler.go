@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -16,8 +17,8 @@ import (
 // ListAutomationRules lists all automation rules for current account
 func (h *AdvancedHandler) ListAutomationRules(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	var rules []domain.AutomationRule
-	if err := h.db.Where("account_id = ?", accID).Order("id ASC").Find(&rules).Error; err != nil {
+	rules, err := h.automationService.ListRules(accID)
+	if err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -294,7 +295,7 @@ func (h *AdvancedHandler) CreateAutomationRule(c *gin.Context) {
 		Actions:     actStr,
 		Active:      active,
 	}
-	if err := h.db.Create(&rule).Error; err != nil {
+	if err := h.automationService.CreateRule(&rule); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -304,9 +305,9 @@ func (h *AdvancedHandler) CreateAutomationRule(c *gin.Context) {
 // GetAutomationRule gets an automation rule by ID
 func (h *AdvancedHandler) GetAutomationRule(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	id := c.Param("id")
-	var rule domain.AutomationRule
-	if err := h.db.Where("account_id = ? AND id = ?", accID, id).First(&rule).Error; err != nil {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	rule, err := h.automationService.FindRule(accID, uint(id))
+	if err != nil || rule == nil {
 		response.NotFound(c, "Automation rule not found")
 		return
 	}
@@ -316,9 +317,9 @@ func (h *AdvancedHandler) GetAutomationRule(c *gin.Context) {
 // UpdateAutomationRule updates an existing automation rule
 func (h *AdvancedHandler) UpdateAutomationRule(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	id := c.Param("id")
-	var existing domain.AutomationRule
-	if err := h.db.Where("account_id = ? AND id = ?", accID, id).First(&existing).Error; err != nil {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	existing, err := h.automationService.FindRule(accID, uint(id))
+	if err != nil || existing == nil {
 		response.NotFound(c, "Automation rule not found")
 		return
 	}
@@ -349,7 +350,7 @@ func (h *AdvancedHandler) UpdateAutomationRule(c *gin.Context) {
 			req["actions"] = string(b)
 		}
 	}
-	if err := h.db.Model(&existing).Updates(req).Error; err != nil {
+	if err := h.automationService.UpdateRule(existing, req); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -359,8 +360,8 @@ func (h *AdvancedHandler) UpdateAutomationRule(c *gin.Context) {
 // DeleteAutomationRule deletes an automation rule by ID
 func (h *AdvancedHandler) DeleteAutomationRule(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	id := c.Param("id")
-	if err := h.db.Where("account_id = ? AND id = ?", accID, id).Delete(&domain.AutomationRule{}).Error; err != nil {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err := h.automationService.DeleteRule(accID, uint(id)); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -370,10 +371,10 @@ func (h *AdvancedHandler) DeleteAutomationRule(c *gin.Context) {
 // CloneAutomationRule clones an existing automation rule with full condition and action trees
 func (h *AdvancedHandler) CloneAutomationRule(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	id := c.Param("id")
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
-	var sourceRule domain.AutomationRule
-	if err := h.db.Where("account_id = ? AND id = ?", accID, id).First(&sourceRule).Error; err != nil {
+	sourceRule, err := h.automationService.FindRule(accID, uint(id))
+	if err != nil || sourceRule == nil {
 		response.NotFound(c, "Automation rule not found")
 		return
 	}
@@ -405,7 +406,7 @@ func (h *AdvancedHandler) CloneAutomationRule(c *gin.Context) {
 		Active:      active,
 	}
 
-	if err := h.db.Select("AccountID", "Name", "Description", "EventName", "Conditions", "Actions", "Active").Create(&clonedRule).Error; err != nil {
+	if err := h.automationService.CreateRule(&clonedRule); err != nil {
 		logger.WithComponent("automation").Error("failed to clone automation rule",
 			"source_rule_id", sourceRule.ID,
 			"account_id", accID,
@@ -433,19 +434,8 @@ func (h *AdvancedHandler) ListAutomationRuleExecutions(c *gin.Context) {
 	convIDStr := c.Query("conversation_id")
 	status := c.Query("status")
 
-	query := h.db.Where("account_id = ?", accID)
-	if ruleIDStr != "" {
-		query = query.Where("rule_id = ?", ruleIDStr)
-	}
-	if convIDStr != "" {
-		query = query.Where("conversation_id = ?", convIDStr)
-	}
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-
-	var executions []domain.AutomationRuleExecution
-	if err := query.Order("triggered_at DESC").Limit(100).Find(&executions).Error; err != nil {
+	executions, err := h.automationService.ListExecutions(accID, ruleIDStr, convIDStr, status)
+	if err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -456,10 +446,10 @@ func (h *AdvancedHandler) ListAutomationRuleExecutions(c *gin.Context) {
 // GetAutomationRuleExecution returns a single execution detail
 func (h *AdvancedHandler) GetAutomationRuleExecution(c *gin.Context) {
 	accID := c.GetUint("account_id")
-	execID := c.Param("execution_id")
+	execID, _ := strconv.ParseUint(c.Param("execution_id"), 10, 32)
 
-	var execution domain.AutomationRuleExecution
-	if err := h.db.Where("account_id = ? AND id = ?", accID, execID).First(&execution).Error; err != nil {
+	execution, err := h.automationService.FindExecution(accID, uint(execID))
+	if err != nil || execution == nil {
 		response.NotFound(c, "Automation rule execution record not found")
 		return
 	}

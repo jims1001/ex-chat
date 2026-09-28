@@ -133,6 +133,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_integrations_use_EXT_owner_queries", func(t *testing.T) { testAdvancedIntegrationOwnerBoundary(t, openStore) })
 	t.Run("ORC_shopify_uses_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedShopifyContactOwnerBoundary(t, openStore) })
 	t.Run("ORC_dialogflow_uses_OPS_canned_response_query", func(t *testing.T) { testAdvancedDialogflowCannedResponseOwnerBoundary(t, openStore) })
+	t.Run("ORC_automation_rules_use_AUT_owner_service", func(t *testing.T) { testAdvancedAutomationRuleOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1869,6 +1870,54 @@ func testAdvancedDialogflowCannedResponseOwnerBoundary(t *testing.T, openStore f
 	}
 	if opsDB.Migrator().HasTable(&domain.Conversation{}) || opsDB.Migrator().HasTable(&domain.IntegrationInstallation{}) {
 		t.Fatal("OPS store contains CON/EXT authority table")
+	}
+}
+
+func testAdvancedAutomationRuleOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	autDB := openStore("AUT")
+	automations := service.NewAutomationService(autDB, nil, nil)
+	rule := domain.AutomationRule{AccountID: 741, Name: "Owner rule", EventName: "conversation_created", Active: true}
+	if err := automations.CreateRule(&rule); err != nil {
+		t.Fatal(err)
+	}
+	foreignRule := domain.AutomationRule{AccountID: 742, Name: "Foreign rule", EventName: "conversation_created", Active: true}
+	if err := automations.CreateRule(&foreignRule); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := automations.ListRules(741)
+	if err != nil || len(rules) != 1 || rules[0].ID != rule.ID {
+		t.Fatalf("AUT rule list failed: rules=%+v err=%v", rules, err)
+	}
+	owned, err := automations.FindRule(741, rule.ID)
+	if err != nil || owned == nil {
+		t.Fatalf("AUT rule lookup failed: rule=%+v err=%v", owned, err)
+	}
+	if err := automations.UpdateRule(owned, map[string]any{"name": "Updated owner rule", "account_id": uint(742)}); err != nil {
+		t.Fatal(err)
+	}
+	owned, err = automations.FindRule(741, rule.ID)
+	if err != nil || owned == nil || owned.Name != "Updated owner rule" {
+		t.Fatalf("AUT rule update escaped account scope: rule=%+v err=%v", owned, err)
+	}
+	if found, err := automations.FindRule(741, foreignRule.ID); err != nil || found != nil {
+		t.Fatalf("AUT exposed cross-account rule: rule=%+v err=%v", found, err)
+	}
+	execution := domain.AutomationRuleExecution{AccountID: 741, RuleID: rule.ID, ConversationID: 51, Status: "success", TriggeredAt: time.Now().UTC()}
+	if err := autDB.Create(&execution).Error; err != nil {
+		t.Fatal(err)
+	}
+	executions, err := automations.ListExecutions(741, fmt.Sprint(rule.ID), "51", "success")
+	if err != nil || len(executions) != 1 || executions[0].ID != execution.ID {
+		t.Fatalf("AUT execution list failed: executions=%+v err=%v", executions, err)
+	}
+	if found, err := automations.FindExecution(742, execution.ID); err != nil || found != nil {
+		t.Fatalf("AUT exposed cross-account execution: execution=%+v err=%v", found, err)
+	}
+	if err := automations.DeleteRule(741, rule.ID); err != nil {
+		t.Fatal(err)
+	}
+	if autDB.Migrator().HasTable(&domain.Conversation{}) || autDB.Migrator().HasTable(&domain.Contact{}) {
+		t.Fatal("AUT store contains CON/CUS authority table")
 	}
 }
 

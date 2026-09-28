@@ -382,6 +382,7 @@
       "name": "AUT",
       "commands": [
         "aut.rule.create.v1",
+        "aut.rule.manage.v1",
         "aut.rule.enable.v1",
         "aut.execution.start.v1",
         "aut.execution.cancel.v1"
@@ -392,6 +393,7 @@
         "aut.execution.get.v1"
       ],
       "events": [
+        "aut.rule.changed.v1",
         "aut.automation.executed.v1",
         "aut.action.failed.v1",
         "aut.loop.blocked.v1"
