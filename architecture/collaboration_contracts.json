@@ -3319,6 +3319,16 @@
     },
     {
       "consumer": "ORC",
+      "provider": "OPS",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CannedResponseRepository",
+      "method": "FindMatch",
+      "use": "read",
+      "contract": "ops.canned_response.get.v1",
+      "replicaEvent": "ops.canned_response.changed.v1"
+    },
+    {
+      "consumer": "ORC",
       "provider": "EXT",
       "file": "internal/handler/crm_ops_advanced_handler.go",
       "symbol": "IntegrationRepository",

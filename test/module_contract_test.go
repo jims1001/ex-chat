@@ -234,8 +234,8 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; E-ARCH-08-v68 records Shopify contact composition through CON/CUS.
-	const approvedCollaborationSHA = "8f27961c9830a4506d34d5367ee078e4a04dc9b2b256690be7e68986a55e70bb"
+	// ARCH-04 remains REOPENED; E-ARCH-08-v69 records Dialogflow canned responses through OPS.
+	const approvedCollaborationSHA = "195f278a52063a3ec726f75f38c12ddadfc9e9476abfe2014620d9ad57f4988d"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -414,7 +414,7 @@ func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 		"../internal/service/campaign_service.go":                    {"s.db.Table(\"conversations\")", "JOIN conversation_labels", "JOIN labels", "s.db.Where(\"account_id = ? AND contact_id = ? AND inbox_id = ?"},
 		"../internal/handler/search_handler.go":                      {"h.db.Where"},
 		"../internal/handler/widget_handler.go":                      {"h.db.Where", "JOIN conversations ON conversations.id = messages.conversation_id", "messages.id = ? AND conversations.inbox_id", "JOIN inbox_members ON inbox_members.user_id = users.id", "inbox_members.inbox_id = ?"},
-		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")", "account_id = ? AND id = ?\", accID, *req.Fields.TeamID", "h.db.Where(\"account_id = ? AND (title = ? OR id = ?)", "h.db.WithContext(c.Request.Context()).Preload(\"Company\").Preload(\"Labels\")", "Where(\"account_id = ? AND id = ? AND company_id = ?\", accID, contactID, comp.ID)", "h.db.Preload(\"Inbox\").Where(\"account_id = ? AND id = ?\", accID, convID)", "h.db.Where(\"account_id = ? AND conversation_id = ? AND id = ?", "h.db.WithContext(c.Request.Context()).Where(\"account_id = ? AND conversation_id = ? AND user_id = ?", "Preload(\"User\").First(&note", "Assign(domain.CapacityPolicy", "h.db.Where(\"account_id = ?\", accID).Find(&installed)", "h.db.Where(\"account_id = ? AND app_id = ? AND status = ?", "h.db.Preload(\"Contact\")"},
+		"../internal/handler/crm_ops_advanced_handler.go":            {"JOIN account_users ON account_users.user_id = users.id", "account_users.account_id = ? AND users.id = ?", "Preload(\"Assignee\")", "account_id = ? AND id = ?\", accID, *req.Fields.TeamID", "h.db.Where(\"account_id = ? AND (title = ? OR id = ?)", "h.db.WithContext(c.Request.Context()).Preload(\"Company\").Preload(\"Labels\")", "Where(\"account_id = ? AND id = ? AND company_id = ?\", accID, contactID, comp.ID)", "h.db.Preload(\"Inbox\").Where(\"account_id = ? AND id = ?\", accID, convID)", "h.db.Where(\"account_id = ? AND conversation_id = ? AND id = ?", "h.db.WithContext(c.Request.Context()).Where(\"account_id = ? AND conversation_id = ? AND user_id = ?", "Preload(\"User\").First(&note", "Assign(domain.CapacityPolicy", "h.db.Where(\"account_id = ?\", accID).Find(&installed)", "h.db.Where(\"account_id = ? AND app_id = ? AND status = ?", "h.db.Preload(\"Contact\")", "h.db.WithContext(c.Request.Context())"},
 	} {
 		raw, err := os.ReadFile(file)
 		if err != nil {

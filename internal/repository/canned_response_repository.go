@@ -32,6 +32,20 @@ func (r *CannedResponseRepository) FindByID(accountID, id uint) (*domain.CannedR
 	return &cr, nil
 }
 
+func (r *CannedResponseRepository) FindMatch(accountID uint, query string) (*domain.CannedResponse, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	var response domain.CannedResponse
+	err := r.db.Where("account_id = ? AND (LOWER(short_code) = ? OR LOWER(content) LIKE ?)", accountID, query, "%"+query+"%").
+		First(&response).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
 func (r *CannedResponseRepository) List(accountID uint, search string) ([]domain.CannedResponse, error) {
 	var list []domain.CannedResponse
 	query := r.db.Where("account_id = ?", accountID)

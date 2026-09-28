@@ -42,6 +42,7 @@ type AdvancedHandler struct {
 	labelRepo          *repository.LabelRepository
 	messageRepo        *repository.MessageRepository
 	contactRepo        *repository.ContactRepository
+	cannedRepo         *repository.CannedResponseRepository
 	integrationRepo    *repository.IntegrationRepository
 	campaignService    *service.CampaignService
 	slaService         *service.SLAService
@@ -75,6 +76,7 @@ func NewAdvancedHandler(
 		labelRepo:          repository.NewLabelRepository(db),
 		messageRepo:        repository.NewMessageRepository(db),
 		contactRepo:        repository.NewContactRepository(db),
+		cannedRepo:         repository.NewCannedResponseRepository(db),
 		integrationRepo:    repository.NewIntegrationRepository(db),
 		convRepo:           repository.NewConversationRepository(db),
 	}
@@ -137,6 +139,10 @@ func (h *AdvancedHandler) SetIntegrationRepo(repo *repository.IntegrationReposit
 
 func (h *AdvancedHandler) SetContactRepo(repo *repository.ContactRepository) {
 	h.contactRepo = repo
+}
+
+func (h *AdvancedHandler) SetCannedResponseRepo(repo *repository.CannedResponseRepository) {
+	h.cannedRepo = repo
 }
 
 func (h *AdvancedHandler) SetMessageRepo(repo *repository.MessageRepository) {
@@ -2480,11 +2486,13 @@ func (h *AdvancedHandler) DialogflowProcess(c *gin.Context) {
 		queryLower := strings.ToLower(req.Query)
 		confidence = 0.95
 
-		// 1. Query database canned responses for matching short_code or content
-		var canned domain.CannedResponse
-		if err := h.db.WithContext(c.Request.Context()).
-			Where("account_id = ? AND (LOWER(short_code) = ? OR LOWER(content) LIKE ?)", accID, queryLower, "%"+queryLower+"%").
-			First(&canned).Error; err == nil && canned.ID > 0 {
+		// 1. Query OPS-owned canned responses for matching short_code or content
+		canned, err := h.cannedRepo.FindMatch(accID, queryLower)
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		if canned != nil {
 			intent = canned.ShortCode
 			replyText = canned.Content
 			if canned.ShortCode == "human_handoff" {

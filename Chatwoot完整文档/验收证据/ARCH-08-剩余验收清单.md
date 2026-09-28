@@ -112,4 +112,5 @@
 - 已完成并验证：CRMOpsAdvancedHandler 旧版坐席容量策略通过 RTE AgentCapacityPolicyRepository 保存、更新和按账号列表，ORC 不再直接读写 CapacityPolicy（E-ARCH-08-v66）。
 - 已完成并验证：CRMOpsAdvancedHandler 集成目录、Shopify 和 Dialogflow 配置通过 EXT IntegrationRepository 按账号读取，ORC 不再直接查询 IntegrationInstallation（E-ARCH-08-v67）。
 - 已完成并验证：CRMOpsAdvancedHandler.ShopifyOrders 通过 CON 获取账号内会话摘要、通过 CUS 获取联系人邮箱，ORC 不再预加载 Conversation.Contact（E-ARCH-08-v68）。
-- 下一项：CRMOpsAdvancedHandler.DialogflowProcess 的 OPS CannedResponse 读取边界。
+- 已完成并验证：CRMOpsAdvancedHandler.DialogflowProcess 通过 OPS CannedResponseRepository 按账号匹配预设回复，ORC 不再直接查询 CannedResponse（E-ARCH-08-v69）。
+- 下一项：CRMOpsAdvancedHandler 残留数据库句柄清理及整体直接存储复核。

@@ -132,6 +132,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("ORC_legacy_capacity_uses_RTE_owner_queries", func(t *testing.T) { testAdvancedLegacyCapacityOwnerBoundary(t, openStore) })
 	t.Run("ORC_integrations_use_EXT_owner_queries", func(t *testing.T) { testAdvancedIntegrationOwnerBoundary(t, openStore) })
 	t.Run("ORC_shopify_uses_CON_CUS_owner_queries", func(t *testing.T) { testAdvancedShopifyContactOwnerBoundary(t, openStore) })
+	t.Run("ORC_dialogflow_uses_OPS_canned_response_query", func(t *testing.T) { testAdvancedDialogflowCannedResponseOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1840,6 +1841,34 @@ func testAdvancedShopifyContactOwnerBoundary(t *testing.T, openStore func(string
 	}
 	if conDB.Migrator().HasTable(&domain.Contact{}) || cusDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CON/CUS Shopify stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedDialogflowCannedResponseOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	opsDB := openStore("OPS")
+	repo := repository.NewCannedResponseRepository(opsDB)
+	owned := domain.CannedResponse{AccountID: 731, ShortCode: "shipping_delay", Content: "Your shipment is delayed"}
+	foreign := domain.CannedResponse{AccountID: 732, ShortCode: "shipping_delay", Content: "Foreign response"}
+	if err := repo.Create(&owned); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"SHIPPING_DELAY", "shipment is delayed"} {
+		matched, err := repo.FindMatch(731, query)
+		if err != nil || matched == nil || matched.ID != owned.ID {
+			t.Fatalf("OPS canned response match failed for %q: response=%+v err=%v", query, matched, err)
+		}
+	}
+	if matched, err := repo.FindMatch(731, "Foreign response"); err != nil || matched != nil {
+		t.Fatalf("OPS exposed cross-account canned response: response=%+v err=%v", matched, err)
+	}
+	if matched, err := repo.FindMatch(731, "missing response"); err != nil || matched != nil {
+		t.Fatalf("OPS missing canned response mismatch: response=%+v err=%v", matched, err)
+	}
+	if opsDB.Migrator().HasTable(&domain.Conversation{}) || opsDB.Migrator().HasTable(&domain.IntegrationInstallation{}) {
+		t.Fatal("OPS store contains CON/EXT authority table")
 	}
 }
 
