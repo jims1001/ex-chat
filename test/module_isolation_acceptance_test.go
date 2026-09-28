@@ -122,6 +122,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("API_widget_conversation_validation_uses_CON_owner", func(t *testing.T) { testWidgetConversationValidationBoundary(t, openStore) })
 	t.Run("API_bulk_assignment_uses_TEN_IAM_owner_query", func(t *testing.T) { testAdvancedBulkAssignmentOwnerBoundary(t, openStore) })
 	t.Run("ORC_bulk_status_uses_CON_CHN_IAM_owner_queries", func(t *testing.T) { testAdvancedBulkStatusOwnerBoundary(t, openStore) })
+	t.Run("ORC_bulk_team_assignment_uses_TEN_CON_owner_queries", func(t *testing.T) { testAdvancedBulkTeamOwnerBoundary(t, openStore) })
 	t.Run("TKT_uses_TEN_IAM_CUS_CON_and_keeps_RPT_opaque", func(t *testing.T) { testTicketRepositoryOwnerBoundary(t, openStore) })
 	t.Run("CON_inbox_move_uses_CHN_owner_query", func(t *testing.T) { testConversationMoveInboxBoundary(t, openStore) })
 	t.Run("AIC_copilot_threads_use_IAM_CON_owner_queries", func(t *testing.T) { testCopilotThreadOwnerBoundary(t, openStore) })
@@ -1460,6 +1461,42 @@ func testAdvancedBulkStatusOwnerBoundary(t *testing.T, openStore func(string) *g
 	}
 	if conDB.Migrator().HasTable(&domain.Inbox{}) || conDB.Migrator().HasTable(&domain.User{}) || chnDB.Migrator().HasTable(&domain.Conversation{}) || iamDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("CON/CHN/IAM isolated stores contain a foreign authority table")
+	}
+}
+
+func testAdvancedBulkTeamOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	tenDB, conDB := openStore("TEN"), openStore("CON")
+	team := domain.Team{AccountID: 99, Name: "Bulk Team"}
+	otherTeam := domain.Team{AccountID: 100, Name: "Other Team"}
+	if err := tenDB.Create(&team).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tenDB.Create(&otherTeam).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := domain.Conversation{AccountID: 99, InboxID: 1, ContactID: 1, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	otherConversation := domain.Conversation{AccountID: 100, InboxID: 2, ContactID: 2, DisplayID: 1, Status: domain.ConversationStatusOpen}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Create(&otherConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	teams := repository.NewTeamRepository(tenDB)
+	gotTeam, err := teams.FindSummaryByID(99, team.ID)
+	if err != nil || gotTeam == nil || gotTeam.ID != team.ID {
+		t.Fatalf("TEN bulk team lookup failed: team=%+v err=%v", gotTeam, err)
+	}
+	if got, err := teams.FindSummaryByID(99, otherTeam.ID); err != nil || got != nil {
+		t.Fatalf("TEN exposed cross-account team: team=%+v err=%v", got, err)
+	}
+	conversations, err := repository.NewConversationRepository(conDB).ListByIDs(99, []uint{conversation.ID, otherConversation.ID})
+	if err != nil || len(conversations) != 1 || conversations[0].ID != conversation.ID {
+		t.Fatalf("CON bulk team conversation lookup failed: conversations=%+v err=%v", conversations, err)
+	}
+	if tenDB.Migrator().HasTable(&domain.Conversation{}) || conDB.Migrator().HasTable(&domain.Team{}) {
+		t.Fatal("TEN/CON isolated stores contain a foreign authority table")
 	}
 }
 

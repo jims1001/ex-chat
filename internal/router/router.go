@@ -191,6 +191,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	advancedHandler.SetInboxRepo(inboxRepo)
 	advancedHandler.SetAccountRepo(accountRepo)
 	advancedHandler.SetUserRepo(userRepo)
+	advancedHandler.SetTeamRepo(teamRepo)
 	if options.AdvancedHTTPClient != nil {
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)
 	}

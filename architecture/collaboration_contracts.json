@@ -3479,6 +3479,16 @@
     },
     {
       "consumer": "ORC",
+      "provider": "TEN",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "TeamRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "ORC",
       "provider": "RTE",
       "file": "internal/handler/inbox_handler.go",
       "symbol": "AssignmentPolicyRepository",

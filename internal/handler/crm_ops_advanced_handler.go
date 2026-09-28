@@ -36,6 +36,7 @@ type AdvancedHandler struct {
 	inboxRepo         *repository.InboxRepository
 	accountRepo       *repository.AccountRepository
 	userRepo          *repository.UserRepository
+	teamRepo          *repository.TeamRepository
 	attachmentRepo    *repository.AttachmentRepository
 	labelRepo         *repository.LabelRepository
 	messageRepo       *repository.MessageRepository
@@ -118,6 +119,10 @@ func (h *AdvancedHandler) SetAccountRepo(repo *repository.AccountRepository) {
 
 func (h *AdvancedHandler) SetUserRepo(repo *repository.UserRepository) {
 	h.userRepo = repo
+}
+
+func (h *AdvancedHandler) SetTeamRepo(repo *repository.TeamRepository) {
+	h.teamRepo = repo
 }
 
 func (h *AdvancedHandler) listAgentBotInboxes(ctx context.Context, accountID, botID uint) ([]domain.Inbox, error) {
@@ -1933,18 +1938,16 @@ func (h *AdvancedHandler) BulkActions(c *gin.Context) {
 	case "assign_team":
 		var targetTeam *domain.Team
 		if req.Fields.TeamID != nil && *req.Fields.TeamID > 0 {
-			var team domain.Team
-			if err := h.db.Where("account_id = ? AND id = ?", accID, *req.Fields.TeamID).First(&team).Error; err != nil {
+			team, err := h.teamRepo.FindSummaryByID(uint(accID), *req.Fields.TeamID)
+			if err != nil || team == nil {
 				response.BadRequest(c, "Team does not belong to account")
 				return
 			}
-			targetTeam = &team
+			targetTeam = team
 		}
 
-		var conversations []domain.Conversation
-		if err := h.db.WithContext(c.Request.Context()).
-			Where("account_id = ? AND id IN ?", accID, req.IDs).
-			Find(&conversations).Error; err != nil {
+		conversations, err := h.convRepo.ListByIDs(uint(accID), req.IDs)
+		if err != nil {
 			response.Error(c, http.StatusInternalServerError, err.Error())
 			return
 		}
