@@ -88,6 +88,18 @@ func (r *InboxRepository) FindSummaryByID(accountID, id uint) (*domain.Inbox, er
 	return &inbox, err
 }
 
+func (r *InboxRepository) FindFirstByAccount(accountID uint) (*domain.Inbox, error) {
+	var inbox domain.Inbox
+	err := r.db.Where("account_id = ?", accountID).Order("id ASC").First(&inbox).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &inbox, nil
+}
+
 // FindByGlobalID is reserved for infrastructure authorization paths that must
 // first resolve an inbox before the caller's account scope can be checked.
 func (r *InboxRepository) FindByGlobalID(id uint) (*domain.Inbox, error) {

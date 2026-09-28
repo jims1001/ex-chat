@@ -97,6 +97,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("MIG_data_import_uses_CUS_contact_owner", func(t *testing.T) { testDataImportContactOwnerBoundary(t, openStore) })
 	t.Run("MIG_conversation_contact_matching_uses_CUS_owner", func(t *testing.T) { testMigrationConversationContactOwnerBoundary(t, openStore) })
 	t.Run("MIG_contact_import_matching_uses_CUS_owner", func(t *testing.T) { testMigrationContactImportOwnerBoundary(t, openStore) })
+	t.Run("MIG_default_inbox_uses_CHN_owner", func(t *testing.T) { testMigrationDefaultInboxOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_audience_uses_CON_CUS_label_owners", func(t *testing.T) { testCampaignAudienceOwnerBoundary(t, openStore) })
 	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
 	t.Run("SRH_search_uses_CUS_CON_MSG_KB_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
@@ -2575,6 +2576,55 @@ func testMigrationContactImportOwnerBoundary(t *testing.T, openStore func(string
 	}
 	if migDB.Migrator().HasTable(&domain.Contact{}) {
 		t.Fatal("MIG contact import boundary contains the CUS authority table")
+	}
+}
+
+func testMigrationDefaultInboxOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	migDB, cusDB, chnDB, conDB := openStore("MIG"), openStore("CUS"), openStore("CHN"), openStore("CON")
+	contacts := repository.NewContactRepository(cusDB)
+	inboxes := repository.NewInboxRepository(chnDB)
+	existingInbox := domain.Inbox{AccountID: 821, Name: "Existing inbox", ChannelType: domain.ChannelWebWidget, WebsiteToken: "existing-inbox-token"}
+	foreignInbox := domain.Inbox{AccountID: 822, Name: "Foreign inbox", ChannelType: domain.ChannelWebWidget, WebsiteToken: "foreign-inbox-token"}
+	if err := inboxes.Create(&existingInbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := inboxes.Create(&foreignInbox); err != nil {
+		t.Fatal(err)
+	}
+	for _, contact := range []*domain.Contact{{AccountID: 821, Name: "Existing inbox contact", Email: "existing-inbox@example.test"}, {AccountID: 823, Name: "New inbox contact", Email: "new-inbox@example.test"}} {
+		if err := contacts.Create(contact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conversations := repository.NewConversationRepositoryWithReadPorts(conDB, nil, nil, inboxes, contacts, nil, nil, nil)
+	migration := service.NewMigrationService(migDB)
+	migration.SetOwnerRepositories(contacts, conversations, nil, nil, inboxes)
+	for accountID, email := range map[uint]string{821: "existing-inbox@example.test", 823: "new-inbox@example.test"} {
+		payload := fmt.Sprintf(`[{"id":"conversation-%d","contact_email":%q}]`, accountID, email)
+		stats, err := migration.Migrate(context.Background(), accountID, "conversations", payload)
+		if err != nil || stats.ConversationsCount != 1 || len(stats.Errors) != 0 {
+			t.Fatalf("MIG default inbox import account=%d stats=%+v err=%v", accountID, stats, err)
+		}
+	}
+	var existingConversation, createdConversation domain.Conversation
+	if err := conDB.Where("account_id = ?", 821).First(&existingConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := conDB.Where("account_id = ?", 823).First(&createdConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if existingConversation.InboxID != existingInbox.ID || existingConversation.InboxID == foreignInbox.ID {
+		t.Fatalf("CHN existing inbox lookup escaped account scope: %+v", existingConversation)
+	}
+	var createdInbox domain.Inbox
+	if err := chnDB.Where("account_id = ?", 823).First(&createdInbox).Error; err != nil {
+		t.Fatalf("CHN default inbox was not created: %v", err)
+	}
+	if createdConversation.InboxID != createdInbox.ID || createdInbox.Name != "Default Web Widget" {
+		t.Fatalf("CON conversation did not use CHN default inbox: conversation=%+v inbox=%+v", createdConversation, createdInbox)
+	}
+	if migDB.Migrator().HasTable(&domain.Inbox{}) || migDB.Migrator().HasTable(&domain.Conversation{}) || chnDB.Migrator().HasTable(&domain.Conversation{}) || conDB.Migrator().HasTable(&domain.Inbox{}) {
+		t.Fatal("MIG/CHN/CON default inbox boundary contains a foreign authority table")
 	}
 }
 

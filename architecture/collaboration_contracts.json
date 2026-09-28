@@ -2176,6 +2176,16 @@
     },
     {
       "consumer": "MIG",
+      "provider": "CHN",
+      "file": "internal/service/migration_service.go",
+      "symbol": "InboxRepository",
+      "method": "FindFirstByAccount",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "MIG",
       "provider": "CON",
       "file": "internal/service/migration_service.go",
       "symbol": "ConversationRepository",

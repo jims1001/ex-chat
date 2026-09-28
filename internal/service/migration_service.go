@@ -18,7 +18,6 @@ import (
 )
 
 type MigrationService struct {
-	db               *gorm.DB
 	contactRepo      *repository.ContactRepository
 	conversationRepo *repository.ConversationRepository
 	messageRepo      *repository.MessageRepository
@@ -28,7 +27,6 @@ type MigrationService struct {
 
 func NewMigrationService(db *gorm.DB) *MigrationService {
 	return &MigrationService{
-		db:               db,
 		contactRepo:      repository.NewContactRepository(db),
 		conversationRepo: repository.NewConversationRepository(db),
 		messageRepo:      repository.NewMessageRepository(db),
@@ -531,8 +529,11 @@ func (s *MigrationService) importAttachments(accountID uint, attachments []Migra
 }
 
 func (s *MigrationService) ensureDefaultInbox(accountID uint) (uint, error) {
-	var inbox domain.Inbox
-	if err := s.db.Where("account_id = ?", accountID).First(&inbox).Error; err == nil {
+	inbox, err := s.inboxRepo.FindFirstByAccount(accountID)
+	if err != nil {
+		return 0, err
+	}
+	if inbox != nil {
 		return inbox.ID, nil
 	}
 
@@ -540,14 +541,14 @@ func (s *MigrationService) ensureDefaultInbox(accountID uint) (uint, error) {
 	_, _ = rand.Read(bytes)
 	token := hex.EncodeToString(bytes)
 
-	inbox = domain.Inbox{
+	inbox = &domain.Inbox{
 		AccountID:    accountID,
 		Name:         "Default Web Widget",
 		ChannelType:  domain.ChannelWebWidget,
 		WebsiteToken: token,
 		CreatedAt:    time.Now().UTC(),
 	}
-	if err := s.inboxRepo.Create(&inbox); err != nil {
+	if err := s.inboxRepo.Create(inbox); err != nil {
 		return 0, err
 	}
 	return inbox.ID, nil
