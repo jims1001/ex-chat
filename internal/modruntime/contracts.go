@@ -110,7 +110,8 @@ func (r *ContractRegistry) Handler(cfg Config) http.Handler {
 			fail(http.StatusMethodNotAllowed, &ContractFailure{Type: "validation_failed", Message: "contract transport requires POST"})
 			return
 		}
-		if request.Header.Get(headerContractVersion) != cfg.ContractVersion {
+		requestVersion := request.Header.Get(headerContractVersion)
+		if !cfg.AcceptedVersions[requestVersion] {
 			w.WriteHeader(http.StatusBadRequest)
 			fail(http.StatusBadRequest, &ContractFailure{Type: "validation_failed", Message: "contract version is unsupported"})
 			return
@@ -134,7 +135,7 @@ func (r *ContractRegistry) Handler(cfg Config) http.Handler {
 		case "queries":
 			r.handleQuery(w, request, parts[1], correlationID, cfg, fail)
 		case "events":
-			r.handleEvent(w, request, parts[1], caller, correlationID, cfg, fail)
+			r.handleEvent(w, request, parts[1], caller, requestVersion, correlationID, cfg, fail)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			fail(http.StatusNotFound, &ContractFailure{Type: "resource_not_found", Message: "contract route was not found"})
@@ -142,7 +143,7 @@ func (r *ContractRegistry) Handler(cfg Config) http.Handler {
 	})
 }
 
-func (r *ContractRegistry) handleEvent(w http.ResponseWriter, request *http.Request, eventType, caller, correlationID string, cfg Config, fail func(int, *ContractFailure)) {
+func (r *ContractRegistry) handleEvent(w http.ResponseWriter, request *http.Request, eventType, caller, requestVersion, correlationID string, cfg Config, fail func(int, *ContractFailure)) {
 	handler := r.events[eventType]
 	if handler == nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -150,7 +151,7 @@ func (r *ContractRegistry) handleEvent(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	var event foundation.EventEnvelope
-	if err := decodeJSON(request, &event); err != nil || event.Validate() != nil || event.EventType != eventType || event.EventVersion != cfg.ContractVersion || strings.ToUpper(event.SourceModule) != caller || event.CorrelationID != correlationID {
+	if err := decodeJSON(request, &event); err != nil || event.Validate() != nil || event.EventType != eventType || event.EventVersion != requestVersion || strings.ToUpper(event.SourceModule) != caller || event.CorrelationID != correlationID {
 		w.WriteHeader(http.StatusBadRequest)
 		fail(http.StatusBadRequest, &ContractFailure{Type: "validation_failed", Message: "event envelope is invalid"})
 		return

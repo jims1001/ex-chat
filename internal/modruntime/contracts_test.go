@@ -13,7 +13,7 @@ import (
 )
 
 func contractTestConfig() Config {
-	return Config{ModuleID: "IAM", ContractVersion: "v1", AuthToken: "secret", AllowedCallers: map[string]bool{"TEN": true}, MaxTimeout: 50 * time.Millisecond, MaxRequestBytes: 4096}
+	return Config{ModuleID: "IAM", ContractVersion: "v1", AcceptedVersions: map[string]bool{"v1": true}, AuthToken: "secret", AllowedCallers: map[string]bool{"TEN": true}, MaxTimeout: 50 * time.Millisecond, MaxRequestBytes: 4096}
 }
 
 func validQuery() foundation.QueryEnvelope {

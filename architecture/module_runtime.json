@@ -67,7 +67,8 @@
       "dependencyStopRecoveryVerified": true,
       "implementedIndependentEvents": [
         "iam.identity.changed.v1 outbox"
-      ]
+      ],
+      "mixedVersionUpgradeRollbackVerified": true
     },
     {
       "module": "TEN",
@@ -107,7 +108,8 @@
       "implementedIndependentEventConsumers": [
         "iam.identity.changed.v1"
       ],
-      "eventGapRecoveryVerified": true
+      "eventGapRecoveryVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true
     },
     {
       "module": "ENT",
@@ -972,5 +974,15 @@
     "deduplication": "event_id",
     "ordering": "aggregate_version must advance by one",
     "recovery": "pending outbox replay after consumer recovery"
+  },
+  "versionUpgrade": {
+    "releaseConfig": "MODULE_RELEASE_VERSION",
+    "acceptedContractVersions": "MODULE_ACCEPTED_CONTRACT_VERSIONS",
+    "mixedVersionVerified": [
+      "v1",
+      "v2"
+    ],
+    "rollbackPreservesNewFacts": true,
+    "rollbackReplaysNewReceipts": true
   }
 }

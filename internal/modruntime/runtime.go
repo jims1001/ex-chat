@@ -21,18 +21,20 @@ import (
 const FoundationVersion = "foundation-v1"
 
 type Config struct {
-	ModuleID        string
-	Address         string
-	DBDriver        string
-	DBPath          string
-	DBDSN           string
-	ContractVersion string
-	AuthToken       string
-	AllowedCallers  map[string]bool
-	MaxTimeout      time.Duration
-	MaxRequestBytes int64
-	EnableBusiness  bool
-	Dependencies    map[string]DependencyConfig
+	ModuleID         string
+	Address          string
+	DBDriver         string
+	DBPath           string
+	DBDSN            string
+	ContractVersion  string
+	ReleaseVersion   string
+	AcceptedVersions map[string]bool
+	AuthToken        string
+	AllowedCallers   map[string]bool
+	MaxTimeout       time.Duration
+	MaxRequestBytes  int64
+	EnableBusiness   bool
+	Dependencies     map[string]DependencyConfig
 }
 
 type DependencyConfig struct {
@@ -48,6 +50,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		DBPath:          strings.TrimSpace(getenv("MODULE_DB_PATH")),
 		DBDSN:           strings.TrimSpace(getenv("MODULE_DB_DSN")),
 		ContractVersion: strings.TrimSpace(getenv("MODULE_CONTRACT_VERSION")),
+		ReleaseVersion:  strings.TrimSpace(getenv("MODULE_RELEASE_VERSION")),
 		AuthToken:       strings.TrimSpace(getenv("MODULE_AUTH_TOKEN")),
 		AllowedCallers:  parseCallers(getenv("MODULE_ALLOWED_CALLERS")),
 		EnableBusiness:  strings.EqualFold(strings.TrimSpace(getenv("MODULE_ENABLE_BUSINESS_CONTRACTS")), "true"),
@@ -68,6 +71,16 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if cfg.ContractVersion == "" {
 		cfg.ContractVersion = "v1"
+	}
+	if cfg.ReleaseVersion == "" {
+		cfg.ReleaseVersion = "release-1"
+	}
+	cfg.AcceptedVersions = parseVersions(getenv("MODULE_ACCEPTED_CONTRACT_VERSIONS"))
+	if len(cfg.AcceptedVersions) == 0 {
+		cfg.AcceptedVersions[cfg.ContractVersion] = true
+	}
+	if !cfg.AcceptedVersions[cfg.ContractVersion] {
+		return Config{}, errors.New("MODULE_ACCEPTED_CONTRACT_VERSIONS must include MODULE_CONTRACT_VERSION")
 	}
 	if cfg.AuthToken == "" {
 		return Config{}, errors.New("MODULE_AUTH_TOKEN is required")
@@ -107,6 +120,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("MODULE_DB_DRIVER must be sqlite or postgres")
 	}
 	return cfg, nil
+}
+
+func parseVersions(value string) map[string]bool {
+	versions := map[string]bool{}
+	for _, version := range strings.Split(value, ",") {
+		version = strings.TrimSpace(version)
+		if version != "" {
+			versions[version] = true
+		}
+	}
+	return versions
 }
 
 func parseCallers(value string) map[string]bool {
@@ -175,7 +199,7 @@ func (r Runtime) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(payload)
 	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, http.StatusOK, map[string]any{"status": "up", "module_id": r.Config.ModuleID, "foundation_version": FoundationVersion, "contract_version": r.Config.ContractVersion})
+		write(w, http.StatusOK, map[string]any{"status": "up", "module_id": r.Config.ModuleID, "foundation_version": FoundationVersion, "contract_version": r.Config.ContractVersion, "release_version": r.Config.ReleaseVersion})
 	})
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
 		if err := r.Readiness(); err != nil {
