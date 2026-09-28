@@ -64,7 +64,10 @@
       "implementedIndependentQueries": [
         "iam.identity.get.v1 (single and batch)"
       ],
-      "dependencyStopRecoveryVerified": true
+      "dependencyStopRecoveryVerified": true,
+      "implementedIndependentEvents": [
+        "iam.identity.changed.v1 outbox"
+      ]
     },
     {
       "module": "TEN",
@@ -100,7 +103,11 @@
       "implementedIndependentCommands": [
         "ten.membership.add.v1"
       ],
-      "batchDependencyQueryVerified": true
+      "batchDependencyQueryVerified": true,
+      "implementedIndependentEventConsumers": [
+        "iam.identity.changed.v1"
+      ],
+      "eventGapRecoveryVerified": true
     },
     {
       "module": "ENT",
@@ -957,5 +964,13 @@
     "payloadConflictRejected": true,
     "postgresMultiInstanceRaceVerified": true,
     "uniqueWinnerExecution": true
+  },
+  "eventTransport": {
+    "path": "/contracts/events/{event_type}",
+    "outbox": "LocalChangeJournal in source owner transaction",
+    "inbox": "LocalChangeJournal in consumer transaction",
+    "deduplication": "event_id",
+    "ordering": "aggregate_version must advance by one",
+    "recovery": "pending outbox replay after consumer recovery"
   }
 }

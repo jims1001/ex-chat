@@ -19,7 +19,7 @@ import (
 )
 
 func businessConfig(module string) Config {
-	return Config{ModuleID: module, ContractVersion: "v1", AuthToken: strings.ToLower(module) + "-secret", AllowedCallers: map[string]bool{"TEN": true, "API": true}, MaxTimeout: 150 * time.Millisecond, MaxRequestBytes: 4096, Dependencies: map[string]DependencyConfig{}}
+	return Config{ModuleID: module, ContractVersion: "v1", AuthToken: strings.ToLower(module) + "-secret", AllowedCallers: map[string]bool{"IAM": true, "TEN": true, "API": true}, MaxTimeout: 150 * time.Millisecond, MaxRequestBytes: 4096, Dependencies: map[string]DependencyConfig{}}
 }
 
 func startHTTPServer(t *testing.T, address string, handler http.Handler) (*http.Server, string) {

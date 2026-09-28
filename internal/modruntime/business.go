@@ -102,7 +102,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("ten.membership.add.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("ten.membership.add.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "membership target must match account"}
 			}
@@ -121,7 +121,10 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "membership could not be created"}
 			}
 			return memberView{ID: member.ID, AccountID: member.AccountID, UserID: member.UserID, Role: member.Role, Availability: member.Availability, Identity: identity}, nil
-		})
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterEvent("iam.identity.changed.v1", func(context.Context, foundation.EventEnvelope) error { return nil })
 	default:
 		return fmt.Errorf("business contracts are not implemented for %s", r.Config.ModuleID)
 	}

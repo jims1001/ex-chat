@@ -22,6 +22,7 @@ const (
 
 type CommandHandler func(context.Context, foundation.CommandEnvelope) (any, error)
 type QueryHandler func(context.Context, foundation.QueryEnvelope) (any, error)
+type EventHandler func(context.Context, foundation.EventEnvelope) error
 
 type ContractFailure struct {
 	Type         string
@@ -36,17 +37,31 @@ type ContractRegistry struct {
 	moduleID string
 	commands map[string]CommandHandler
 	queries  map[string]QueryHandler
+	events   map[string]EventHandler
 	receipts *CommandReceiptStore
+	inbox    *EventInbox
 }
 
 func NewContractRegistry(moduleID string) *ContractRegistry {
-	return &ContractRegistry{moduleID: strings.ToUpper(moduleID), commands: map[string]CommandHandler{}, queries: map[string]QueryHandler{}}
+	return &ContractRegistry{moduleID: strings.ToUpper(moduleID), commands: map[string]CommandHandler{}, queries: map[string]QueryHandler{}, events: map[string]EventHandler{}}
 }
 
 func (r *ContractRegistry) Count() int { return len(r.commands) + len(r.queries) }
 
 func (r *ContractRegistry) UseCommandReceipts(db *gorm.DB) {
 	r.receipts = NewCommandReceiptStore(db, r.moduleID)
+	r.inbox = NewEventInbox(db, r.moduleID)
+}
+
+func (r *ContractRegistry) RegisterEvent(eventType string, handler EventHandler) error {
+	if !strings.HasSuffix(eventType, ".v1") || len(strings.Split(eventType, ".")) < 4 {
+		return errors.New("event type is invalid")
+	}
+	if handler == nil || r.events[eventType] != nil {
+		return errors.New("event handler is nil or already registered")
+	}
+	r.events[eventType] = handler
+	return nil
 }
 
 func (r *ContractRegistry) RegisterCommand(capability string, handler CommandHandler) error {
@@ -118,11 +133,34 @@ func (r *ContractRegistry) Handler(cfg Config) http.Handler {
 			r.handleCommand(w, request, parts[1], correlationID, cfg, fail)
 		case "queries":
 			r.handleQuery(w, request, parts[1], correlationID, cfg, fail)
+		case "events":
+			r.handleEvent(w, request, parts[1], caller, correlationID, cfg, fail)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			fail(http.StatusNotFound, &ContractFailure{Type: "resource_not_found", Message: "contract route was not found"})
 		}
 	})
+}
+
+func (r *ContractRegistry) handleEvent(w http.ResponseWriter, request *http.Request, eventType, caller, correlationID string, cfg Config, fail func(int, *ContractFailure)) {
+	handler := r.events[eventType]
+	if handler == nil {
+		w.WriteHeader(http.StatusNotFound)
+		fail(http.StatusNotFound, &ContractFailure{Type: "resource_not_found", Message: "event capability is not registered"})
+		return
+	}
+	var event foundation.EventEnvelope
+	if err := decodeJSON(request, &event); err != nil || event.Validate() != nil || event.EventType != eventType || event.EventVersion != cfg.ContractVersion || strings.ToUpper(event.SourceModule) != caller || event.CorrelationID != correlationID {
+		w.WriteHeader(http.StatusBadRequest)
+		fail(http.StatusBadRequest, &ContractFailure{Type: "validation_failed", Message: "event envelope is invalid"})
+		return
+	}
+	invoke(w, request, cfg.MaxTimeout, correlationID, func(ctx context.Context) (any, error) {
+		if r.inbox == nil {
+			return nil, &ContractFailure{Type: "dependency_unavailable", Message: "event inbox is unavailable"}
+		}
+		return r.inbox.Consume(ctx, event, func(txContext context.Context) error { return handler(txContext, event) })
+	}, fail)
 }
 
 func (r *ContractRegistry) handleCommand(w http.ResponseWriter, request *http.Request, capability, correlationID string, cfg Config, fail func(int, *ContractFailure)) {
