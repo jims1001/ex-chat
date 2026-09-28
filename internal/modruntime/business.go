@@ -46,6 +46,17 @@ func (r *Runtime) RegisterBusinessContracts() error {
 	case "IAM":
 		users := repository.NewUserRepository(r.DB)
 		return r.Contracts.RegisterQuery("iam.identity.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			if ids, ok := uintSliceFilter(query.Filter, "ids"); ok {
+				found, err := users.FindByIDs(ids)
+				if err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "identity store is unavailable"}
+				}
+				views := make([]*identityView, 0, len(found))
+				for i := range found {
+					views = append(views, identityFromUser(&found[i]))
+				}
+				return views, nil
+			}
 			id, err := uintFilter(query.Filter, "id")
 			if err != nil {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "identity id is required"}
@@ -71,11 +82,19 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "membership store is unavailable"}
 			}
+			ids := make([]uint, 0, len(members))
+			for _, member := range members {
+				ids = append(ids, member.UserID)
+			}
+			identities, err := client.getIdentities(ctx, query, ids)
+			if err != nil {
+				return nil, err
+			}
 			result := make([]memberView, 0, len(members))
 			for _, member := range members {
-				identity, err := client.getIdentity(ctx, query, member.UserID)
-				if err != nil {
-					return nil, err
+				identity := identities[member.UserID]
+				if identity == nil {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "member identity was not found"}
 				}
 				result = append(result, memberView{ID: member.ID, AccountID: member.AccountID, UserID: member.UserID, Role: member.Role, Availability: member.Availability, Identity: identity})
 			}
@@ -144,6 +163,29 @@ func uintFilter(filter map[string]any, key string) (uint, error) {
 	}
 }
 
+func uintSliceFilter(filter map[string]any, key string) ([]uint, bool) {
+	raw, ok := filter[key]
+	if !ok {
+		return nil, false
+	}
+	values, ok := raw.([]any)
+	if !ok {
+		if typed, direct := raw.([]uint); direct && len(typed) > 0 {
+			return typed, true
+		}
+		return nil, false
+	}
+	ids := make([]uint, 0, len(values))
+	for _, value := range values {
+		id, err := uintFilter(map[string]any{"id": value}, "id")
+		if err != nil {
+			return nil, false
+		}
+		ids = append(ids, id)
+	}
+	return ids, len(ids) > 0
+}
+
 type moduleClient struct {
 	caller, baseURL, token, version string
 	client                          *http.Client
@@ -154,8 +196,20 @@ func newModuleClient(caller string, dependency DependencyConfig, version string,
 }
 
 func (c *moduleClient) getIdentity(ctx context.Context, parent foundation.QueryEnvelope, userID uint) (*identityView, error) {
+	identities, err := c.getIdentities(ctx, parent, []uint{userID})
+	if err != nil {
+		return nil, err
+	}
+	identity := identities[userID]
+	if identity == nil {
+		return nil, &ContractFailure{Type: "resource_not_found", Message: "identity was not found"}
+	}
+	return identity, nil
+}
+
+func (c *moduleClient) getIdentities(ctx context.Context, parent foundation.QueryEnvelope, userIDs []uint) (map[uint]*identityView, error) {
 	correlationID := foundation.GenerateUUID()
-	envelope := foundation.QueryEnvelope{QueryType: "iam.identity.get.v1", AccountID: parent.AccountID, Actor: parent.Actor, Filter: map[string]any{"id": userID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name", "display_name", "email", "role", "type", "availability", "availability_status", "avatar_url", "timezone"}, Consistency: parent.Consistency, RequestedAt: time.Now().UTC()}
+	envelope := foundation.QueryEnvelope{QueryType: "iam.identity.get.v1", AccountID: parent.AccountID, Actor: parent.Actor, Filter: map[string]any{"ids": userIDs}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name", "display_name", "email", "role", "type", "availability", "availability_status", "avatar_url", "timezone"}, Consistency: parent.Consistency, RequestedAt: time.Now().UTC()}
 	body, _ := json.Marshal(envelope)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/contracts/queries/iam.identity.get.v1", bytes.NewReader(body))
 	if err != nil {
@@ -178,10 +232,15 @@ func (c *moduleClient) getIdentity(ctx context.Context, parent foundation.QueryE
 		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "IAM returned an invalid response"}
 	}
 	var payload struct {
-		Data identityView `json:"data"`
+		Data []identityView `json:"data"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || payload.Data.ID != userID {
-		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "IAM returned an invalid identity"}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "IAM returned invalid identities"}
 	}
-	return &payload.Data, nil
+	result := make(map[uint]*identityView, len(payload.Data))
+	for i := range payload.Data {
+		identity := payload.Data[i]
+		result[identity.ID] = &identity
+	}
+	return result, nil
 }

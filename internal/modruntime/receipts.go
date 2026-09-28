@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -72,6 +73,17 @@ func (s *CommandReceiptStore) Execute(ctx context.Context, command foundation.Co
 		return tx.Model(&receipt).Updates(map[string]any{"after_state": string(encoded), "result": "applied", "status": "delivered"}).Error
 	})
 	if err != nil {
+		if isUniqueConflict(err) {
+			var receipt domain.LocalChangeJournal
+			if loadErr := s.db.Where("change_id = ?", changeID).First(&receipt).Error; loadErr == nil {
+				if receipt.Diff != digest {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "idempotency key was used with different command input"}
+				}
+				if decodeErr := json.Unmarshal([]byte(receipt.AfterState), &output); decodeErr == nil {
+					return output, nil
+				}
+			}
+		}
 		var failure *ContractFailure
 		if errors.As(err, &failure) {
 			return nil, failure
@@ -79,6 +91,11 @@ func (s *CommandReceiptStore) Execute(ctx context.Context, command foundation.Co
 		return nil, &ContractFailure{Type: "dependency_unavailable", Message: "command receipt transaction failed"}
 	}
 	return output, nil
+}
+
+func isUniqueConflict(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "duplicate key") || strings.Contains(message, "unique constraint") || strings.Contains(message, "unique constraint failed")
 }
 
 func commandDigest(command foundation.CommandEnvelope) (string, error) {

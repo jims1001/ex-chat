@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,18 +43,32 @@ func TestTENMembersContractUsesIndependentIAMRuntimeAndRecovers(t *testing.T) {
 	if err := repository.NewUserRepository(iamDB).Create(&user); err != nil {
 		t.Fatal(err)
 	}
+	secondUser := domain.User{Name: "Agent Two", Email: "agent2@example.test", PasswordHash: "must-not-leak", Role: domain.RoleAgent}
+	if err := repository.NewUserRepository(iamDB).Create(&secondUser); err != nil {
+		t.Fatal(err)
+	}
 	iamConfig := businessConfig("IAM")
 	iamRuntime := Runtime{Config: iamConfig, DB: iamDB, Contracts: NewContractRegistry("IAM")}
 	if err := iamRuntime.RegisterBusinessContracts(); err != nil {
 		t.Fatal(err)
 	}
-	iamServer, address := startHTTPServer(t, "127.0.0.1:0", iamRuntime.Handler())
+	var iamCalls atomic.Int64
+	iamHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if strings.Contains(request.URL.Path, "iam.identity.get.v1") {
+			iamCalls.Add(1)
+		}
+		iamRuntime.Handler().ServeHTTP(w, request)
+	})
+	iamServer, address := startHTTPServer(t, "127.0.0.1:0", iamHandler)
 
 	tenDB := newModuleTestDB(t, "TEN")
 	if err := tenDB.Create(&domain.Account{ID: 91, Name: "Tenant"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := tenDB.Create(&domain.AccountUser{AccountID: 91, UserID: user.ID, Role: domain.RoleAgent, Availability: domain.AvailabilityOnline}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tenDB.Create(&domain.AccountUser{AccountID: 91, UserID: secondUser.ID, Role: domain.RoleAgent}).Error; err != nil {
 		t.Fatal(err)
 	}
 	tenConfig := businessConfig("TEN")
@@ -77,6 +92,9 @@ func TestTENMembersContractUsesIndependentIAMRuntimeAndRecovers(t *testing.T) {
 	if strings.Contains(body, user.PasswordHash) || !strings.Contains(body, user.Email) {
 		t.Fatalf("identity projection is unsafe or incomplete: %s", body)
 	}
+	if iamCalls.Load() != 1 {
+		t.Fatalf("member list used %d IAM calls, want one batch", iamCalls.Load())
+	}
 
 	if err := iamServer.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
@@ -87,7 +105,7 @@ func TestTENMembersContractUsesIndependentIAMRuntimeAndRecovers(t *testing.T) {
 		t.Fatalf("invalid dependency failure: %v body=%s", err, failureBody)
 	}
 
-	iamServer, _ = startHTTPServer(t, address, iamRuntime.Handler())
+	iamServer, _ = startHTTPServer(t, address, iamHandler)
 	defer iamServer.Shutdown(context.Background())
 	assertMembers(http.StatusOK)
 }

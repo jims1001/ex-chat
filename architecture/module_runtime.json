@@ -62,7 +62,7 @@
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
-        "iam.identity.get.v1"
+        "iam.identity.get.v1 (single and batch)"
       ],
       "dependencyStopRecoveryVerified": true
     },
@@ -99,7 +99,8 @@
       "dependencyStopRecoveryVerified": true,
       "implementedIndependentCommands": [
         "ten.membership.add.v1"
-      ]
+      ],
+      "batchDependencyQueryVerified": true
     },
     {
       "module": "ENT",
@@ -953,6 +954,8 @@
     "store": "LocalChangeJournal in owner database",
     "atomicWithBusinessWrite": true,
     "replayAfterRestart": true,
-    "payloadConflictRejected": true
+    "payloadConflictRejected": true,
+    "postgresMultiInstanceRaceVerified": true,
+    "uniqueWinnerExecution": true
   }
 }
