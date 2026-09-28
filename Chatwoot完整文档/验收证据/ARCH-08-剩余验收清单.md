@@ -122,4 +122,5 @@
 - 已完成并验证：MigrationService 导入会话时通过 CUS 按账号匹配联系人邮箱及标识，MIG 不再直接读取 Contact（E-ARCH-08-v76）。
 - 已完成并验证：MigrationService.importContacts 通过 CUS 按账号执行邮箱、标识、电话及姓名查重，MIG 不再直接读取 Contact（E-ARCH-08-v77）。
 - 已完成并验证：MigrationService.ensureDefaultInbox 通过 CHN 按账号复用或创建默认收件箱，MIG 不再直接读取 Inbox（E-ARCH-08-v78）。
-- 下一项：CopilotHandler 工具调用中的 BIL 订单及物流查询边界。
+- 已完成并验证：CopilotHandler 工具调用通过 BIL 按账号查询订单和物流并更新地址，AIC 不再直接读取 Order（E-ARCH-08-v79）。
+- 下一项：AICustomToolHandler 工具调用中的 BIL 订单及物流查询边界。

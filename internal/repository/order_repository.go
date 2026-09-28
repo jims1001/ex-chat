@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
 )
@@ -21,6 +23,28 @@ func NewOrderRepository(db *gorm.DB) *OrderRepository {
 
 func NewOrderRepositoryWithConversationPort(db *gorm.DB, conversations orderConversationPort) *OrderRepository {
 	return &OrderRepository{db: db, conversations: conversations}
+}
+
+func (r *OrderRepository) FindForTool(accountID uint, orderID, trackingNumber string) (*domain.Order, error) {
+	var order domain.Order
+	query := r.db.Where("account_id = ?", accountID)
+	switch {
+	case orderID != "" && trackingNumber != "":
+		query = query.Where("order_id = ? OR tracking_number = ?", orderID, trackingNumber)
+	case orderID != "":
+		query = query.Where("order_id = ?", orderID)
+	case trackingNumber != "":
+		query = query.Where("tracking_number = ?", trackingNumber)
+	default:
+		return nil, gorm.ErrInvalidData
+	}
+	if err := query.First(&order).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &order, nil
 }
 
 func (r *OrderRepository) ReassignContact(accountID, fromContactID, toContactID uint) error {

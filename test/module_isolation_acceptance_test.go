@@ -102,6 +102,7 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	t.Run("OPS_campaign_conversations_use_CON_owner", func(t *testing.T) { testCampaignConversationOwnerBoundary(t, openStore) })
 	t.Run("SRH_search_uses_CUS_CON_MSG_KB_owner_queries", func(t *testing.T) { testSearchHandlerOwnerBoundary(t, openStore) })
 	t.Run("AIC_captain_uses_CHN_CON_MSG_owner_queries", func(t *testing.T) { testCaptainRepositoryOwnerBoundary(t, openStore) })
+	t.Run("AIC_copilot_tools_use_BIL_order_queries", func(t *testing.T) { testCopilotOrderToolOwnerBoundary(t, openStore) })
 	t.Run("TEN_account_members_validate_IAM_before_write", func(t *testing.T) { testAccountRepositoryIAMBoundary(t, openStore) })
 	t.Run("ORC_company_extensions_use_IAM_CON_MSG_owner_queries", func(t *testing.T) { testCompanyExtensionOwnerBoundary(t, openStore) })
 	t.Run("ORC_contact_extensions_use_CHN_CON_MSG_owner_queries", func(t *testing.T) { testContactExtensionOwnerBoundary(t, openStore) })
@@ -2625,6 +2626,49 @@ func testMigrationDefaultInboxOwnerBoundary(t *testing.T, openStore func(string)
 	}
 	if migDB.Migrator().HasTable(&domain.Inbox{}) || migDB.Migrator().HasTable(&domain.Conversation{}) || chnDB.Migrator().HasTable(&domain.Conversation{}) || conDB.Migrator().HasTable(&domain.Inbox{}) {
 		t.Fatal("MIG/CHN/CON default inbox boundary contains a foreign authority table")
+	}
+}
+
+func testCopilotOrderToolOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) {
+	aicDB, bilDB := openStore("AIC"), openStore("BIL")
+	orders := repository.NewOrderRepositoryWithConversationPort(bilDB, nil)
+	owned := domain.Order{AccountID: 831, OrderID: "ORDER-831", TrackingNumber: "TRACK-831", CustomerName: "Owned", ShippingAddress: "Old address", OrderStatus: "shipping"}
+	foreign := domain.Order{AccountID: 832, OrderID: "ORDER-832", TrackingNumber: "TRACK-832", CustomerName: "Foreign", ShippingAddress: "Foreign address"}
+	if err := bilDB.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := bilDB.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := handler.NewCopilotHandler(aicDB, nil, nil, nil, nil)
+	h.SetOrderRepo(orders)
+	call := func(accountID uint, body string) *httptest.ResponseRecorder {
+		responseRecorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(responseRecorder)
+		ctx.Params = gin.Params{{Key: "account_id", Value: fmt.Sprint(accountID)}}
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		h.ExecuteAITool(ctx)
+		return responseRecorder
+	}
+	for _, body := range []string{
+		`{"tool_name":"order_lookup","params":{"order_id":"ORDER-831"}}`,
+		`{"tool_name":"lookup_logistics","params":{"tracking_number":"TRACK-831"}}`,
+		`{"tool_name":"update_shipping_address","params":{"order_id":"ORDER-831","new_address":"New address"}}`,
+	} {
+		if responseRecorder := call(831, body); responseRecorder.Code != http.StatusOK {
+			t.Fatalf("AIC tool did not use BIL owner: status=%d body=%s", responseRecorder.Code, responseRecorder.Body.String())
+		}
+	}
+	if responseRecorder := call(831, `{"tool_name":"order_lookup","params":{"order_id":"ORDER-832"}}`); responseRecorder.Code != http.StatusNotFound {
+		t.Fatalf("BIL order query escaped account scope: status=%d body=%s", responseRecorder.Code, responseRecorder.Body.String())
+	}
+	var updated domain.Order
+	if err := bilDB.Where("account_id = ? AND id = ?", 831, owned.ID).First(&updated).Error; err != nil || updated.ShippingAddress != "New address" || !updated.WarehouseSynced {
+		t.Fatalf("BIL order update failed: order=%+v err=%v", updated, err)
+	}
+	if aicDB.Migrator().HasTable(&domain.Order{}) || bilDB.Migrator().HasTable(&domain.AIUsageQuota{}) {
+		t.Fatal("AIC/BIL copilot tool boundary contains a foreign authority table")
 	}
 }
 

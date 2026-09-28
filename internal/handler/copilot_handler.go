@@ -58,6 +58,12 @@ func (h *CopilotHandler) SetCaptainRepo(repo *repository.CaptainRepository) {
 	h.captainRepo = repo
 }
 
+func (h *CopilotHandler) SetOrderRepo(repo *repository.OrderRepository) {
+	if repo != nil {
+		h.orderRepo = repo
+	}
+}
+
 // ----------------- Copilot Endpoints -----------------
 
 type ReplySuggestion struct {
@@ -1317,9 +1323,12 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 			return
 		}
 
-		var order domain.Order
-		err := h.db.Where("account_id = ? AND (order_id = ? OR tracking_number = ?)", accID, orderID, orderID).First(&order).Error
+		order, err := h.orderRepo.FindForTool(uint(accID), orderID, orderID)
 		if err != nil {
+			response.InternalError(c, "Failed to query order")
+			return
+		}
+		if order == nil {
 			response.NotFound(c, fmt.Sprintf("Order '%s' not found", orderID))
 			return
 		}
@@ -1342,9 +1351,12 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 			response.BadRequest(c, "order_id and new_address parameters are required")
 			return
 		}
-		var order domain.Order
-		err := h.db.Where("account_id = ? AND order_id = ?", accID, orderID).First(&order).Error
+		order, err := h.orderRepo.FindForTool(uint(accID), orderID, "")
 		if err != nil {
+			response.InternalError(c, "Failed to query order")
+			return
+		}
+		if order == nil {
 			response.NotFound(c, fmt.Sprintf("Order '%s' not found; cannot update shipping address", orderID))
 			return
 		}
@@ -1352,7 +1364,10 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 		order.WarehouseSynced = true
 		order.SyncedAt = &now
 		order.UpdatedAt = now
-		_ = h.orderRepo.Update(uint(accID), &order)
+		if err := h.orderRepo.Update(uint(accID), order); err != nil {
+			response.InternalError(c, "Failed to update shipping address")
+			return
+		}
 
 		result = gin.H{
 			"success":          true,
@@ -1403,9 +1418,12 @@ func (h *CopilotHandler) ExecuteAITool(c *gin.Context) {
 			response.BadRequest(c, "tracking_number or order_id parameter is required for logistics lookup")
 			return
 		}
-		var order domain.Order
-		err := h.db.Where("account_id = ? AND (tracking_number = ? OR order_id = ?)", accID, trackingNo, orderID).First(&order).Error
+		order, err := h.orderRepo.FindForTool(uint(accID), orderID, trackingNo)
 		if err != nil {
+			response.InternalError(c, "Failed to query logistics")
+			return
+		}
+		if order == nil {
 			response.NotFound(c, "Logistics record not found for provided tracking_number or order_id")
 			return
 		}
