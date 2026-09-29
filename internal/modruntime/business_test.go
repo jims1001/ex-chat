@@ -3649,6 +3649,149 @@ func TestTKTIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	}
 }
 
+func TestQLTIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "QLT")
+	cfg := businessConfig("QLT")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://127.0.0.1:1", Token: "ten"}, "CON": {URL: "http://127.0.0.1:2", Token: "con"}, "TKT": {URL: "http://127.0.0.1:3", Token: "tkt"}}
+	registry := NewContractRegistry("QLT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"qlt.survey.create.v1", "qlt.csat.submit.v1", "qlt.review.create.v1", "qlt.appeal.review.v1"} {
+		if registry.commands[capability] == nil {
+			t.Fatalf("missing QLT command %s", capability)
+		}
+	}
+	for _, capability := range []string{"qlt.csat.get.v1", "qlt.review.get.v1", "qlt.score.get.v1"} {
+		if registry.queries[capability] == nil {
+			t.Fatalf("missing QLT query %s", capability)
+		}
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("QLT runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Contact{}, &domain.Conversation{}, &domain.Ticket{}, &domain.Message{}, &domain.Inbox{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("QLT runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
+func qltRuntimeConfig(t *testing.T) Config {
+	t.Helper()
+	registry := NewContractRegistry("TEN")
+	if err := registry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, _ := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 8}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["QLT"] = true
+	tenCfg.AcceptedVersions["v2"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: registry}.Handler())
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	cfg := businessConfig("QLT")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + address, Token: tenCfg.AuthToken}, "CON": {URL: "http://127.0.0.1:1", Token: "con"}, "TKT": {URL: "http://127.0.0.1:2", Token: "tkt"}}
+	return cfg
+}
+
+func seedQLTAppeal(t *testing.T, db *gorm.DB) domain.QAAppeal {
+	t.Helper()
+	now := time.Now().UTC()
+	inspector := uint(7)
+	task := domain.QATask{AccountID: 91, TaskNumber: "QA-CAPACITY", TargetType: "conversation", TargetID: 1, ScorecardID: 1, InspectorID: &inspector, Status: "appealing", TotalScore: 70, Result: "需改进", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	appeal := domain.QAAppeal{AccountID: 91, TaskID: task.ID, AppealNumber: "AP-CAPACITY", AppellantID: 17, OriginalScore: 70, Reason: "capacity", Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&appeal).Error; err != nil {
+		t.Fatal(err)
+	}
+	return appeal
+}
+
+func TestQLTAppealCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "QLT")
+	appeal := seedQLTAppeal(t, db)
+	cfg := qltRuntimeConfig(t)
+	command := foundation.CommandEnvelope{CommandID: "capacity-qlt", CommandType: "qlt.appeal.review.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "8", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "appeal", ID: strconv.FormatUint(uint64(appeal.ID), 10)}, Input: map[string]any{"action": "adjusted", "adjusted_score": 90}, IdempotencyKey: "capacity-qlt-91", CorrelationID: "capacity-qlt-correlation", CausationID: "capacity-qlt-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "qlt.review.get.v1"}}
+	const instances = 8
+	results, start := make(chan *httptest.ResponseRecorder, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for range instances {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("QLT")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			results <- performContractRequest(handler, "/contracts/commands/qlt.appeal.review.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"adjusted"`) {
+			t.Fatalf("concurrent QLT status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var receipts, activities, events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.QAAppealActivity{}).Count(&activities).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if receipts != 1 || activities != 1 || events != 1 {
+		t.Fatalf("receipts=%d activities=%d events=%d", receipts, activities, events)
+	}
+}
+
+func TestQLTMixedVersionUpgradeRollbackPreservesAppealDecision(t *testing.T) {
+	db := newModuleTestDB(t, "QLT")
+	appeal := seedQLTAppeal(t, db)
+	base := qltRuntimeConfig(t)
+	makeRuntime := func(version string, accepted map[string]bool) Runtime {
+		cfg := base
+		cfg.ContractVersion, cfg.AcceptedVersions = version, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("QLT")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-qlt", CommandType: "qlt.appeal.review.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "8", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "appeal", ID: strconv.FormatUint(uint64(appeal.ID), 10)}, Input: map[string]any{"action": "adjusted", "adjusted_score": 91}, IdempotencyKey: "upgrade-qlt-91", CorrelationID: "upgrade-qlt-correlation", CausationID: "upgrade-qlt-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "qlt.review.get.v1"}}
+	call := func(runtime Runtime, version string, payload any, path string) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	v2 := makeRuntime("v2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", command, "/contracts/commands/qlt.appeal.review.v1"); response.Code != http.StatusOK {
+		t.Fatalf("v2=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := makeRuntime("v1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", command, "/contracts/commands/qlt.appeal.review.v1"); response.Code != http.StatusOK {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "qlt.review.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"task_id": appeal.TaskID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", query, "/contracts/queries/qlt.review.get.v1"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total_score":91`) {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", query, "/contracts/queries/qlt.review.get.v1"); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d", response.Code)
+	}
+}
+
 func TestTKTAnonymizeCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
 	db := postgresModuleDB(t, "TKT")
 	now := time.Now().UTC()

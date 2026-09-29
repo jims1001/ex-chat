@@ -588,6 +588,78 @@ func TestTKTSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestQLTSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "QLT")
+	now := time.Now().UTC()
+	scorecard := domain.QAScorecard{AccountID: 91, Name: "Snapshot", TotalScore: 100, PassingScore: 85, Status: "active", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&scorecard).Error; err != nil {
+		t.Fatal(err)
+	}
+	criterion := domain.QACriterion{AccountID: 91, ScorecardID: scorecard.ID, Category: "service", Title: "Greeting", MaxScore: 20, OrderIndex: 1, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&criterion).Error; err != nil {
+		t.Fatal(err)
+	}
+	rule := domain.QASamplingRule{AccountID: 91, Name: "Rule", TargetType: "conversation", ScorecardID: scorecard.ID, SamplingRate: 10, Status: "active", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&rule).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := domain.QATask{AccountID: 91, TaskNumber: "QA-SNAPSHOT", TargetType: "conversation", TargetID: 1, ScorecardID: scorecard.ID, ScorecardName: scorecard.Name, SamplingRuleID: &rule.ID, Status: "completed", TotalScore: 90, Result: "合格", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.QAEvaluationScore{TaskID: task.ID, CriterionID: criterion.ID, CriterionTitle: criterion.Title, Category: criterion.Category, MaxScore: 20, Score: 18, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	appeal := domain.QAAppeal{AccountID: 91, TaskID: task.ID, AppealNumber: "AP-SNAPSHOT", AppellantID: 7, OriginalScore: 90, Reason: "snapshot", Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&appeal).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.QAAppealActivity{AccountID: 91, AppealID: appeal.ID, ActorID: 8, Action: "submitted", Description: "snapshot", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.CSATSurvey{AccountID: 91, ConversationID: 1, Rating: 5, ReviewStatus: "pending", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := foundation.EventEnvelope{EventID: "snapshot-qlt-event", EventType: "qlt.quality_review.changed.v1", EventVersion: "v1", SourceModule: "QLT", AccountID: 91, AggregateType: "QATask", AggregateID: strconv.FormatUint(uint64(task.ID), 10), AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "snapshot-qlt", CausationID: "snapshot", ChangedFields: []string{"created"}, Payload: map[string]any{"task_id": task.ID}, DataClassification: "internal"}
+	if err := NewEventOutbox(source, "QLT").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "qlt.snapshot.json")
+	if err := CreateSnapshot(source, "QLT", "qlt-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "QLT")
+	targetCfg := businessConfig("QLT")
+	targetCfg.RecoveryGeneration = "qlt-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("QLT target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "QLT", "qlt-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("QLT target not ready after restore: %v", err)
+	}
+	for name, model := range map[string]any{"surveys": &domain.CSATSurvey{}, "appeals": &domain.QAAppeal{}, "activities": &domain.QAAppealActivity{}, "criteria": &domain.QACriterion{}, "scores": &domain.QAEvaluationScore{}, "rules": &domain.QASamplingRule{}, "scorecards": &domain.QAScorecard{}, "tasks": &domain.QATask{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		if count != 1 {
+			t.Fatalf("%s count=%d", name, count)
+		}
+	}
+	var events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if events != 1 {
+		t.Fatalf("events=%d", events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Contact{}, &domain.Conversation{}, &domain.Ticket{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("QLT restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

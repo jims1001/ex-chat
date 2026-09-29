@@ -514,3 +514,51 @@ func TestTKTTicketCreatedEventWorkerAutomaticallyDeliversPendingOutbox(t *testin
 		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
 	}
 }
+
+func TestQLTQualityEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
+	consumerRegistry := NewContractRegistry("AUD")
+	delivered := make(chan foundation.EventEnvelope, 1)
+	if err := consumerRegistry.RegisterEvent("qlt.quality_review.changed.v1", func(_ context.Context, event foundation.EventEnvelope) error { delivered <- event; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := businessConfig("AUD")
+	consumerCfg.AllowedCallers["QLT"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: consumerCfg, DB: newModuleTestDB(t, "AUD"), Contracts: consumerRegistry}.Handler())
+	defer server.Shutdown(context.Background())
+	sourceDB := newModuleTestDB(t, "QLT")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "automatic-qlt-review-1", EventType: "qlt.quality_review.changed.v1", EventVersion: "v1", SourceModule: "QLT", AccountID: 91, AggregateType: "QATask", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, CorrelationID: "automatic-qlt-correlation", CausationID: "qlt-review-command", ChangedFields: []string{"created"}, Payload: map[string]any{"task_id": 101, "status": "pending"}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "QLT").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	sourceCfg := businessConfig("QLT")
+	sourceCfg.EventPollInterval = 10 * time.Millisecond
+	sourceCfg.EventTargets = map[string]EventFanoutTarget{"AUD": {Dependency: DependencyConfig{URL: "http://" + address, Token: consumerCfg.AuthToken}, EventTypes: map[string]bool{event.EventType: true}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failures := make(chan error, 1)
+	go (Runtime{Config: sourceCfg, DB: sourceDB}).RunEventFanout(ctx, func(err error) { failures <- err })
+	select {
+	case received := <-delivered:
+		if received.SourceModule != "QLT" || received.Payload["status"] != "pending" {
+			t.Fatalf("unexpected event=%+v", received)
+		}
+	case err := <-failures:
+		t.Fatalf("fanout=%v", err)
+	case <-time.After(time.Second):
+		t.Fatal("automatic QLT fanout did not deliver")
+	}
+	deadline := time.Now().Add(time.Second)
+	var outbox, receipts int64
+	for time.Now().Before(deadline) {
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&outbox).Error
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+		if outbox == 1 && receipts == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if outbox != 1 || receipts != 1 {
+		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
+	}
+}

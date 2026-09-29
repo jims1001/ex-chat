@@ -617,10 +617,34 @@
         "whenStopped": "评价和质检暂停，客服会话继续",
         "recovery": "补收允许窗口内结果"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-command-surface-verified",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "qlt.csat.get.v1",
+        "qlt.review.get.v1",
+        "qlt.score.get.v1"
+      ],
+      "implementedIndependentCommands": [
+        "qlt.survey.create.v1",
+        "qlt.csat.submit.v1",
+        "qlt.review.create.v1",
+        "qlt.appeal.review.v1"
+      ],
+      "implementedIndependentEvents": [
+        "qlt.csat.received.v1",
+        "qlt.quality_review.changed.v1",
+        "qlt.appeal.changed.v1"
+      ],
+      "commandReceiptImplemented": true,
+      "outboxAtomicWithCommands": true,
+      "automaticEventDispatchVerified": true,
+      "eventDeliveryRecoveryVerified": true,
+      "postgresMultiInstanceCommandVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true,
+      "ownerBackupRestoreVerified": true,
+      "recoveryReadinessGateVerified": true
     },
     {
       "module": "KB",
