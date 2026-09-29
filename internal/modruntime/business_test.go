@@ -1745,6 +1745,86 @@ func TestTKTQueriesReadOnlyOwnerTablesAndStayAccountScoped(t *testing.T) {
 	}
 }
 
+func TestTKTTicketCreateValidatesOwnersAndCommitsAtomically(t *testing.T) {
+	startDependency := func(module string, register func(*ContractRegistry) error) (Config, string, func()) {
+		registry := NewContractRegistry(module)
+		if err := register(registry); err != nil {
+			t.Fatal(err)
+		}
+		cfg := businessConfig(module)
+		cfg.AllowedCallers["TKT"] = true
+		server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: cfg, DB: newModuleTestDB(t, module), Contracts: registry}.Handler())
+		return cfg, address, func() { _ = server.Shutdown(context.Background()) }
+	}
+	tenCfg, tenAddress, closeTEN := startDependency("TEN", func(registry *ContractRegistry) error {
+		return registry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			userID, err := uintFilter(query.Filter, "user_id")
+			return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: err == nil && query.AccountID == 91 && (userID == 7 || userID == 8)}, nil
+		})
+	})
+	defer closeTEN()
+	cusCfg, cusAddress, closeCUS := startDependency("CUS", func(registry *ContractRegistry) error {
+		return registry.RegisterQuery("cus.contact.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil || query.AccountID != 91 || id != 21 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
+			}
+			return contactView{ID: 21, AccountID: 91, Name: "Customer"}, nil
+		})
+	})
+	defer closeCUS()
+	conCfg, conAddress, closeCON := startDependency("CON", func(registry *ContractRegistry) error {
+		return registry.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil || query.AccountID != 91 || id != 31 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			return conversationView{ID: 31, AccountID: 91, ContactID: 21, InboxID: 11, Status: domain.ConversationStatusOpen}, nil
+		})
+	})
+	defer closeCON()
+	db := newModuleTestDB(t, "TKT")
+	cfg := businessConfig("TKT")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CUS": {URL: "http://" + cusAddress, Token: cusCfg.AuthToken}, "CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("TKT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "ticket-create-1", CommandType: "tkt.ticket.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"title": "Payment issue", "description": "private details", "priority": "urgent", "assignee_id": 8, "contact_id": 21, "conversation_id": 31}, IdempotencyKey: "ticket-create-key", CorrelationID: "ticket-create-correlation", CausationID: "ticket-create-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.ticket.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/tkt.ticket.create.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for range 2 {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"open"`) || !strings.Contains(response.Body.String(), `"priority":"urgent"`) {
+			t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var tickets, activities, histories, receipts, events int64
+	_ = db.Model(&domain.Ticket{}).Count(&tickets).Error
+	_ = db.Model(&domain.TicketActivity{}).Count(&activities).Error
+	_ = db.Model(&domain.TicketStatusHistory{}).Count(&histories).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if tickets != 1 || activities != 1 || histories != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("tickets=%d activities=%d histories=%d receipts=%d events=%d", tickets, activities, histories, receipts, events)
+	}
+	mismatch := command
+	mismatch.CommandID, mismatch.IdempotencyKey = "ticket-create-mismatch", "ticket-create-mismatch-key"
+	mismatch.Input = map[string]any{"title": "Mismatch", "contact_id": 22, "conversation_id": 31}
+	if response := call(mismatch); response.Code != http.StatusNotFound {
+		t.Fatalf("mismatch=%d body=%s", response.Code, response.Body.String())
+	}
+	_ = db.Model(&domain.Ticket{}).Count(&tickets).Error
+	if tickets != 1 {
+		t.Fatalf("dependency failure wrote ticket count=%d", tickets)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

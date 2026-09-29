@@ -552,7 +552,7 @@
         "recovery": "关联事件补读"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "queries-implemented",
+      "acceptanceStatus": "ticket-create-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -563,6 +563,12 @@
         "tkt.workflow.get.v1",
         "tkt.history.list.v1",
         "tkt.account_deletion_status.get.v1"
+      ],
+      "implementedIndependentCommands": [
+        "tkt.ticket.create.v1"
+      ],
+      "implementedIndependentEvents": [
+        "tkt.ticket.created.v1"
       ]
     },
     {

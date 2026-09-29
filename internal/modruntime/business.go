@@ -2246,6 +2246,102 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return &ticket, nil
 		}
+		if err := r.Contracts.RegisterCommand("tkt.ticket.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			title, _ := command.Input["title"].(string)
+			title = strings.TrimSpace(title)
+			if title == "" || len(title) > 255 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "title is required"}
+			}
+			priority, _ := command.Input["priority"].(string)
+			priority = strings.ToLower(strings.TrimSpace(priority))
+			if priority == "" {
+				priority = domain.PriorityHigh
+			}
+			if priority != domain.PriorityLow && priority != domain.PriorityMedium && priority != domain.PriorityHigh && priority != domain.PriorityUrgent {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "priority is invalid"}
+			}
+			dependency := func(module string) (*moduleClient, error) {
+				configured, ok := r.Config.Dependencies[module]
+				if !ok {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: module + " validation is unavailable"}
+				}
+				return newModuleClient("TKT", configured, r.Config.ContractVersion, r.Config.MaxTimeout), nil
+			}
+			tenClient, err := dependency("TEN")
+			if err != nil {
+				return nil, err
+			}
+			creatorID, parseErr := strconv.ParseUint(command.Actor.ID, 10, 64)
+			if parseErr != nil || creatorID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "numeric creator actor is required"}
+			}
+			if err := tenClient.requireMember(ctx, command.AccountID, command.Actor, uint(creatorID)); err != nil {
+				return nil, err
+			}
+			assigneeID, err := optionalUint(command.Input["assignee_id"])
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "assignee_id is invalid"}
+			}
+			if assigneeID != nil {
+				if err := tenClient.requireMember(ctx, command.AccountID, command.Actor, *assigneeID); err != nil {
+					return nil, err
+				}
+			}
+			contactID, err := optionalUint(command.Input["contact_id"])
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "contact_id is invalid"}
+			}
+			if contactID != nil {
+				cusClient, depErr := dependency("CUS")
+				if depErr != nil {
+					return nil, depErr
+				}
+				query := foundation.QueryEnvelope{QueryType: "cus.contact.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": *contactID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id"}, Consistency: "strong", RequestedAt: command.RequestedAt}
+				var contact contactView
+				if err := cusClient.query(ctx, query, &contact); err != nil {
+					return nil, err
+				}
+			}
+			conversationID, err := optionalUint(command.Input["conversation_id"])
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is invalid"}
+			}
+			if conversationID != nil {
+				conClient, depErr := dependency("CON")
+				if depErr != nil {
+					return nil, depErr
+				}
+				query := foundation.QueryEnvelope{QueryType: "con.conversation.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": *conversationID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id", "contact_id"}, Consistency: "strong", RequestedAt: command.RequestedAt}
+				var conversation conversationView
+				if err := conClient.query(ctx, query, &conversation); err != nil {
+					return nil, err
+				}
+				if contactID != nil && conversation.ContactID != *contactID {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "conversation contact does not match ticket contact"}
+				}
+			}
+			description, _ := command.Input["description"].(string)
+			number := "TKT-" + strings.ToUpper(strings.ReplaceAll(foundation.GenerateUUID(), "-", "")[:12])
+			now := time.Now().UTC()
+			creator := uint(creatorID)
+			ticket := domain.Ticket{AccountID: command.AccountID, TicketNumber: number, Title: title, Description: description, Status: "open", Priority: priority, AssigneeID: assigneeID, ContactID: contactID, ConversationID: conversationID, CreatorID: &creator, SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+			tx := Transaction(ctx, r.DB)
+			if err := tx.Create(&ticket).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket could not be created"}
+			}
+			if err := tx.Create(&domain.TicketActivity{AccountID: command.AccountID, TicketID: ticket.ID, UserID: &creator, Action: "created", Details: `{}`, CreatedAt: now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket activity could not be created"}
+			}
+			if err := tx.Create(&domain.TicketStatusHistory{AccountID: command.AccountID, TicketID: ticket.ID, FromStatus: "", ToStatus: "open", Reason: "created", UserID: &creator, CreatedAt: now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket status history could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "tkt.ticket.created.v1", "Ticket", strconv.FormatUint(uint64(ticket.ID), 10), []string{"created"}, map[string]any{"ticket_id": ticket.ID, "ticket_number": ticket.TicketNumber, "status": ticket.Status, "priority": ticket.Priority}); err != nil {
+				return nil, err
+			}
+			return ticketFromModel(&ticket), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("tkt.ticket.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			ticketID, err := uintFilter(query.Filter, "id")
 			if err != nil {
