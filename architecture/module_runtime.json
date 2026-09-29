@@ -804,7 +804,7 @@
         "recovery": "从事件游标继续且不重复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-query-boundary-verified",
+      "acceptanceStatus": "runtime-rule-command-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

@@ -4464,6 +4464,41 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return json.RawMessage(raw)
 		}
+		autRuleView := func(rule *domain.AutomationRule) map[string]any {
+			return map[string]any{"id": rule.ID, "account_id": rule.AccountID, "name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": definitionJSON(rule.Conditions), "actions": definitionJSON(rule.Actions), "active": rule.Active, "created_at": rule.CreatedAt, "updated_at": rule.UpdatedAt}
+		}
+		validEvent := func(value string) bool {
+			switch value {
+			case "conversation_created", "conversation_updated", "message_created", "conversation_opened":
+				return true
+			default:
+				return false
+			}
+		}
+		definitionInput := func(input map[string]any, key string, fallback string) (string, *ContractFailure) {
+			value, ok := input[key]
+			if !ok {
+				return fallback, nil
+			}
+			if value == nil {
+				return "", &ContractFailure{Type: "validation_failed", Message: key + " must be an array"}
+			}
+			if raw, ok := value.(string); ok {
+				var items []any
+				if err := json.Unmarshal([]byte(raw), &items); err != nil {
+					return "", &ContractFailure{Type: "validation_failed", Message: key + " must be a JSON array"}
+				}
+				return raw, nil
+			}
+			if _, ok := value.([]any); !ok {
+				return "", &ContractFailure{Type: "validation_failed", Message: key + " must be an array"}
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return "", &ContractFailure{Type: "validation_failed", Message: key + " is invalid"}
+			}
+			return string(encoded), nil
+		}
 		if err := r.Contracts.RegisterQuery("aut.rule.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -4477,7 +4512,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation rule store is unavailable"}
 			}
-			return map[string]any{"id": rule.ID, "account_id": rule.AccountID, "name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": definitionJSON(rule.Conditions), "actions": definitionJSON(rule.Actions), "active": rule.Active, "created_at": rule.CreatedAt, "updated_at": rule.UpdatedAt}, nil
+			return autRuleView(&rule), nil
 		}); err != nil {
 			return err
 		}
@@ -4508,7 +4543,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterQuery("aut.execution.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		if err := r.Contracts.RegisterQuery("aut.execution.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, err := uintFilter(query.Filter, "id")
 			if err != nil {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "execution id is required"}
@@ -4522,7 +4557,184 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation execution store is unavailable"}
 			}
 			return map[string]any{"id": execution.ID, "account_id": execution.AccountID, "rule_id": execution.RuleID, "conversation_id": execution.ConversationID, "message_id": execution.MessageID, "event_name": execution.EventName, "status": execution.Status, "duration_ms": execution.DurationMs, "triggered_at": execution.TriggeredAt, "created_at": execution.CreatedAt}, nil
-		})
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("aut.rule.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule create target must match account"}
+			}
+			name, _ := command.Input["name"].(string)
+			name = strings.TrimSpace(name)
+			eventName, _ := command.Input["event_name"].(string)
+			if name == "" || len(name) > 255 || !validEvent(eventName) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule name or event_name is invalid"}
+			}
+			conditions, failure := definitionInput(command.Input, "conditions", "[]")
+			if failure != nil {
+				return nil, failure
+			}
+			actions, failure := definitionInput(command.Input, "actions", "[]")
+			if failure != nil {
+				return nil, failure
+			}
+			description, _ := command.Input["description"].(string)
+			active := true
+			if value, ok := command.Input["active"].(bool); ok {
+				active = value
+			}
+			now := time.Now().UTC()
+			rule := &domain.AutomationRule{AccountID: command.AccountID, Name: name, Description: description, EventName: eventName, Conditions: conditions, Actions: actions, Active: active, CreatedAt: now, UpdatedAt: now}
+			tx := Transaction(ctx, r.DB)
+			if err := tx.Create(rule).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "rule could not be created"}
+			}
+			version := &domain.AutomationRuleVersion{AccountID: command.AccountID, RuleID: rule.ID, Version: 1, EventName: eventName, Conditions: conditions, Actions: actions, CreatedAt: now}
+			if err := tx.Create(version).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "rule version could not be frozen"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "aut.rule.changed.v1", "AutomationRule", strconv.FormatUint(uint64(rule.ID), 10), []string{"created"}, map[string]any{"rule_id": rule.ID, "version": 1, "operation": "created", "active": rule.Active}); err != nil {
+				return nil, err
+			}
+			return autRuleView(rule), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("aut.rule.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "rule" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule target is required"}
+			}
+			ruleID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || ruleID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var rule domain.AutomationRule
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, ruleID).First(&rule)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "rule was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation rule store is unavailable"}
+			}
+			changed := []string{}
+			definitionChanged := false
+			if raw, ok := command.Input["name"]; ok {
+				name, valid := raw.(string)
+				name = strings.TrimSpace(name)
+				if !valid || name == "" || len(name) > 255 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "rule name is invalid"}
+				}
+				if name != rule.Name {
+					rule.Name = name
+					changed = append(changed, "name")
+				}
+			}
+			if raw, ok := command.Input["description"]; ok {
+				description, valid := raw.(string)
+				if !valid {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "rule description is invalid"}
+				}
+				if description != rule.Description {
+					rule.Description = description
+					changed = append(changed, "description")
+				}
+			}
+			if raw, ok := command.Input["event_name"]; ok {
+				eventName, valid := raw.(string)
+				if !valid || !validEvent(eventName) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "event_name is invalid"}
+				}
+				if eventName != rule.EventName {
+					rule.EventName = eventName
+					changed = append(changed, "event_name")
+					definitionChanged = true
+				}
+			}
+			for _, key := range []string{"conditions", "actions"} {
+				if _, ok := command.Input[key]; !ok {
+					continue
+				}
+				current := rule.Conditions
+				if key == "actions" {
+					current = rule.Actions
+				}
+				value, failure := definitionInput(command.Input, key, current)
+				if failure != nil {
+					return nil, failure
+				}
+				if value != current {
+					if key == "conditions" {
+						rule.Conditions = value
+					} else {
+						rule.Actions = value
+					}
+					changed = append(changed, key)
+					definitionChanged = true
+				}
+			}
+			if len(changed) == 0 {
+				return autRuleView(&rule), nil
+			}
+			rule.UpdatedAt = time.Now().UTC()
+			if err := tx.Model(&domain.AutomationRule{}).Where("account_id = ? AND id = ?", command.AccountID, rule.ID).Updates(map[string]any{"name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": rule.Conditions, "actions": rule.Actions, "updated_at": rule.UpdatedAt}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "rule could not be updated"}
+			}
+			var latest domain.AutomationRuleVersion
+			if err := tx.Where("account_id = ? AND rule_id = ?", command.AccountID, rule.ID).Order("version DESC").First(&latest).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "rule version store is unavailable"}
+			}
+			version := latest.Version
+			if definitionChanged {
+				version++
+				frozen := &domain.AutomationRuleVersion{AccountID: command.AccountID, RuleID: rule.ID, Version: version, EventName: rule.EventName, Conditions: rule.Conditions, Actions: rule.Actions, CreatedAt: rule.UpdatedAt}
+				if err := tx.Create(frozen).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "rule version could not be frozen"}
+				}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "aut.rule.changed.v1", "AutomationRule", command.Target.ID, changed, map[string]any{"rule_id": rule.ID, "version": version, "operation": "updated", "active": rule.Active}); err != nil {
+				return nil, err
+			}
+			return autRuleView(&rule), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("aut.rule.enable.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "rule" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule target is required"}
+			}
+			ruleID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || ruleID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule target is invalid"}
+			}
+			active, ok := command.Input["active"].(bool)
+			if !ok {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "active is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var rule domain.AutomationRule
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, ruleID).First(&rule)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "rule was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation rule store is unavailable"}
+			}
+			if rule.Active == active {
+				return autRuleView(&rule), nil
+			}
+			rule.Active, rule.UpdatedAt = active, time.Now().UTC()
+			if err := tx.Model(&domain.AutomationRule{}).Where("account_id = ? AND id = ?", command.AccountID, rule.ID).Updates(map[string]any{"active": active, "updated_at": rule.UpdatedAt}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "rule could not be enabled"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "aut.rule.changed.v1", "AutomationRule", command.Target.ID, []string{"active"}, map[string]any{"rule_id": rule.ID, "operation": "enabled", "active": active}); err != nil {
+				return nil, err
+			}
+			return autRuleView(&rule), nil
+		}); err != nil {
+			return err
+		}
+		return nil
 	case "OPS":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
