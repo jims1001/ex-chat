@@ -443,6 +443,72 @@ func TestMSGSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestRTESnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "RTE")
+	now := time.Now().UTC()
+	agentPolicy := domain.AgentCapacityPolicy{AccountID: 91, Name: "Default capacity", Description: "restore", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&agentPolicy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.InboxCapacityLimit{AgentCapacityPolicyID: agentPolicy.ID, InboxID: 11, ConversationLimit: 5, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.AssignmentPolicy{AccountID: 91, Name: "Round robin", StrategyType: "round_robin", Enabled: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := rteRuntimeConfig(t)
+	runtime := Runtime{Config: cfg, DB: source, Contracts: NewContractRegistry("RTE")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "snapshot-rte", CommandType: "rte.capacity.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "user", ID: "7"}, Input: map[string]any{"user_id": 7, "conversation_limit": 9}, IdempotencyKey: "snapshot-rte-91", CorrelationID: "snapshot-rte-correlation", CausationID: "snapshot-rte-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "rte.capacity.get.v1"}}
+	body, _ := json.Marshal(command)
+	request := httptest.NewRequest(http.MethodPost, "/contracts/commands/rte.capacity.manage.v1", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	request.Header.Set(headerCaller, "API")
+	request.Header.Set(headerContractVersion, "v1")
+	request.Header.Set(headerCorrelationID, command.CorrelationID)
+	response := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("RTE command=%d body=%s", response.Code, response.Body.String())
+	}
+	path := filepath.Join(t.TempDir(), "rte.snapshot.json")
+	if err := CreateSnapshot(source, "RTE", "rte-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "RTE")
+	targetCfg := businessConfig("RTE")
+	targetCfg.RecoveryGeneration = "rte-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("RTE target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "RTE", "rte-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("RTE target not ready after restore: %v", err)
+	}
+	counts := map[string]int64{}
+	for name, model := range map[string]any{"agent_policies": &domain.AgentCapacityPolicy{}, "inbox_limits": &domain.InboxCapacityLimit{}, "assignment_policies": &domain.AssignmentPolicy{}, "legacy_capacity": &domain.CapacityPolicy{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		counts[name] = count
+	}
+	var receipts, events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if counts["agent_policies"] != 1 || counts["inbox_limits"] != 1 || counts["assignment_policies"] != 1 || counts["legacy_capacity"] != 1 || receipts != 1 || events != 2 {
+		t.Fatalf("counts=%v receipts=%d events=%d", counts, receipts, events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}, &domain.User{}, &domain.Team{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("RTE restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

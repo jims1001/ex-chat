@@ -3322,6 +3322,112 @@ func TestRTEIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	}
 }
 
+func startRTETENDependency(t *testing.T) (Config, string) {
+	t.Helper()
+	registry := NewContractRegistry("TEN")
+	if err := registry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil || query.AccountID != 91 || userID != 7 {
+			return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: false}, nil
+		}
+		return membershipCheckView{AccountID: 91, UserID: 7, Allowed: true}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("TEN")
+	cfg.AllowedCallers["RTE"] = true
+	cfg.AcceptedVersions["v2"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: cfg, DB: newModuleTestDB(t, "TEN"), Contracts: registry}.Handler())
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	return cfg, address
+}
+
+func rteRuntimeConfig(t *testing.T) Config {
+	t.Helper()
+	tenCfg, tenAddress := startRTETENDependency(t)
+	cfg := businessConfig("RTE")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CON": {URL: "http://127.0.0.1:1", Token: "con"}, "CHN": {URL: "http://127.0.0.1:2", Token: "chn"}}
+	return cfg
+}
+
+func TestRTECapacityCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "RTE")
+	cfg := rteRuntimeConfig(t)
+	command := foundation.CommandEnvelope{CommandID: "capacity-rte", CommandType: "rte.capacity.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "user", ID: "7"}, Input: map[string]any{"user_id": 7, "conversation_limit": 12}, IdempotencyKey: "capacity-rte-91", CorrelationID: "capacity-rte-correlation", CausationID: "capacity-rte-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "rte.capacity.get.v1"}}
+	const instances = 8
+	results, start := make(chan *httptest.ResponseRecorder, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for range instances {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("RTE")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			results <- performContractRequest(handler, "/contracts/commands/rte.capacity.manage.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_limit":12`) {
+			t.Fatalf("concurrent RTE status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var policies, receipts, events int64
+	_ = db.Model(&domain.CapacityPolicy{}).Where("account_id = ? AND user_id = ?", 91, 7).Count(&policies).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if policies != 1 || receipts != 1 || events != 2 {
+		t.Fatalf("policies=%d receipts=%d events=%d", policies, receipts, events)
+	}
+}
+
+func TestRTEMixedVersionUpgradeRollbackPreservesCapacityFact(t *testing.T) {
+	db := newModuleTestDB(t, "RTE")
+	base := rteRuntimeConfig(t)
+	newRuntime := func(version, release string, accepted map[string]bool) Runtime {
+		cfg := base
+		cfg.ContractVersion, cfg.ReleaseVersion, cfg.AcceptedVersions = version, release, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("RTE")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, "rte-upgrade-correlation")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-rte", CommandType: "rte.capacity.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "user", ID: "7"}, Input: map[string]any{"user_id": 7, "conversation_limit": 14}, IdempotencyKey: "upgrade-rte-91", CorrelationID: "rte-upgrade-correlation", CausationID: "rte-upgrade-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "rte.capacity.get.v1"}}
+	v2 := newRuntime("v2", "release-2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/rte.capacity.manage.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2 write=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := newRuntime("v1", "release-1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/rte.capacity.manage.v1", command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_limit":14`) {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "rte.capacity.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"user_id": 7}, Sort: []string{"id"}, Page: "1", Fields: []string{"user_id", "conversation_limit"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/rte.capacity.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_limit":14`) {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/rte.capacity.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONPriorityCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
 	db := postgresModuleDB(t, "CON")
 	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}

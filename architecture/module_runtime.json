@@ -491,8 +491,8 @@
         "whenStopped": "自动分配暂停，允许按策略人工领取或保持排队",
         "recovery": "重算队列和容量"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "declared-surface-implemented",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -513,7 +513,15 @@
         "rte.queue.changed.v1",
         "rte.availability.changed.v1",
         "rte.capacity.changed.v1"
-      ]
+      ],
+      "commandReceiptImplemented": true,
+      "outboxAtomicWithCommands": true,
+      "automaticEventDispatchVerified": true,
+      "eventDeliveryRecoveryVerified": true,
+      "postgresMultiInstanceCommandVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true,
+      "ownerBackupRestoreVerified": true,
+      "recoveryReadinessGateVerified": true
     },
     {
       "module": "TKT",
