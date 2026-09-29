@@ -407,6 +407,103 @@ func TestMEDAccessSecurityAndDeletionQueriesExposeSafeDecisions(t *testing.T) {
 	}
 }
 
+func TestMEDAssetDeleteAndAccountPurgeStayWithinOwnerStore(t *testing.T) {
+	db := newModuleTestDB(t, "MED")
+	now := time.Now().UTC()
+	assets := []domain.MediaAsset{
+		{AccountID: 91, FileName: "delete.pdf", ContentType: "application/pdf", FileSize: 256, StorageKey: "91/private-delete", Status: "ready", SecurityState: "clean", ObjectVersion: 3, CreatedAt: now, UpdatedAt: now},
+		{AccountID: 91, FileName: "purge.pdf", ContentType: "application/pdf", FileSize: 128, StorageKey: "91/private-purge", Status: "pending_upload", SecurityState: "pending", ObjectVersion: 1, CreatedAt: now, UpdatedAt: now},
+		{AccountID: 92, FileName: "foreign.pdf", ContentType: "application/pdf", FileSize: 64, StorageKey: "92/private", Status: "ready", SecurityState: "clean", ObjectVersion: 3, CreatedAt: now, UpdatedAt: now},
+	}
+	for index := range assets {
+		if err := db.Create(&assets[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	expires := now.Add(time.Hour)
+	for _, accountID := range []uint{91, 92} {
+		asset := assets[0]
+		if accountID == 92 {
+			asset = assets[2]
+		}
+		if err := db.Create(&domain.UploadSession{AccountID: accountID, AssetID: asset.ID, TokenHash: "private-token", Status: "pending", ExpiresAt: expires, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&domain.AccessGrant{AccountID: accountID, AssetID: asset.ID, SubjectType: "user", SubjectID: "7", Scope: "read", CreatedAt: now}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&domain.SecurityScan{AccountID: accountID, AssetID: asset.ID, Status: "clean", Threat: "private-threat", ScannedAt: now, CreatedAt: now}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := businessConfig("MED")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MED")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Input: map[string]any{}, CausationID: "account-delete-91", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "med.account_deletion_status.get.v1"}}
+	remove := base
+	remove.CommandID, remove.CommandType, remove.IdempotencyKey, remove.CorrelationID = "media-delete-1", "med.asset.delete.v1", "media-delete-91", "media-delete-correlation"
+	remove.Target = foundation.ContractTarget{Type: "asset", ID: strconv.FormatUint(uint64(assets[0].ID), 10)}
+	for index := 0; index < 2; index++ {
+		if response := call("/contracts/commands/med.asset.delete.v1", remove); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"deleted"`) || strings.Contains(response.Body.String(), "private-") {
+			t.Fatalf("asset delete status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var deleted domain.MediaAsset
+	if err := db.First(&deleted, assets[0].ID).Error; err != nil || deleted.Status != "deleted" || deleted.ObjectVersion != 4 {
+		t.Fatalf("deleted asset=%+v err=%v", deleted, err)
+	}
+	var pending, active, deletedEvents int64
+	_ = db.Model(&domain.UploadSession{}).Where("account_id = ? AND asset_id = ? AND status = ?", 91, assets[0].ID, "pending").Count(&pending).Error
+	_ = db.Model(&domain.AccessGrant{}).Where("account_id = ? AND asset_id = ? AND revoked_at IS NULL", 91, assets[0].ID).Count(&active).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%med.media.deleted.v1%").Count(&deletedEvents).Error
+	if pending != 0 || active != 0 || deletedEvents != 1 {
+		t.Fatalf("pending=%d active=%d delete_events=%d", pending, active, deletedEvents)
+	}
+	foreign := remove
+	foreign.CommandID, foreign.IdempotencyKey, foreign.AccountID = "media-delete-foreign", "media-delete-foreign", 92
+	if response := call("/contracts/commands/med.asset.delete.v1", foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	purge := base
+	purge.CommandID, purge.CommandType, purge.IdempotencyKey, purge.CorrelationID = "media-purge-91", "med.account_assets.purge.v1", "media-purge-91", "media-purge-correlation"
+	purge.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	for index := 0; index < 2; index++ {
+		if response := call("/contracts/commands/med.account_assets.purge.v1", purge); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"deleted_count":2`) || strings.Contains(response.Body.String(), "private-") {
+			t.Fatalf("account purge status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	for _, model := range []any{&domain.MediaAsset{}, &domain.UploadSession{}, &domain.SecurityScan{}, &domain.AccessGrant{}} {
+		var own, other int64
+		_ = db.Model(model).Where("account_id = ?", 91).Count(&own).Error
+		_ = db.Model(model).Where("account_id = ?", 92).Count(&other).Error
+		if own != 0 || other != 1 {
+			t.Fatalf("model=%T own=%d other=%d", model, own, other)
+		}
+	}
+	var eventRows []domain.LocalChangeJournal
+	_ = db.Where("action = ?", "event_outbox").Find(&eventRows).Error
+	if len(eventRows) != 2 {
+		t.Fatalf("delete event rows=%d", len(eventRows))
+	}
+	for _, event := range eventRows {
+		if strings.Contains(event.AfterState, "private-") {
+			t.Fatalf("delete event leaked private metadata: %s", event.AfterState)
+		}
+	}
+}
+
 func TestCUSIdentityResolveUsesAccountScopedPriority(t *testing.T) {
 	db := newModuleTestDB(t, "CUS")
 	repo := repository.NewContactRepositoryWithOwnerPorts(db, nil, nil, nil, nil, nil)
@@ -1751,6 +1848,27 @@ func TestCUSIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}, &domain.Ticket{}, &domain.Order{}, &domain.CampaignDelivery{}} {
 		if db.Migrator().HasTable(foreign) {
 			t.Fatalf("CUS runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
+func TestMEDIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "MED")
+	registry := NewContractRegistry("MED")
+	runtime := Runtime{Config: businessConfig("MED"), DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	// module_contracts.json declares five commands and four queries for MED.
+	if registry.Count() != 9 {
+		t.Fatalf("MED registered contracts=%d want=9", registry.Count())
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("MED runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Attachment{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("MED runtime contains foreign table %T", foreign)
 		}
 	}
 }

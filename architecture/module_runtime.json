@@ -318,7 +318,7 @@
         "recovery": "补传和孤立引用清理"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-access-and-security-queries",
+      "acceptanceStatus": "declared-surface-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -330,11 +330,14 @@
       "implementedIndependentCommands": [
         "med.upload.create.v1",
         "med.asset.confirm.v1",
-        "med.asset.scan.v1"
+        "med.asset.scan.v1",
+        "med.asset.delete.v1",
+        "med.account_assets.purge.v1"
       ],
       "implementedIndependentEvents": [
         "med.media.ready.v1",
-        "med.media.rejected.v1"
+        "med.media.rejected.v1",
+        "med.media.deleted.v1"
       ]
     },
     {

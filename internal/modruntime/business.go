@@ -863,7 +863,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterCommand("med.asset.scan.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+		if err := r.Contracts.RegisterCommand("med.asset.scan.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			assetID, failure := mediaCommandTarget(command)
 			if failure != nil {
 				return nil, failure
@@ -903,6 +903,62 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "scanned asset is unavailable"}
 			}
 			return mediaAssetFromModel(&asset), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("med.asset.delete.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			assetID, failure := mediaCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			tx := Transaction(ctx, r.DB)
+			var asset domain.MediaAsset
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, assetID).First(&asset).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "asset was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			if asset.Status == "deleted" {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset is already deleted"}
+			}
+			now := time.Now().UTC()
+			if err := tx.Model(&domain.UploadSession{}).Where("account_id = ? AND asset_id = ? AND status = ?", command.AccountID, assetID, "pending").Updates(map[string]any{"status": "cancelled", "updated_at": now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset upload sessions could not be cancelled"}
+			}
+			if err := tx.Model(&domain.AccessGrant{}).Where("account_id = ? AND asset_id = ? AND revoked_at IS NULL", command.AccountID, assetID).Update("revoked_at", now).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset grants could not be revoked"}
+			}
+			if err := tx.Model(&domain.MediaAsset{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, assetID, "deleted").Updates(map[string]any{"status": "deleted", "object_version": gorm.Expr("object_version + 1"), "updated_at": now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "asset could not be deleted"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "med.media.deleted.v1", "MediaAsset", command.Target.ID, []string{"status"}, map[string]any{"asset_id": assetID, "status": "deleted"}); err != nil {
+				return nil, err
+			}
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, assetID).First(&asset).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "deleted asset is unavailable"}
+			}
+			return mediaAssetFromModel(&asset), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterCommand("med.account_assets.purge.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var assetIDs []uint
+			if err := tx.Model(&domain.MediaAsset{}).Where("account_id = ?", command.AccountID).Pluck("id", &assetIDs).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "media store is unavailable"}
+			}
+			for _, model := range []any{&domain.AccessGrant{}, &domain.UploadSession{}, &domain.SecurityScan{}, &domain.MediaAsset{}} {
+				if err := tx.Where("account_id = ?", command.AccountID).Delete(model).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "account media could not be purged"}
+				}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "med.media.deleted.v1", "AccountAssets", command.Target.ID, []string{"purged"}, map[string]any{"account_id": command.AccountID, "deleted_count": len(assetIDs), "status": "purged"}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "deleted_count": len(assetIDs), "ready": true}, nil
 		})
 	case "CON":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
