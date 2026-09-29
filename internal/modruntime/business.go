@@ -63,6 +63,27 @@ type mediaUploadView struct {
 	ExpiresAt   time.Time      `json:"expires_at"`
 }
 
+type conversationView struct {
+	ID             uint       `json:"id"`
+	UUID           string     `json:"uuid"`
+	DisplayID      uint       `json:"display_id"`
+	AccountID      uint       `json:"account_id"`
+	InboxID        uint       `json:"inbox_id"`
+	ContactID      uint       `json:"contact_id"`
+	AssigneeID     *uint      `json:"assignee_id,omitempty"`
+	TeamID         *uint      `json:"team_id,omitempty"`
+	Status         string     `json:"status"`
+	Priority       string     `json:"priority"`
+	ObjectVersion  int        `json:"object_version"`
+	SnoozedUntil   *time.Time `json:"snoozed_until,omitempty"`
+	LastActivityAt time.Time  `json:"last_activity_at"`
+	UnreadCount    int        `json:"unread_count"`
+	Muted          bool       `json:"muted"`
+	LabelIDs       []uint     `json:"label_ids"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 type accountView struct {
 	ID       uint   `json:"id"`
 	Name     string `json:"name"`
@@ -961,6 +982,63 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return map[string]any{"account_id": command.AccountID, "deleted_count": len(assetIDs), "ready": true}, nil
 		})
 	case "CON":
+		if err := r.Contracts.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			conversationID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation id is required"}
+			}
+			var conversation domain.Conversation
+			if err := r.DB.Where("account_id = ? AND id = ?", query.AccountID, conversationID).First(&conversation).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			view, err := conversationFromModel(r.DB, &conversation)
+			if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation labels are unavailable"}
+			}
+			return view, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("con.conversations.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			statement := r.DB.Where("account_id = ?", query.AccountID)
+			for key, column := range map[string]string{"inbox_id": "inbox_id", "contact_id": "contact_id", "assignee_id": "assignee_id", "team_id": "team_id"} {
+				if _, exists := query.Filter[key]; exists {
+					value, err := uintFilter(query.Filter, key)
+					if err != nil {
+						return nil, &ContractFailure{Type: "validation_failed", Message: "conversation list filter is invalid"}
+					}
+					statement = statement.Where(column+" = ?", value)
+				}
+			}
+			if status, ok := query.Filter["status"].(string); ok && strings.TrimSpace(status) != "" {
+				statement = statement.Where("status = ?", strings.TrimSpace(status))
+			}
+			var total int64
+			if err := statement.Model(&domain.Conversation{}).Count(&total).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			page := 1
+			if parsed, err := strconv.Atoi(query.Page); err == nil && parsed > 0 {
+				page = parsed
+			}
+			var conversations []domain.Conversation
+			if err := statement.Order("id DESC").Offset((page - 1) * 50).Limit(50).Find(&conversations).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			items := make([]conversationView, 0, len(conversations))
+			for index := range conversations {
+				view, err := conversationFromModel(r.DB, &conversations[index])
+				if err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation labels are unavailable"}
+				}
+				items = append(items, *view)
+			}
+			return map[string]any{"items": items, "total": total, "page": page, "page_size": 50}, nil
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {
@@ -1514,6 +1592,14 @@ func identityFromUser(user *domain.User) *identityView {
 
 func mediaAssetFromModel(asset *domain.MediaAsset) *mediaAssetView {
 	return &mediaAssetView{ID: asset.ID, AccountID: asset.AccountID, FileName: asset.FileName, ContentType: asset.ContentType, FileSize: asset.FileSize, Checksum: asset.Checksum, Status: asset.Status, SecurityState: asset.SecurityState, ObjectVersion: asset.ObjectVersion, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt}
+}
+
+func conversationFromModel(db *gorm.DB, conversation *domain.Conversation) (*conversationView, error) {
+	view := &conversationView{ID: conversation.ID, UUID: conversation.UUID, DisplayID: conversation.DisplayID, AccountID: conversation.AccountID, InboxID: conversation.InboxID, ContactID: conversation.ContactID, AssigneeID: conversation.AssigneeID, TeamID: conversation.TeamID, Status: conversation.Status, Priority: conversation.Priority, ObjectVersion: conversation.ObjectVersion, SnoozedUntil: conversation.SnoozedUntil, LastActivityAt: conversation.LastActivityAt, UnreadCount: conversation.UnreadCount, Muted: conversation.Muted, LabelIDs: []uint{}, CreatedAt: conversation.CreatedAt, UpdatedAt: conversation.UpdatedAt}
+	if err := db.Model(&domain.ConversationLabel{}).Where("conversation_id = ?", conversation.ID).Order("label_id ASC").Pluck("label_id", &view.LabelIDs).Error; err != nil {
+		return nil, err
+	}
+	return view, nil
 }
 
 func mediaCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {

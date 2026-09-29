@@ -806,6 +806,56 @@ func TestCUSContactMergeOwnsLocalFactsAndPublishesProjectionEvent(t *testing.T) 
 	}
 }
 
+func TestCONConversationGetAndListExposeOwnerSafeViews(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	now := time.Now().UTC()
+	assignee, team, sla := uint(7), uint(8), uint(9)
+	owned := domain.Conversation{AccountID: 91, DisplayID: 101, InboxID: 11, ContactID: 21, AssigneeID: &assignee, TeamID: &team, SLAPolicyID: &sla, Status: domain.ConversationStatusOpen, Priority: "high", CustomAttributes: `{"private":"hidden"}`, ObjectVersion: 3, LastActivityAt: now, CreatedAt: now, UpdatedAt: now}
+	other := domain.Conversation{AccountID: 92, DisplayID: 102, InboxID: 12, ContactID: 22, Status: domain.ConversationStatusOpen, Priority: "low", CustomAttributes: `{"foreign":"hidden"}`, ObjectVersion: 1, LastActivityAt: now, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.ConversationLabel{ConversationID: owned.ID, LabelID: 31}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(path string, query foundation.QueryEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	base := foundation.QueryEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "status"}, Consistency: "strong", RequestedAt: now}
+	get := base
+	get.QueryType, get.Filter = "con.conversation.get.v1", map[string]any{"id": owned.ID}
+	response := call("/contracts/queries/con.conversation.get.v1", get)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"display_id":101`) || !strings.Contains(response.Body.String(), `"label_ids":[31]`) || strings.Contains(response.Body.String(), "private") || strings.Contains(response.Body.String(), "sla_policy") {
+		t.Fatalf("conversation get status=%d body=%s", response.Code, response.Body.String())
+	}
+	get.AccountID = 92
+	if response := call("/contracts/queries/con.conversation.get.v1", get); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account get status=%d body=%s", response.Code, response.Body.String())
+	}
+	list := base
+	list.QueryType, list.Filter = "con.conversations.list.v1", map[string]any{"status": domain.ConversationStatusOpen, "inbox_id": owned.InboxID}
+	response = call("/contracts/queries/con.conversations.list.v1", list)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total":1`) || !strings.Contains(response.Body.String(), `"display_id":101`) || strings.Contains(response.Body.String(), `"display_id":102`) || strings.Contains(response.Body.String(), "hidden") {
+		t.Fatalf("conversation list status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.User{}, &domain.Team{}, &domain.Label{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("CON runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}
