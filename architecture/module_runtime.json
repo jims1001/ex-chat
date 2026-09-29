@@ -668,8 +668,8 @@
         "whenStopped": "帮助中心受限，既有已缓存公开内容按策略",
         "recovery": "索引和发布版本同步"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-command-surface-verified",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

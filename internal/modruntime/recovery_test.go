@@ -660,6 +660,61 @@ func TestQLTSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestKBSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "KB")
+	now := time.Now().UTC()
+	portal := domain.Portal{AccountID: 91, Name: "Snapshot Help", Slug: "snapshot-help", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&portal).Error; err != nil {
+		t.Fatal(err)
+	}
+	category := domain.Category{AccountID: 91, PortalID: portal.ID, Name: "FAQ", Slug: "faq", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&category).Error; err != nil {
+		t.Fatal(err)
+	}
+	article := domain.Article{AccountID: 91, PortalID: portal.ID, CategoryID: category.ID, AuthorID: 7, Title: "Snapshot", Slug: "snapshot", Content: "restore me", Status: "published", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&article).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := foundation.EventEnvelope{EventID: "snapshot-kb-event", EventType: "kb.knowledge.published.v1", EventVersion: "v1", SourceModule: "KB", AccountID: 91, AggregateType: "Article", AggregateID: strconv.FormatUint(uint64(article.ID), 10), AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "snapshot-kb", CausationID: "snapshot", ChangedFields: []string{"status"}, Payload: map[string]any{"article_id": article.ID, "status": "published"}, DataClassification: "internal"}
+	if err := NewEventOutbox(source, "KB").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "kb.snapshot.json")
+	if err := CreateSnapshot(source, "KB", "kb-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "KB")
+	targetCfg := businessConfig("KB")
+	targetCfg.RecoveryGeneration = "kb-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("KB target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "KB", "kb-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("KB target not ready after restore: %v", err)
+	}
+	for name, model := range map[string]any{"portals": &domain.Portal{}, "categories": &domain.Category{}, "articles": &domain.Article{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		if count != 1 {
+			t.Fatalf("%s count=%d", name, count)
+		}
+	}
+	var events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if events != 1 {
+		t.Fatalf("events=%d", events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.MediaAsset{}, &domain.Contact{}, &domain.Conversation{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("KB restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

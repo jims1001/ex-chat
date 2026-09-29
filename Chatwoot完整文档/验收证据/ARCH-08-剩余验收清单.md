@@ -33,7 +33,7 @@
 | RTE | 5 Command/4 Query 完整接入 | 4 类 Event 完整覆盖 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 备份恢复与 readiness 通过 |
 | TKT | 5 Command/4 Query/3 Event 与合并消费完整接入 | 事件自动投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 六类所有者快照恢复与门禁通过 |
 | QLT | 4 Command/3 Query/3 Event 完整接入 | 自动事件投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 八类所有者快照恢复与门禁通过 |
-| KB | 6 Command/5 Query 已接入并完成账号边界验证 | 5 类事件均有生产路径且原子写入通过 | 待验收 | 待验收 | 待验收 |
+| KB | 6 Command/5 Query 已接入并完成账号边界验证 | 5 类事件均有生产路径且自动投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | Portal/Category/Article 与日志恢复、readiness 门禁通过 |
 | BIL | 合并事件消费已接入 | 待验收 | 事件去重通过 | 待验收 | 待验收 |
 | EXT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | NTF | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
@@ -219,3 +219,6 @@
 
 - 已完成并验证：KB 删除文章、创建/更新门户和账号内容清理均按 account_id 执行；外账号内容不可删除，三类命令与最小事件同事务且重放单写（E-ARCH-08-v157）。
 - 下一项：KB PostgreSQL 多实例、版本回退、事件投递和备份恢复验收。
+
+- 已完成并验证：KB PostgreSQL 8 实例门户创建保持单写，v2→v1 回退保留事实，知识事件自动投递，Portal/Category/Article 与日志快照恢复及 readiness 门禁通过（E-ARCH-08-v158）。
+- KB 行关闭；下一项：BIL 独立运行公开合同。
