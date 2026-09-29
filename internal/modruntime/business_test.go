@@ -5707,3 +5707,71 @@ func TestEXTPluginInstallDisableAreScopedAtomicAndHideSettings(t *testing.T) {
 		t.Fatalf("own=%d receipts=%d events=%d", own, receipts, events)
 	}
 }
+
+func TestEXTBotManageValidatesCHNOwnerAndHidesCredentials(t *testing.T) {
+	chnRegistry := NewContractRegistry("CHN")
+	if err := chnRegistry.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, _ := uintFilter(query.Filter, "id")
+		if query.AccountID != 91 || id != 11 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+		}
+		return inboxView{ID: id, AccountID: query.AccountID, Name: "Support"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chnCfg := businessConfig("CHN")
+	chnCfg.AllowedCallers["EXT"] = true
+	server := httptest.NewServer(Runtime{Config: chnCfg, DB: newModuleTestDB(t, "CHN"), Contracts: chnRegistry}.Handler())
+	defer server.Close()
+	db := newModuleTestDB(t, "EXT")
+	cfg := businessConfig("EXT")
+	cfg.Dependencies["CHN"] = DependencyConfig{URL: server.URL, Token: chnCfg.AuthToken}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("EXT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/ext.bot.manage.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	now := time.Now().UTC()
+	create := foundation.CommandEnvelope{CommandID: "ext-bot-create", CommandType: "ext.bot.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"action": "create", "name": "Bot", "outgoing_url": "https://bot.example.test", "access_token": "secret-token", "bot_config": `{"secret":true}`}, IdempotencyKey: "ext-bot-create-91", CorrelationID: "ext-bot-create-correlation", CausationID: "ext-bot-test", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ext.bot.get.v1"}}
+	response := call(create)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret-token") || strings.Contains(response.Body.String(), `"secret":true`) {
+		t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Data struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil || decoded.Data.ID == 0 {
+		t.Fatalf("decode=%v body=%s", err, response.Body.String())
+	}
+	bind := create
+	bind.CommandID, bind.IdempotencyKey, bind.CorrelationID = "ext-bot-bind", "ext-bot-bind-91", "ext-bot-bind-correlation"
+	bind.Target = foundation.ContractTarget{Type: "bot", ID: strconv.FormatUint(uint64(decoded.Data.ID), 10)}
+	bind.Input = map[string]any{"action": "bind", "inbox_id": 11}
+	for range 2 {
+		response = call(bind)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"inbox_ids":[11]`) {
+			t.Fatalf("bind=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	bad := bind
+	bad.CommandID, bad.IdempotencyKey = "ext-bot-bad", "ext-bot-bad"
+	bad.Input = map[string]any{"action": "bind", "inbox_id": 12}
+	if response = call(bad); response.Code != http.StatusNotFound {
+		t.Fatalf("bad bind=%d body=%s", response.Code, response.Body.String())
+	}
+	var bots, bindings, receipts int64
+	_ = db.Model(&domain.AgentBot{}).Count(&bots).Error
+	_ = db.Model(&domain.AgentBotInbox{}).Count(&bindings).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if bots != 1 || bindings != 1 || receipts != 2 {
+		t.Fatalf("bots=%d bindings=%d receipts=%d", bots, bindings, receipts)
+	}
+}

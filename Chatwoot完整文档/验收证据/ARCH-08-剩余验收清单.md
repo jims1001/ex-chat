@@ -35,7 +35,7 @@
 | QLT | 4 Command/3 Query/3 Event 完整接入 | 自动事件投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 八类所有者快照恢复与门禁通过 |
 | KB | 6 Command/5 Query 已接入并完成账号边界验证 | 5 类事件均有生产路径且自动投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | Portal/Category/Article 与日志恢复、readiness 门禁通过 |
 | BIL | 5 Command/3 Query 已接入并完成账号边界验证 | 5 类生产事件均有原子写入和自动投递路径，合并事件消费已接入 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | 四类所有者数据与日志恢复、readiness 门禁通过 |
-| EXT | 2 Command/5 Query 已接入并完成账号边界验证 | 插件安装/禁用事件原子写入通过 | 待验收 | 待验收 | 待验收 |
+| EXT | 3 Command/5 Query 已接入并完成账号边界验证 | 插件安装/禁用事件原子写入通过 | 待验收 | 待验收 | 待验收 |
 | NTF | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | AUT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | OPS | 合并事件消费已接入 | 待验收 | 事件去重通过 | 待验收 | 待验收 |
@@ -243,3 +243,6 @@
 
 - 已完成并验证：EXT 插件安装只接受目录内应用和匹配账号目标，禁用只作用本账号 Installation；Settings 不进入响应或事件（E-ARCH-08-v165）。
 - 下一项：EXT AgentBot 管理与 CHN 收件箱绑定命令。
+
+- 已完成并验证：EXT AgentBot 创建更新删除均限制本账号，绑定前经 CHN 合同验证 Inbox，EXT 不读取 CHN 表且凭据不出域（E-ARCH-08-v166）。
+- 下一项：EXT Webhook 管理、分发及投递记录命令。

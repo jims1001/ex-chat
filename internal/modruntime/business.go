@@ -3617,6 +3617,13 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		installationView := func(installation *domain.IntegrationInstallation) map[string]any {
 			return map[string]any{"id": installation.ID, "account_id": installation.AccountID, "app_id": installation.AppID, "status": installation.Status, "created_at": installation.CreatedAt, "updated_at": installation.UpdatedAt}
 		}
+		botView := func(db *gorm.DB, bot *domain.AgentBot) (map[string]any, error) {
+			var inboxIDs []uint
+			if err := db.Model(&domain.AgentBotInbox{}).Where("account_id = ? AND agent_bot_id = ?", bot.AccountID, bot.ID).Order("inbox_id ASC").Pluck("inbox_id", &inboxIDs).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot binding store is unavailable"}
+			}
+			return map[string]any{"id": bot.ID, "account_id": bot.AccountID, "name": bot.Name, "description": bot.Description, "outgoing_url": bot.OutgoingURL, "bot_type": bot.BotType, "avatar_url": bot.AvatarURL, "inbox_ids": inboxIDs, "created_at": bot.CreatedAt, "updated_at": bot.UpdatedAt}, nil
+		}
 		if err := r.Contracts.RegisterCommand("ext.plugin.install.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
@@ -3693,6 +3700,105 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("ext.bot.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			action, _ := command.Input["action"].(string)
+			action = strings.ToLower(strings.TrimSpace(action))
+			tx := Transaction(ctx, r.DB)
+			if action == "create" {
+				if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
+				}
+				name, _ := command.Input["name"].(string)
+				outgoingURL, _ := command.Input["outgoing_url"].(string)
+				name, outgoingURL = strings.TrimSpace(name), strings.TrimSpace(outgoingURL)
+				if name == "" || len(name) > 255 || (!strings.HasPrefix(outgoingURL, "https://") && !strings.HasPrefix(outgoingURL, "http://")) || len(outgoingURL) > 1024 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "name and HTTP outgoing_url are required"}
+				}
+				bot := domain.AgentBot{AccountID: command.AccountID, Name: name, OutgoingURL: outgoingURL, BotType: "webhook", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+				bot.Description, _ = command.Input["description"].(string)
+				bot.AvatarURL, _ = command.Input["avatar_url"].(string)
+				bot.BotConfig, _ = command.Input["bot_config"].(string)
+				bot.AccessToken, _ = command.Input["access_token"].(string)
+				if err := tx.Create(&bot).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "bot could not be created"}
+				}
+				return botView(tx, &bot)
+			}
+			if command.Target.Type != "bot" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "bot target is required"}
+			}
+			botID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || botID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "bot target is invalid"}
+			}
+			var bot domain.AgentBot
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(botID)).First(&bot)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "bot was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot store is unavailable"}
+			}
+			switch action {
+			case "update":
+				updates := map[string]any{"updated_at": time.Now().UTC()}
+				for _, field := range []string{"name", "description", "outgoing_url", "avatar_url", "bot_config", "access_token"} {
+					if value, ok := command.Input[field].(string); ok {
+						updates[field] = strings.TrimSpace(value)
+					}
+				}
+				if len(updates) == 1 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "bot updates are required"}
+				}
+				if err := tx.Model(&domain.AgentBot{}).Where("account_id = ? AND id = ?", command.AccountID, bot.ID).Updates(updates).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "bot could not be updated"}
+				}
+				if err := tx.Where("account_id = ? AND id = ?", command.AccountID, bot.ID).First(&bot).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot store is unavailable"}
+				}
+				return botView(tx, &bot)
+			case "bind", "unbind":
+				inboxID, err := uintFilter(command.Input, "inbox_id")
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "inbox_id is required"}
+				}
+				if action == "bind" {
+					chnDependency, ok := r.Config.Dependencies["CHN"]
+					if !ok {
+						return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox validation is unavailable"}
+					}
+					query := foundation.QueryEnvelope{QueryType: "chn.inbox.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": inboxID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id"}, Consistency: "strong", RequestedAt: command.RequestedAt}
+					var inbox inboxView
+					if err := newModuleClient("EXT", chnDependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &inbox); err != nil {
+						return nil, err
+					}
+					if err := tx.Where("account_id = ? AND inbox_id = ?", command.AccountID, inboxID).Delete(&domain.AgentBotInbox{}).Error; err != nil {
+						return nil, &ContractFailure{Type: "state_conflict", Message: "bot binding could not be replaced"}
+					}
+					if err := tx.Create(&domain.AgentBotInbox{AccountID: command.AccountID, AgentBotID: bot.ID, InboxID: inboxID, CreatedAt: time.Now().UTC()}).Error; err != nil {
+						return nil, &ContractFailure{Type: "state_conflict", Message: "bot could not be bound"}
+					}
+				} else {
+					result := tx.Where("account_id = ? AND agent_bot_id = ? AND inbox_id = ?", command.AccountID, bot.ID, inboxID).Delete(&domain.AgentBotInbox{})
+					if result.Error != nil || result.RowsAffected != 1 {
+						return nil, &ContractFailure{Type: "resource_not_found", Message: "bot binding was not found"}
+					}
+				}
+				return botView(tx, &bot)
+			case "delete":
+				if err := tx.Where("account_id = ? AND agent_bot_id = ?", command.AccountID, bot.ID).Delete(&domain.AgentBotInbox{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "bot bindings could not be deleted"}
+				}
+				if result := tx.Where("account_id = ? AND id = ?", command.AccountID, bot.ID).Delete(&domain.AgentBot{}); result.Error != nil || result.RowsAffected != 1 {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "bot could not be deleted"}
+				}
+				return map[string]any{"account_id": command.AccountID, "bot_id": bot.ID, "deleted": true}, nil
+			default:
+				return nil, &ContractFailure{Type: "validation_failed", Message: "bot action is invalid"}
+			}
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ext.catalog.list.v1", func(_ context.Context, _ foundation.QueryEnvelope) (any, error) {
 			var apps []domain.PlatformApp
 			if err := r.DB.Order("id ASC").Find(&apps).Error; err != nil {
@@ -3742,11 +3848,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot store is unavailable"}
 			}
-			var inboxIDs []uint
-			if err := r.DB.Model(&domain.AgentBotInbox{}).Where("account_id = ? AND agent_bot_id = ?", query.AccountID, bot.ID).Order("inbox_id ASC").Pluck("inbox_id", &inboxIDs).Error; err != nil {
-				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot binding store is unavailable"}
-			}
-			return map[string]any{"id": bot.ID, "account_id": bot.AccountID, "name": bot.Name, "description": bot.Description, "outgoing_url": bot.OutgoingURL, "bot_type": bot.BotType, "avatar_url": bot.AvatarURL, "inbox_ids": inboxIDs, "created_at": bot.CreatedAt, "updated_at": bot.UpdatedAt}, nil
+			return botView(r.DB, &bot)
 		}); err != nil {
 			return err
 		}
