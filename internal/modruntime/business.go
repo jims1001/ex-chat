@@ -212,6 +212,28 @@ type contactDeletionStatusView struct {
 	Ready             bool  `json:"ready"`
 }
 
+type ticketView struct {
+	ID             uint       `json:"id"`
+	AccountID      uint       `json:"account_id"`
+	TicketNumber   string     `json:"ticket_number"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	Status         string     `json:"status"`
+	Priority       string     `json:"priority"`
+	AssignedGroup  string     `json:"assigned_group"`
+	AssigneeID     *uint      `json:"assignee_id,omitempty"`
+	ContactID      *uint      `json:"contact_id,omitempty"`
+	ConversationID *uint      `json:"conversation_id,omitempty"`
+	CreatorID      *uint      `json:"creator_id,omitempty"`
+	DueAt          *time.Time `json:"due_at,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	ClosedAt       *time.Time `json:"closed_at,omitempty"`
+	SLAStatus      string     `json:"sla_status"`
+	Version        int        `json:"version"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -2213,6 +2235,85 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}
 		return nil
 	case "TKT":
+		loadTicket := func(db *gorm.DB, accountID, ticketID uint) (*domain.Ticket, error) {
+			var ticket domain.Ticket
+			result := db.Where("account_id = ? AND id = ?", accountID, ticketID).First(&ticket)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "ticket was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "ticket store is unavailable"}
+			}
+			return &ticket, nil
+		}
+		if err := r.Contracts.RegisterQuery("tkt.ticket.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			ticketID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "ticket id is required"}
+			}
+			ticket, err := loadTicket(r.DB, query.AccountID, ticketID)
+			if err != nil {
+				return nil, err
+			}
+			return ticketFromModel(ticket), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("tkt.workflow.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			ticketID, err := uintFilter(query.Filter, "ticket_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "ticket_id is required"}
+			}
+			ticket, err := loadTicket(r.DB, query.AccountID, ticketID)
+			if err != nil {
+				return nil, err
+			}
+			transitions := map[string][]string{"open": {"pending", "resolved", "closed"}, "pending": {"open", "resolved", "closed"}, "resolved": {"open", "closed"}, "closed": {"open"}}
+			return map[string]any{"account_id": query.AccountID, "ticket_id": ticket.ID, "status": ticket.Status, "version": ticket.Version, "allowed_transitions": transitions[ticket.Status]}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("tkt.history.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			ticketID, err := uintFilter(query.Filter, "ticket_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "ticket_id is required"}
+			}
+			if _, err := loadTicket(r.DB, query.AccountID, ticketID); err != nil {
+				return nil, err
+			}
+			var statuses []domain.TicketStatusHistory
+			if err := r.DB.Where("account_id = ? AND ticket_id = ?", query.AccountID, ticketID).Order("id ASC").Find(&statuses).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "ticket history store is unavailable"}
+			}
+			var activities []domain.TicketActivity
+			if err := r.DB.Where("account_id = ? AND ticket_id = ?", query.AccountID, ticketID).Order("id ASC").Find(&activities).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "ticket activity store is unavailable"}
+			}
+			return map[string]any{"account_id": query.AccountID, "ticket_id": ticketID, "status_history": statuses, "activities": activities}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("tkt.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			counts := map[string]int64{}
+			for name, statement := range map[string]*gorm.DB{
+				"ticket_count":     r.DB.Model(&domain.Ticket{}).Where("account_id = ?", query.AccountID),
+				"comment_count":    r.DB.Model(&domain.TicketComment{}).Where("account_id = ?", query.AccountID),
+				"activity_count":   r.DB.Model(&domain.TicketActivity{}).Where("account_id = ?", query.AccountID),
+				"history_count":    r.DB.Model(&domain.TicketStatusHistory{}).Where("account_id = ?", query.AccountID),
+				"attachment_count": r.DB.Model(&domain.TicketAttachment{}).Where("account_id = ?", query.AccountID),
+				"watcher_count":    r.DB.Model(&domain.TicketWatcher{}).Where("account_id = ?", query.AccountID),
+			} {
+				var count int64
+				if err := statement.Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "ticket deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			ready := counts["ticket_count"] == 0 && counts["comment_count"] == 0 && counts["activity_count"] == 0 && counts["history_count"] == 0 && counts["attachment_count"] == 0 && counts["watcher_count"] == 0
+			return map[string]any{"account_id": query.AccountID, "ticket_count": counts["ticket_count"], "comment_count": counts["comment_count"], "activity_count": counts["activity_count"], "history_count": counts["history_count"], "attachment_count": counts["attachment_count"], "watcher_count": counts["watcher_count"], "ready": ready}, nil
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
 			if failure != nil {
@@ -2747,6 +2848,10 @@ func conversationFromModel(db *gorm.DB, conversation *domain.Conversation) (*con
 
 func messageFromModel(message domain.Message) messageView {
 	return messageView{ID: message.ID, AccountID: message.AccountID, ConversationID: message.ConversationID, SenderType: message.SenderType, SenderID: message.SenderID, MessageType: message.MessageType, ContentType: message.ContentType, Content: message.Content, Private: message.Private, Status: message.Status, Deleted: message.Deleted, DeletedAt: message.DeletedAt, EditedAt: message.EditedAt, CreatedAt: message.CreatedAt, UpdatedAt: message.UpdatedAt}
+}
+
+func ticketFromModel(ticket *domain.Ticket) ticketView {
+	return ticketView{ID: ticket.ID, AccountID: ticket.AccountID, TicketNumber: ticket.TicketNumber, Title: ticket.Title, Description: ticket.Description, Status: ticket.Status, Priority: ticket.Priority, AssignedGroup: ticket.AssignedGroup, AssigneeID: ticket.AssigneeID, ContactID: ticket.ContactID, ConversationID: ticket.ConversationID, CreatorID: ticket.CreatorID, DueAt: ticket.DueAt, ResolvedAt: ticket.ResolvedAt, ClosedAt: ticket.ClosedAt, SLAStatus: ticket.SLAStatus, Version: ticket.Version, CreatedAt: ticket.CreatedAt, UpdatedAt: ticket.UpdatedAt}
 }
 
 func mediaCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {

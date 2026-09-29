@@ -1676,6 +1676,75 @@ func TestRTEAssignmentCommandsUseCONOwnerAndPublishMinimalEvents(t *testing.T) {
 	}
 }
 
+func TestTKTQueriesReadOnlyOwnerTablesAndStayAccountScoped(t *testing.T) {
+	db := newModuleTestDB(t, "TKT")
+	now := time.Now().UTC()
+	contactID, conversationID, assigneeID := uint(21), uint(31), uint(7)
+	owned := domain.Ticket{AccountID: 91, TicketNumber: "TKT-91-1", Title: "Payment issue", Description: "Customer-visible summary", Status: "pending", Priority: "high", AssigneeID: &assigneeID, ContactID: &contactID, ConversationID: &conversationID, CustomAttributes: `{"private":"must-not-leak"}`, SLAStatus: "warning", Version: 3, CreatedAt: now, UpdatedAt: now}
+	other := domain.Ticket{AccountID: 92, TicketNumber: "TKT-92-1", Title: "Other tenant", Status: "open", Priority: "low", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketStatusHistory{AccountID: 91, TicketID: owned.ID, FromStatus: "open", ToStatus: "pending", Reason: "waiting", UserID: &assigneeID, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketActivity{AccountID: 91, TicketID: owned.ID, UserID: &assigneeID, Action: "status_changed", Details: `{"to":"pending"}`, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketComment{AccountID: 91, TicketID: owned.ID, UserID: &assigneeID, Content: "private note", IsPrivate: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("TKT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("TKT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	base := foundation.QueryEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+	call := func(path string, query foundation.QueryEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	get := base
+	get.QueryType, get.Filter = "tkt.ticket.get.v1", map[string]any{"id": owned.ID}
+	response := call("/contracts/queries/tkt.ticket.get.v1", get)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ticket_number":"TKT-91-1"`) || strings.Contains(response.Body.String(), "must-not-leak") {
+		t.Fatalf("ticket get=%d body=%s", response.Code, response.Body.String())
+	}
+	workflow := base
+	workflow.QueryType, workflow.Filter = "tkt.workflow.get.v1", map[string]any{"ticket_id": owned.ID}
+	response = call("/contracts/queries/tkt.workflow.get.v1", workflow)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"pending"`) || !strings.Contains(response.Body.String(), `"resolved"`) {
+		t.Fatalf("workflow=%d body=%s", response.Code, response.Body.String())
+	}
+	history := base
+	history.QueryType, history.Filter = "tkt.history.list.v1", map[string]any{"ticket_id": owned.ID}
+	response = call("/contracts/queries/tkt.history.list.v1", history)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"to_status":"pending"`) || !strings.Contains(response.Body.String(), `"action":"status_changed"`) || strings.Contains(response.Body.String(), "private note") {
+		t.Fatalf("history=%d body=%s", response.Code, response.Body.String())
+	}
+	deletion := base
+	deletion.QueryType, deletion.Filter = "tkt.account_deletion_status.get.v1", map[string]any{}
+	response = call("/contracts/queries/tkt.account_deletion_status.get.v1", deletion)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ticket_count":1`) || !strings.Contains(response.Body.String(), `"comment_count":1`) || !strings.Contains(response.Body.String(), `"ready":false`) {
+		t.Fatalf("deletion=%d body=%s", response.Code, response.Body.String())
+	}
+	cross := get
+	cross.AccountID = 92
+	if response := call("/contracts/queries/tkt.ticket.get.v1", cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Contact{}, &domain.Conversation{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("TKT query runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

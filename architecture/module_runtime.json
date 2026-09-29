@@ -552,11 +552,17 @@
         "recovery": "关联事件补读"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-contact-merge-consumer",
+      "acceptanceStatus": "queries-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
         "cus.contact.merged.v1"
+      ],
+      "implementedIndependentQueries": [
+        "tkt.ticket.get.v1",
+        "tkt.workflow.get.v1",
+        "tkt.history.list.v1",
+        "tkt.account_deletion_status.get.v1"
       ]
     },
     {
