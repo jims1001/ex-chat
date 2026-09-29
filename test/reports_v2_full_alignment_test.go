@@ -238,7 +238,7 @@ func TestReportsV2_FullAlignment(t *testing.T) {
 	})
 	db.Create(&domain.ReportingEvent{
 		AccountID:      accountID,
-		UserID:          &adminUserID,
+		UserID:         &adminUserID,
 		ConversationID: &conv3.ID,
 		Name:           "first_response",
 		Value:          150, // 150 seconds
@@ -351,7 +351,7 @@ func TestReportsV2_FullAlignment(t *testing.T) {
 	// 4. Drilldown
 	// ==========================================
 	t.Run("4_Drilldown", func(t *testing.T) {
-		bucketTs := strconv.FormatInt(now.Unix(), 10)
+		bucketTs := strconv.FormatInt(conv1.CreatedAt.Unix(), 10)
 		path := fmt.Sprintf("/api/v2/accounts/%s/reports/drilldown?metric=conversations_count&bucket_timestamp=%s&type=account", accIDStr, bucketTs)
 		w := doGet(path, false)
 		if w.Code != http.StatusOK {
