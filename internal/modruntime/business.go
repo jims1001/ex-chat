@@ -1957,6 +1957,131 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return nil
 		})
+	case "RTE":
+		conDependency, conOK := r.Config.Dependencies["CON"]
+		tenDependency, tenOK := r.Config.Dependencies["TEN"]
+		chnDependency, chnOK := r.Config.Dependencies["CHN"]
+		if !conOK || !tenOK || !chnOK {
+			return errors.New("RTE business contracts require CON, TEN and CHN dependencies")
+		}
+		conClient := newModuleClient("RTE", conDependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		tenClient := newModuleClient("RTE", tenDependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		chnClient := newModuleClient("RTE", chnDependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		loadConversation := func(ctx context.Context, query foundation.QueryEnvelope, conversationID uint) (*conversationView, error) {
+			query.QueryType, query.Filter = "con.conversation.get.v1", map[string]any{"id": conversationID}
+			query.Sort, query.Page, query.Fields, query.Consistency = []string{"id"}, "1", []string{"id", "account_id", "inbox_id", "assignee_id", "team_id", "status", "priority"}, "strong"
+			var conversation conversationView
+			if err := conClient.query(ctx, query, &conversation); err != nil {
+				return nil, err
+			}
+			return &conversation, nil
+		}
+		if err := r.Contracts.RegisterQuery("rte.assignment.get.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
+			conversationID, err := uintFilter(query.Filter, "conversation_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
+			}
+			conversation, err := loadConversation(ctx, query, conversationID)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": query.AccountID, "conversation_id": conversation.ID, "inbox_id": conversation.InboxID, "assignee_id": conversation.AssigneeID, "team_id": conversation.TeamID, "assigned": conversation.AssigneeID != nil || conversation.TeamID != nil}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("rte.queue.get.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
+			conversationID, err := uintFilter(query.Filter, "conversation_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
+			}
+			conversation, err := loadConversation(ctx, query, conversationID)
+			if err != nil {
+				return nil, err
+			}
+			queued := conversation.AssigneeID == nil && conversation.TeamID == nil && (conversation.Status == domain.ConversationStatusOpen || conversation.Status == domain.ConversationStatusPending)
+			return map[string]any{"account_id": query.AccountID, "conversation_id": conversation.ID, "inbox_id": conversation.InboxID, "status": conversation.Status, "priority": conversation.Priority, "queued": queued, "last_activity_at": conversation.LastActivityAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("rte.capacity.get.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
+			userID, err := uintFilter(query.Filter, "user_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "user_id is required"}
+			}
+			if err := tenClient.requireMember(ctx, query.AccountID, query.Actor, userID); err != nil {
+				return nil, err
+			}
+			var policy domain.CapacityPolicy
+			result := r.DB.Where("account_id = ? AND user_id = ?", query.AccountID, userID).First(&policy)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				result = r.DB.Where("account_id = ? AND user_id = 0", query.AccountID).First(&policy)
+			}
+			if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "capacity store is unavailable"}
+			}
+			limit := 10
+			policyID := uint(0)
+			if result.Error == nil {
+				limit, policyID = policy.ConversationLimit, policy.ID
+			}
+			return map[string]any{"account_id": query.AccountID, "user_id": userID, "policy_id": policyID, "conversation_limit": limit}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("rte.candidates.list.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
+			inboxID, err := uintFilter(query.Filter, "inbox_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox_id is required"}
+			}
+			inboxQuery := query
+			inboxQuery.QueryType, inboxQuery.Filter, inboxQuery.Sort, inboxQuery.Page, inboxQuery.Fields, inboxQuery.Consistency = "chn.inbox.get.v1", map[string]any{"id": inboxID}, []string{"id"}, "1", []string{"id", "account_id"}, "strong"
+			var inbox inboxView
+			if err := chnClient.query(ctx, inboxQuery, &inbox); err != nil {
+				return nil, err
+			}
+			membersQuery := query
+			membersQuery.QueryType, membersQuery.Filter, membersQuery.Sort, membersQuery.Page, membersQuery.Fields, membersQuery.Consistency = "ten.members.list.v1", map[string]any{}, []string{"user_id"}, "1", []string{"user_id", "role", "availability"}, "strong"
+			var members []memberView
+			if err := tenClient.query(ctx, membersQuery, &members); err != nil {
+				return nil, err
+			}
+			items := make([]map[string]any, 0, len(members))
+			for _, member := range members {
+				if member.AccountID != query.AccountID || member.UserID == 0 {
+					continue
+				}
+				var policy domain.CapacityPolicy
+				result := r.DB.Where("account_id = ? AND user_id = ?", query.AccountID, member.UserID).First(&policy)
+				if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+					result = r.DB.Where("account_id = ? AND user_id = 0", query.AccountID).First(&policy)
+				}
+				if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "capacity store is unavailable"}
+				}
+				limit := 10
+				if result.Error == nil {
+					limit = policy.ConversationLimit
+				}
+				active := int64(0)
+				for _, status := range []string{domain.ConversationStatusOpen, domain.ConversationStatusPending} {
+					listQuery := query
+					listQuery.QueryType, listQuery.Filter, listQuery.Sort, listQuery.Page, listQuery.Fields, listQuery.Consistency = "con.conversations.list.v1", map[string]any{"inbox_id": inboxID, "assignee_id": member.UserID, "status": status}, []string{"id"}, "1", []string{"id"}, "strong"
+					var page struct {
+						Total int64 `json:"total"`
+					}
+					if err := conClient.query(ctx, listQuery, &page); err != nil {
+						return nil, err
+					}
+					active += page.Total
+				}
+				available := member.Availability != "offline" && (limit <= 0 || active < int64(limit))
+				items = append(items, map[string]any{"user_id": member.UserID, "role": member.Role, "availability": member.Availability, "active_conversations": active, "conversation_limit": limit, "available": available})
+			}
+			return map[string]any{"account_id": query.AccountID, "inbox_id": inboxID, "items": items}, nil
+		}); err != nil {
+			return err
+		}
+		return nil
 	case "TKT":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)

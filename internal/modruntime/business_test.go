@@ -1373,6 +1373,123 @@ func TestMSGAccountAnonymizeRemovesOnlyOwnerSensitiveFacts(t *testing.T) {
 	}
 }
 
+func TestRTEQueriesComposeOwnerContractsAndLocalCapacity(t *testing.T) {
+	assigneeID := uint(7)
+	conRegistry := NewContractRegistry("CON")
+	if err := conRegistry.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || id != 101 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+		}
+		return conversationView{ID: 101, AccountID: 91, InboxID: 11, ContactID: 21, AssigneeID: &assigneeID, Status: domain.ConversationStatusOpen, Priority: domain.PriorityHigh, LastActivityAt: time.Now().UTC()}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conRegistry.RegisterQuery("con.conversations.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		assigneeID, err := uintFilter(query.Filter, "assignee_id")
+		if err != nil || query.AccountID != 91 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversations were not found"}
+		}
+		total := int64(0)
+		if assigneeID == 7 && query.Filter["status"] == domain.ConversationStatusOpen {
+			total = 2
+		}
+		return map[string]any{"items": []any{}, "total": total, "page": 1, "page_size": 50}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["RTE"] = true
+	conServer, conAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: conCfg, Contracts: conRegistry}.Handler())
+	defer conServer.Shutdown(context.Background())
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "user is invalid"}
+		}
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && (userID == 7 || userID == 8)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tenRegistry.RegisterQuery("ten.members.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		if query.AccountID != 91 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "account was not found"}
+		}
+		return []memberView{{ID: 1, AccountID: 91, UserID: 7, Role: "agent", Availability: "online"}, {ID: 2, AccountID: 91, UserID: 8, Role: "agent", Availability: "offline"}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["RTE"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	chnRegistry := NewContractRegistry("CHN")
+	if err := chnRegistry.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || id != 11 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+		}
+		return inboxView{ID: 11, AccountID: 91, Name: "Support"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chnCfg := businessConfig("CHN")
+	chnCfg.AllowedCallers["RTE"] = true
+	chnServer, chnAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: chnCfg, Contracts: chnRegistry}.Handler())
+	defer chnServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "RTE")
+	if err := db.Create(&domain.CapacityPolicy{AccountID: 91, UserID: 7, ConversationLimit: 3}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.CapacityPolicy{AccountID: 91, UserID: 0, ConversationLimit: 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("RTE")
+	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}, "TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CHN": {URL: "http://" + chnAddress, Token: chnCfg.AuthToken}}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("RTE")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	base := foundation.QueryEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	call := func(path string, payload foundation.QueryEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, "rte-query-correlation")
+		})
+	}
+	assignment := base
+	assignment.QueryType, assignment.Filter = "rte.assignment.get.v1", map[string]any{"conversation_id": 101}
+	response := call("/contracts/queries/rte.assignment.get.v1", assignment)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"assignee_id":7`) || !strings.Contains(response.Body.String(), `"assigned":true`) {
+		t.Fatalf("assignment=%d body=%s", response.Code, response.Body.String())
+	}
+	queue := base
+	queue.QueryType, queue.Filter = "rte.queue.get.v1", map[string]any{"conversation_id": 101}
+	response = call("/contracts/queries/rte.queue.get.v1", queue)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"queued":false`) {
+		t.Fatalf("queue=%d body=%s", response.Code, response.Body.String())
+	}
+	capacity := base
+	capacity.QueryType, capacity.Filter = "rte.capacity.get.v1", map[string]any{"user_id": 7}
+	response = call("/contracts/queries/rte.capacity.get.v1", capacity)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_limit":3`) {
+		t.Fatalf("capacity=%d body=%s", response.Code, response.Body.String())
+	}
+	candidates := base
+	candidates.QueryType, candidates.Filter = "rte.candidates.list.v1", map[string]any{"inbox_id": 11}
+	response = call("/contracts/queries/rte.candidates.list.v1", candidates)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"user_id":7`) || !strings.Contains(response.Body.String(), `"active_conversations":2`) || !strings.Contains(response.Body.String(), `"conversation_limit":3`) || !strings.Contains(response.Body.String(), `"user_id":8`) || !strings.Contains(response.Body.String(), `"available":false`) {
+		t.Fatalf("candidates=%d body=%s", response.Code, response.Body.String())
+	}
+	cross := assignment
+	cross.AccountID = 92
+	if response := call("/contracts/queries/rte.assignment.get.v1", cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

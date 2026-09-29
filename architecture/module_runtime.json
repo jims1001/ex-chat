@@ -492,9 +492,15 @@
         "recovery": "重算队列和容量"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "queries-implemented",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "rte.queue.get.v1",
+        "rte.assignment.get.v1",
+        "rte.candidates.list.v1",
+        "rte.capacity.get.v1"
+      ]
     },
     {
       "module": "TKT",
