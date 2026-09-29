@@ -509,6 +509,85 @@ func TestRTESnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestTKTSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "TKT")
+	now := time.Now().UTC()
+	userID := uint(7)
+	ticket := domain.Ticket{AccountID: 91, TicketNumber: "TKT-SNAPSHOT", Title: "Private", Description: "Private", Status: "open", Priority: "high", CreatorID: &userID, SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range []any{
+		&domain.TicketComment{AccountID: 91, TicketID: ticket.ID, UserID: &userID, Content: "private", IsPrivate: true, CreatedAt: now, UpdatedAt: now},
+		&domain.TicketActivity{AccountID: 91, TicketID: ticket.ID, UserID: &userID, Action: "created", Details: `{}`, CreatedAt: now},
+		&domain.TicketStatusHistory{AccountID: 91, TicketID: ticket.ID, FromStatus: "", ToStatus: "open", UserID: &userID, CreatedAt: now},
+		&domain.TicketAttachment{AccountID: 91, TicketID: ticket.ID, FileName: "private.pdf", FileType: "application/pdf", DataURL: "med://private", CreatedAt: now},
+		&domain.TicketWatcher{AccountID: 91, TicketID: ticket.ID, UserID: userID, CreatedAt: now},
+	} {
+		if err := source.Create(fact).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := businessConfig("TKT")
+	runtime := Runtime{Config: cfg, DB: source, Contracts: NewContractRegistry("TKT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "snapshot-tkt", CommandType: "tkt.account_tickets.anonymize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "snapshot-tkt-91", CorrelationID: "snapshot-tkt-correlation", CausationID: "snapshot-tkt-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.account_deletion_status.get.v1"}}
+	body, _ := json.Marshal(command)
+	request := httptest.NewRequest(http.MethodPost, "/contracts/commands/tkt.account_tickets.anonymize.v1", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	request.Header.Set(headerCaller, "API")
+	request.Header.Set(headerContractVersion, "v1")
+	request.Header.Set(headerCorrelationID, command.CorrelationID)
+	response := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("TKT command=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := source.Create(&domain.TicketWatcher{AccountID: 91, TicketID: ticket.ID, UserID: userID, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := foundation.EventEnvelope{EventID: "snapshot-tkt-event", EventType: "tkt.ticket.created.v1", EventVersion: "v1", SourceModule: "TKT", AccountID: 91, AggregateType: "Ticket", AggregateID: strconv.FormatUint(uint64(ticket.ID), 10), AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: command.Actor, CorrelationID: command.CorrelationID, CausationID: command.CommandID, ChangedFields: []string{"created"}, Payload: map[string]any{"ticket_id": ticket.ID, "status": "open"}, DataClassification: "internal"}
+	if err := NewEventOutbox(source, "TKT").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "tkt.snapshot.json")
+	if err := CreateSnapshot(source, "TKT", "tkt-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "TKT")
+	targetCfg := businessConfig("TKT")
+	targetCfg.RecoveryGeneration = "tkt-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("TKT target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "TKT", "tkt-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("TKT target not ready after restore: %v", err)
+	}
+	counts := map[string]int64{}
+	for name, model := range map[string]any{"tickets": &domain.Ticket{}, "comments": &domain.TicketComment{}, "activities": &domain.TicketActivity{}, "histories": &domain.TicketStatusHistory{}, "attachments": &domain.TicketAttachment{}, "watchers": &domain.TicketWatcher{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		counts[name] = count
+	}
+	var receipts, events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if counts["tickets"] != 1 || counts["comments"] != 1 || counts["activities"] != 1 || counts["histories"] != 1 || counts["attachments"] != 1 || counts["watchers"] != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("counts=%v receipts=%d events=%d", counts, receipts, events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Contact{}, &domain.Conversation{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("TKT restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

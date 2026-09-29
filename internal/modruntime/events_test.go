@@ -466,3 +466,51 @@ func TestRTECapacityEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) 
 		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
 	}
 }
+
+func TestTKTTicketCreatedEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
+	consumerRegistry := NewContractRegistry("AUD")
+	delivered := make(chan foundation.EventEnvelope, 1)
+	if err := consumerRegistry.RegisterEvent("tkt.ticket.created.v1", func(_ context.Context, event foundation.EventEnvelope) error { delivered <- event; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := businessConfig("AUD")
+	consumerCfg.AllowedCallers["TKT"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: consumerCfg, DB: newModuleTestDB(t, "AUD"), Contracts: consumerRegistry}.Handler())
+	defer server.Shutdown(context.Background())
+	sourceDB := newModuleTestDB(t, "TKT")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "automatic-tkt-create-1", EventType: "tkt.ticket.created.v1", EventVersion: "v1", SourceModule: "TKT", AccountID: 91, AggregateType: "Ticket", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, CorrelationID: "automatic-tkt-correlation", CausationID: "tkt-create-command", ChangedFields: []string{"created"}, Payload: map[string]any{"ticket_id": 101, "ticket_number": "TKT-101", "status": "open"}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "TKT").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	sourceCfg := businessConfig("TKT")
+	sourceCfg.EventPollInterval = 10 * time.Millisecond
+	sourceCfg.EventTargets = map[string]EventFanoutTarget{"AUD": {Dependency: DependencyConfig{URL: "http://" + address, Token: consumerCfg.AuthToken}, EventTypes: map[string]bool{event.EventType: true}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failures := make(chan error, 1)
+	go (Runtime{Config: sourceCfg, DB: sourceDB}).RunEventFanout(ctx, func(err error) { failures <- err })
+	select {
+	case received := <-delivered:
+		if received.SourceModule != "TKT" || received.Payload["status"] != "open" {
+			t.Fatalf("unexpected event=%+v", received)
+		}
+	case err := <-failures:
+		t.Fatalf("fanout=%v", err)
+	case <-time.After(time.Second):
+		t.Fatal("automatic TKT fanout did not deliver")
+	}
+	deadline := time.Now().Add(time.Second)
+	var outbox, receipts int64
+	for time.Now().Before(deadline) {
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&outbox).Error
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+		if outbox == 1 && receipts == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if outbox != 1 || receipts != 1 {
+		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
+	}
+}

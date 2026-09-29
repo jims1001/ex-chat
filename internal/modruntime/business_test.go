@@ -3620,6 +3620,128 @@ func TestRTEIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	}
 }
 
+func TestTKTIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "TKT")
+	cfg := businessConfig("TKT")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://127.0.0.1:1", Token: "ten"}, "CUS": {URL: "http://127.0.0.1:2", Token: "cus"}, "CON": {URL: "http://127.0.0.1:3", Token: "con"}}
+	registry := NewContractRegistry("TKT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"tkt.ticket.create.v1", "tkt.status.change.v1", "tkt.comment.add.v1", "tkt.ticket.reopen.v1", "tkt.account_tickets.anonymize.v1"} {
+		if registry.commands[capability] == nil {
+			t.Fatalf("missing TKT command %s", capability)
+		}
+	}
+	for _, capability := range []string{"tkt.ticket.get.v1", "tkt.workflow.get.v1", "tkt.history.list.v1", "tkt.account_deletion_status.get.v1"} {
+		if registry.queries[capability] == nil {
+			t.Fatalf("missing TKT query %s", capability)
+		}
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("TKT runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Contact{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("TKT runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
+func TestTKTAnonymizeCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "TKT")
+	now := time.Now().UTC()
+	contactID := uint(21)
+	ticket := domain.Ticket{AccountID: 91, TicketNumber: "TKT-CAPACITY", Title: "Private", Description: "Private", Status: "open", Priority: "high", ContactID: &contactID, SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketComment{AccountID: 91, TicketID: ticket.ID, ContactID: &contactID, Content: "private", IsPrivate: true, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("TKT")
+	command := foundation.CommandEnvelope{CommandID: "capacity-tkt", CommandType: "tkt.account_tickets.anonymize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "capacity-tkt-91", CorrelationID: "capacity-tkt-correlation", CausationID: "capacity-tkt-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.account_deletion_status.get.v1"}}
+	const instances = 8
+	results, start := make(chan *httptest.ResponseRecorder, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for range instances {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("TKT")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			results <- performContractRequest(handler, "/contracts/commands/tkt.account_tickets.anonymize.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"anonymized":true`) {
+			t.Fatalf("concurrent TKT status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var receipts int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	var restored domain.Ticket
+	if err := db.First(&restored, ticket.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 1 || restored.Title != "Anonymized ticket" || restored.ContactID != nil {
+		t.Fatalf("receipts=%d restored=%+v", receipts, restored)
+	}
+}
+
+func TestTKTMixedVersionUpgradeRollbackPreservesAnonymizedFacts(t *testing.T) {
+	db := newModuleTestDB(t, "TKT")
+	now := time.Now().UTC()
+	ticket := domain.Ticket{AccountID: 91, TicketNumber: "TKT-ROLLBACK", Title: "Private", Description: "Private", Status: "open", Priority: "high", SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	newRuntime := func(version, release string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("TKT")
+		cfg.ContractVersion, cfg.ReleaseVersion, cfg.AcceptedVersions = version, release, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("TKT")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, "tkt-upgrade-correlation")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-tkt", CommandType: "tkt.account_tickets.anonymize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "upgrade-tkt-91", CorrelationID: "tkt-upgrade-correlation", CausationID: "tkt-upgrade-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.account_deletion_status.get.v1"}}
+	v2 := newRuntime("v2", "release-2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/tkt.account_tickets.anonymize.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2 write=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := newRuntime("v1", "release-1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/tkt.account_tickets.anonymize.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "tkt.ticket.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"id": ticket.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "title"}, Consistency: "strong", RequestedAt: now}
+	if response := call(v1, "v1", "/contracts/queries/tkt.ticket.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"title":"Anonymized ticket"`) {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/tkt.ticket.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func startRTETENDependency(t *testing.T) (Config, string) {
 	t.Helper()
 	registry := NewContractRegistry("TEN")

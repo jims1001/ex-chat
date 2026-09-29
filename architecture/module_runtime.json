@@ -551,8 +551,8 @@
         "whenStopped": "工单入口不可用，客服会话继续",
         "recovery": "关联事件补读"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "commands-and-events-implemented",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -575,7 +575,15 @@
         "tkt.ticket.created.v1",
         "tkt.ticket_status.changed.v1",
         "tkt.ticket.commented.v1"
-      ]
+      ],
+      "commandReceiptImplemented": true,
+      "outboxAtomicWithCommands": true,
+      "automaticEventDispatchVerified": true,
+      "eventDeliveryRecoveryVerified": true,
+      "postgresMultiInstanceCommandVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true,
+      "ownerBackupRestoreVerified": true,
+      "recoveryReadinessGateVerified": true
     },
     {
       "module": "QLT",
