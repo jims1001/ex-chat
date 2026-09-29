@@ -3614,6 +3614,85 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return nil
 		})
 	case "EXT":
+		installationView := func(installation *domain.IntegrationInstallation) map[string]any {
+			return map[string]any{"id": installation.ID, "account_id": installation.AccountID, "app_id": installation.AppID, "status": installation.Status, "created_at": installation.CreatedAt, "updated_at": installation.UpdatedAt}
+		}
+		if err := r.Contracts.RegisterCommand("ext.plugin.install.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
+			}
+			appID, _ := command.Input["app_id"].(string)
+			appID = strings.TrimSpace(appID)
+			parsedAppID, parseErr := strconv.ParseUint(appID, 10, 64)
+			if parseErr != nil || parsedAppID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "numeric app_id is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var app domain.PlatformApp
+			if result := tx.Where("id = ?", uint(parsedAppID)).First(&app); errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "catalog app was not found"}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "extension catalog is unavailable"}
+			}
+			settings, _ := command.Input["settings"].(string)
+			var installation domain.IntegrationInstallation
+			result := tx.Where("account_id = ? AND app_id = ?", command.AccountID, appID).First(&installation)
+			if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "installation store is unavailable"}
+			}
+			now := time.Now().UTC()
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				installation = domain.IntegrationInstallation{AccountID: command.AccountID, AppID: appID, Status: "installed", Settings: settings, CreatedAt: now, UpdatedAt: now}
+				if err := tx.Create(&installation).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "plugin could not be installed"}
+				}
+			} else {
+				if installation.Status == "installed" {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "plugin is already installed"}
+				}
+				if err := tx.Model(&domain.IntegrationInstallation{}).Where("account_id = ? AND id = ?", command.AccountID, installation.ID).Updates(map[string]any{"status": "installed", "settings": settings, "updated_at": now}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "plugin could not be installed"}
+				}
+				installation.Status, installation.Settings, installation.UpdatedAt = "installed", settings, now
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ext.plugin.installed.v1", "IntegrationInstallation", strconv.FormatUint(uint64(installation.ID), 10), []string{"status"}, map[string]any{"installation_id": installation.ID, "app_id": installation.AppID, "status": installation.Status}); err != nil {
+				return nil, err
+			}
+			return installationView(&installation), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ext.plugin.disable.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "installation" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "installation target is required"}
+			}
+			installationID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || installationID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "installation target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var installation domain.IntegrationInstallation
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(installationID)).First(&installation)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "installation was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "installation store is unavailable"}
+			}
+			if installation.Status == "disabled" {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "plugin is already disabled"}
+			}
+			installation.Status, installation.UpdatedAt = "disabled", time.Now().UTC()
+			if err := tx.Model(&domain.IntegrationInstallation{}).Where("account_id = ? AND id = ? AND status = ?", command.AccountID, installation.ID, "installed").Updates(map[string]any{"status": installation.Status, "updated_at": installation.UpdatedAt}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "plugin could not be disabled"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ext.plugin.disabled.v1", "IntegrationInstallation", command.Target.ID, []string{"status"}, map[string]any{"installation_id": installation.ID, "app_id": installation.AppID, "status": installation.Status}); err != nil {
+				return nil, err
+			}
+			return installationView(&installation), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ext.catalog.list.v1", func(_ context.Context, _ foundation.QueryEnvelope) (any, error) {
 			var apps []domain.PlatformApp
 			if err := r.DB.Order("id ASC").Find(&apps).Error; err != nil {
@@ -3646,7 +3725,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "installation store is unavailable"}
 			}
-			return map[string]any{"id": installation.ID, "account_id": installation.AccountID, "app_id": installation.AppID, "status": installation.Status, "created_at": installation.CreatedAt, "updated_at": installation.UpdatedAt}, nil
+			return installationView(&installation), nil
 		}); err != nil {
 			return err
 		}

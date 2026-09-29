@@ -5644,3 +5644,66 @@ func TestEXTQueriesStayAccountScopedAndHideSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestEXTPluginInstallDisableAreScopedAtomicAndHideSettings(t *testing.T) {
+	db := newModuleTestDB(t, "EXT")
+	now := time.Now().UTC()
+	app := domain.PlatformApp{Name: "Installable", Token: "catalog-secret", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&app).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreign := domain.IntegrationInstallation{AccountID: 92, AppID: strconv.FormatUint(uint64(app.ID), 10), Status: "installed", Settings: "foreign", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("EXT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("EXT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	install := foundation.CommandEnvelope{CommandID: "ext-install", CommandType: "ext.plugin.install.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"app_id": strconv.FormatUint(uint64(app.ID), 10), "settings": `{"api_key":"must-not-leak"}`}, IdempotencyKey: "ext-install-91", CorrelationID: "ext-install-correlation", CausationID: "ext-install-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ext.installation.get.v1"}}
+	var installed struct {
+		Data struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	for range 2 {
+		response := call(install)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"installed"`) || strings.Contains(response.Body.String(), "must-not-leak") {
+			t.Fatalf("install status=%d body=%s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &installed); err != nil || installed.Data.ID == 0 {
+			t.Fatalf("install decode err=%v body=%s", err, response.Body.String())
+		}
+	}
+	disable := install
+	disable.CommandID, disable.CommandType, disable.IdempotencyKey, disable.CorrelationID = "ext-disable", "ext.plugin.disable.v1", "ext-disable-91", "ext-disable-correlation"
+	disable.Target = foundation.ContractTarget{Type: "installation", ID: strconv.FormatUint(uint64(installed.Data.ID), 10)}
+	disable.Input = map[string]any{}
+	for range 2 {
+		response := call(disable)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"disabled"`) || strings.Contains(response.Body.String(), "must-not-leak") {
+			t.Fatalf("disable status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	foreignDisable := disable
+	foreignDisable.CommandID, foreignDisable.IdempotencyKey = "ext-disable-foreign", "ext-disable-foreign"
+	foreignDisable.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	if response := call(foreignDisable); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign disable status=%d body=%s", response.Code, response.Body.String())
+	}
+	var own, receipts, events int64
+	_ = db.Model(&domain.IntegrationInstallation{}).Where("account_id = ?", 91).Count(&own).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if own != 1 || receipts != 2 || events != 2 {
+		t.Fatalf("own=%d receipts=%d events=%d", own, receipts, events)
+	}
+}
