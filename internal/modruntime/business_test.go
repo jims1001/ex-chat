@@ -1307,6 +1307,72 @@ func TestMSGEmailSendQueuesOwnerDeliveryWithoutLeakingContent(t *testing.T) {
 	}
 }
 
+func TestMSGAccountAnonymizeRemovesOnlyOwnerSensitiveFacts(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	messages := []domain.Message{{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeContact, SenderID: 21, MessageType: domain.MessageTypeIncoming, Content: "private", Translations: "translation", ContentAttributes: "attributes", EchoID: "echo-private", Status: domain.MessageStatusSent}, {AccountID: 92, ConversationID: 22, SenderType: domain.SenderTypeContact, SenderID: 32, MessageType: domain.MessageTypeIncoming, Content: "keep", EchoID: "keep-echo", Status: domain.MessageStatusSent}}
+	if err := db.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.Attachment{AccountID: 91, MessageID: messages[0].ID, FileType: "text/plain", DataURL: "med://private"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.DraftMessage{AccountID: 91, ConversationID: 11, UserID: 7, Message: "private draft"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversationID, userID := uint(11), uint(7)
+	emails := []domain.EmailLog{{AccountID: 91, ConversationID: &conversationID, UserID: &userID, EmailType: "transcript", ToEmail: "private@example.test", FromEmail: "support@example.test", Subject: "private", ContentText: "private", BounceReason: "private", Error: "private", Status: "failed", DeliveryStatus: "failed"}, {AccountID: 92, EmailType: "notification", ToEmail: "keep@example.test", FromEmail: "support@example.test", Subject: "keep", ContentText: "keep", Status: "sent", DeliveryStatus: "sent"}}
+	if err := db.Create(&emails).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "messages-anonymize-1", CommandType: "msg.account_messages.anonymize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "messages-anonymize-key", CorrelationID: "messages-anonymize-correlation", CausationID: "messages-anonymize-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.account_deletion_status.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/msg.account_messages.anonymize.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"anonymized"`) {
+			t.Fatalf("anonymize=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var anonymized, untouched domain.Message
+	_ = db.First(&anonymized, messages[0].ID).Error
+	_ = db.First(&untouched, messages[1].ID).Error
+	if anonymized.SenderID != 0 || anonymized.Content != "" || anonymized.Translations != "" || anonymized.ContentAttributes != "" || anonymized.EchoID != "" {
+		t.Fatalf("anonymized=%+v", anonymized)
+	}
+	if untouched.SenderID != 32 || untouched.Content != "keep" || untouched.EchoID != "keep-echo" {
+		t.Fatalf("untouched=%+v", untouched)
+	}
+	var email91, email92 domain.EmailLog
+	_ = db.First(&email91, emails[0].ID).Error
+	_ = db.First(&email92, emails[1].ID).Error
+	if email91.ToEmail != "" || email91.FromEmail != "" || email91.Subject != "" || email91.ContentText != "" || email91.ConversationID != nil || email91.UserID != nil {
+		t.Fatalf("email91=%+v", email91)
+	}
+	if email92.ToEmail != "keep@example.test" || email92.Subject != "keep" {
+		t.Fatalf("email92=%+v", email92)
+	}
+	var attachments, drafts, events int64
+	_ = db.Model(&domain.Attachment{}).Where("account_id = ?", 91).Count(&attachments).Error
+	_ = db.Model(&domain.DraftMessage{}).Where("account_id = ?", 91).Count(&drafts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%anonymized%").Count(&events).Error
+	if attachments != 0 || drafts != 0 || events != 1 {
+		t.Fatalf("attachments=%d drafts=%d events=%d", attachments, drafts, events)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()
@@ -2901,6 +2967,28 @@ func TestCONIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.User{}, &domain.Team{}, &domain.Message{}} {
 		if db.Migrator().HasTable(foreign) {
 			t.Fatalf("CON runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
+func TestMSGIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	cfg := businessConfig("MSG")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://127.0.0.1:1", Token: "ten"}, "ENT": {URL: "http://127.0.0.1:2", Token: "ent"}, "CHN": {URL: "http://127.0.0.1:3", Token: "chn"}, "CON": {URL: "http://127.0.0.1:4", Token: "con"}, "MED": {URL: "http://127.0.0.1:5", Token: "med"}}
+	registry := NewContractRegistry("MSG")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	if registry.Count() != 12 {
+		t.Fatalf("MSG registered contracts=%d want=12", registry.Count())
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("MSG runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.Conversation{}, &domain.User{}, &domain.Team{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("MSG runtime contains foreign table %T", foreign)
 		}
 	}
 }

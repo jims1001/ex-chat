@@ -1828,6 +1828,32 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("msg.account_messages.anonymize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			if err := tx.Where("account_id = ?", command.AccountID).Delete(&domain.Attachment{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "message attachments could not be anonymized"}
+			}
+			if err := tx.Where("account_id = ?", command.AccountID).Delete(&domain.DraftMessage{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "message drafts could not be anonymized"}
+			}
+			messages := tx.Model(&domain.Message{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"sender_id": 0, "content": "", "translations": "", "content_attributes": "", "echo_id": "", "updated_at": time.Now().UTC()})
+			if messages.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "messages could not be anonymized"}
+			}
+			emails := tx.Model(&domain.EmailLog{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"conversation_id": nil, "user_id": nil, "to_email": "", "from_email": "", "subject": "", "content_html": "", "content_text": "", "bounce_reason": "", "error": "", "updated_at": time.Now().UTC()})
+			if emails.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "email logs could not be anonymized"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "msg.message.changed.v1", "AccountMessages", command.Target.ID, []string{"anonymized"}, map[string]any{"account_id": command.AccountID, "message_count": messages.RowsAffected, "email_log_count": emails.RowsAffected, "operation": "anonymized"}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "message_count": messages.RowsAffected, "email_log_count": emails.RowsAffected, "status": "anonymized"}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("msg.message.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			messageID, err := uintFilter(query.Filter, "id")
 			if err != nil {

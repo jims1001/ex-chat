@@ -426,7 +426,7 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-email-send-command",
+      "acceptanceStatus": "declared-contract-surface-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -445,7 +445,8 @@
         "msg.provider_status.update.v1",
         "msg.message.retry.v1",
         "msg.read_position.update.v1",
-        "msg.email.send.v1"
+        "msg.email.send.v1",
+        "msg.account_messages.anonymize.v1"
       ],
       "implementedIndependentEvents": [
         "msg.message.created.v1",
@@ -454,7 +455,9 @@
         "msg.message_status.changed.v1",
         "msg.read_position.changed.v1",
         "msg.email_delivery.changed.v1"
-      ]
+      ],
+      "declaredContractSurfaceVerified": true,
+      "outboxAtomicWithCommands": true
     },
     {
       "module": "RTE",
