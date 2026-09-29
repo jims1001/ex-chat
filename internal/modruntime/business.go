@@ -1640,6 +1640,70 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("msg.provider_status.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			messageID, failure := messageCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			status, _ := command.Input["status"].(string)
+			status = strings.ToLower(strings.TrimSpace(status))
+			if status != domain.MessageStatusSent && status != domain.MessageStatusDelivered && status != domain.MessageStatusRead && status != domain.MessageStatusFailed {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "provider message status is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var message domain.Message
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			if message.Deleted {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "deleted message status cannot change"}
+			}
+			if message.Status == status {
+				return messageFromModel(message), nil
+			}
+			allowed := map[string]map[string]bool{domain.MessageStatusSent: {domain.MessageStatusDelivered: true, domain.MessageStatusRead: true, domain.MessageStatusFailed: true}, domain.MessageStatusDelivered: {domain.MessageStatusRead: true}, domain.MessageStatusFailed: {}, domain.MessageStatusRead: {}}
+			if !allowed[message.Status][status] {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "provider message status cannot move backward"}
+			}
+			if err := tx.Model(&domain.Message{}).Where("account_id = ? AND id = ? AND status = ?", command.AccountID, messageID, message.Status).Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "provider message status could not be changed"}
+			}
+			message.Status, message.UpdatedAt = status, time.Now().UTC()
+			if err := r.appendBusinessEvent(ctx, command, "msg.message_status.changed.v1", "Message", command.Target.ID, []string{"status"}, map[string]any{"message_id": message.ID, "conversation_id": message.ConversationID, "status": status}); err != nil {
+				return nil, err
+			}
+			return messageFromModel(message), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("msg.message.retry.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			messageID, failure := messageCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			tx := Transaction(ctx, r.DB)
+			var message domain.Message
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			if message.Deleted || message.MessageType != domain.MessageTypeOutgoing || message.Status != domain.MessageStatusFailed {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "only failed outgoing messages can be retried"}
+			}
+			if err := tx.Model(&domain.Message{}).Where("account_id = ? AND id = ? AND status = ?", command.AccountID, messageID, domain.MessageStatusFailed).Updates(map[string]any{"status": domain.MessageStatusSent, "updated_at": time.Now().UTC()}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "message retry could not be scheduled"}
+			}
+			message.Status, message.UpdatedAt = domain.MessageStatusSent, time.Now().UTC()
+			if err := r.appendBusinessEvent(ctx, command, "msg.message_status.changed.v1", "Message", command.Target.ID, []string{"status"}, map[string]any{"message_id": message.ID, "conversation_id": message.ConversationID, "status": message.Status, "operation": "retry"}); err != nil {
+				return nil, err
+			}
+			return messageFromModel(message), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("msg.message.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			messageID, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -2355,6 +2419,17 @@ func conversationCommandTarget(command foundation.CommandEnvelope) (uint, *Contr
 	parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
 	if err != nil || parsed == 0 {
 		return 0, &ContractFailure{Type: "validation_failed", Message: "conversation target is invalid"}
+	}
+	return uint(parsed), nil
+}
+
+func messageCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {
+	if command.Target.Type != "message" {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "message target is required"}
+	}
+	parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+	if err != nil || parsed == 0 {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "message target is invalid"}
 	}
 	return uint(parsed), nil
 }

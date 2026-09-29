@@ -1084,6 +1084,74 @@ func TestMSGMessageUpdateEditsDeletesAndKeepsOwnerBoundary(t *testing.T) {
 	}
 }
 
+func TestMSGProviderStatusAndRetryEnforceMonotonicOwnerState(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	messages := []domain.Message{{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "sent", Status: domain.MessageStatusSent}, {AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "failed", Status: domain.MessageStatusFailed}, {AccountID: 92, ConversationID: 22, SenderType: domain.SenderTypeUser, SenderID: 8, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "foreign", Status: domain.MessageStatusFailed}}
+	if err := db.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "provider"}, RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.delivery_status.get.v1"}}
+	provider := base
+	provider.CommandID, provider.CommandType, provider.IdempotencyKey, provider.CorrelationID, provider.CausationID = "provider-status-1", "msg.provider_status.update.v1", "provider-status-key", "provider-status-correlation", "provider-status-cause"
+	provider.Target = foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(messages[0].ID), 10)}
+	provider.Input = map[string]any{"status": "delivered"}
+	for index := 0; index < 2; index++ {
+		response := call("/contracts/commands/msg.provider_status.update.v1", provider)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"delivered"`) {
+			t.Fatalf("provider=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	backward := provider
+	backward.CommandID, backward.IdempotencyKey, backward.CorrelationID = "provider-status-2", "provider-backward-key", "provider-backward-correlation"
+	backward.Input = map[string]any{"status": "sent"}
+	if response := call("/contracts/commands/msg.provider_status.update.v1", backward); response.Code != http.StatusConflict {
+		t.Fatalf("backward=%d body=%s", response.Code, response.Body.String())
+	}
+	retry := base
+	retry.CommandID, retry.CommandType, retry.IdempotencyKey, retry.CorrelationID, retry.CausationID = "message-retry-1", "msg.message.retry.v1", "message-retry-key", "message-retry-correlation", "message-retry-cause"
+	retry.Target = foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(messages[1].ID), 10)}
+	retry.Input = map[string]any{}
+	for index := 0; index < 2; index++ {
+		response := call("/contracts/commands/msg.message.retry.v1", retry)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"sent"`) {
+			t.Fatalf("retry=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	cross := retry
+	cross.CommandID, cross.IdempotencyKey, cross.CorrelationID = "message-retry-2", "message-retry-cross", "message-retry-cross-correlation"
+	cross.Target.ID = strconv.FormatUint(uint64(messages[2].ID), 10)
+	if response := call("/contracts/commands/msg.message.retry.v1", cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+	var delivered, retried, untouched domain.Message
+	_ = db.First(&delivered, messages[0].ID).Error
+	_ = db.First(&retried, messages[1].ID).Error
+	_ = db.First(&untouched, messages[2].ID).Error
+	if delivered.Status != domain.MessageStatusDelivered || retried.Status != domain.MessageStatusSent || untouched.Status != domain.MessageStatusFailed {
+		t.Fatalf("delivered=%s retried=%s untouched=%s", delivered.Status, retried.Status, untouched.Status)
+	}
+	var events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%msg.message_status.changed.v1%").Count(&events).Error
+	if events != 2 {
+		t.Fatalf("status events=%d", events)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

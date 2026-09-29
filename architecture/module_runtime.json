@@ -426,7 +426,7 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-update-delete-command",
+      "acceptanceStatus": "partial-provider-status-retry",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -441,12 +441,15 @@
       ],
       "implementedIndependentCommands": [
         "msg.message.create.v1",
-        "msg.message.update.v1"
+        "msg.message.update.v1",
+        "msg.provider_status.update.v1",
+        "msg.message.retry.v1"
       ],
       "implementedIndependentEvents": [
         "msg.message.created.v1",
         "msg.message.changed.v1",
-        "msg.message.deleted.v1"
+        "msg.message.deleted.v1",
+        "msg.message_status.changed.v1"
       ]
     },
     {
