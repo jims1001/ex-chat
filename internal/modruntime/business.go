@@ -4186,6 +4186,135 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("ntf.preference.save.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "user" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "preference user target is required"}
+			}
+			userValue, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || userValue == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "preference user target is invalid"}
+			}
+			userID := uint(userValue)
+			if err := requireNotificationMember(ctx, command, userID); err != nil {
+				return nil, err
+			}
+			encodeFlags := func(key string) (string, *ContractFailure) {
+				raw, ok := command.Input[key]
+				if !ok {
+					return "[]", nil
+				}
+				values, ok := raw.([]any)
+				if !ok {
+					return "", &ContractFailure{Type: "validation_failed", Message: key + " must be an array"}
+				}
+				flags := make([]string, 0, len(values))
+				seen := map[string]bool{}
+				for _, value := range values {
+					flag, ok := value.(string)
+					flag = strings.TrimSpace(flag)
+					if !ok || !validNotificationType(flag) {
+						return "", &ContractFailure{Type: "validation_failed", Message: key + " contains an invalid notification type"}
+					}
+					if !seen[flag] {
+						seen[flag] = true
+						flags = append(flags, flag)
+					}
+				}
+				encoded, _ := json.Marshal(flags)
+				return string(encoded), nil
+			}
+			emailFlags, failure := encodeFlags("selected_email_flags")
+			if failure != nil {
+				return nil, failure
+			}
+			pushFlags, failure := encodeFlags("selected_push_flags")
+			if failure != nil {
+				return nil, failure
+			}
+			inAppFlags, failure := encodeFlags("selected_in_app_flags")
+			if failure != nil {
+				return nil, failure
+			}
+			muted, _ := command.Input["muted"].(bool)
+			quietEnabled, _ := command.Input["quiet_hours_enabled"].(bool)
+			quietStart, _ := command.Input["quiet_hours_start"].(string)
+			quietEnd, _ := command.Input["quiet_hours_end"].(string)
+			quietStart, quietEnd = strings.TrimSpace(quietStart), strings.TrimSpace(quietEnd)
+			if quietStart == "" {
+				quietStart = "22:00"
+			}
+			if quietEnd == "" {
+				quietEnd = "08:00"
+			}
+			if _, err := time.Parse("15:04", quietStart); err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "quiet_hours_start must use HH:MM"}
+			}
+			if _, err := time.Parse("15:04", quietEnd); err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "quiet_hours_end must use HH:MM"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var setting domain.NotificationSetting
+			result := tx.Where("account_id = ? AND user_id = ?", command.AccountID, userID).First(&setting)
+			now := time.Now().UTC()
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				setting = domain.NotificationSetting{AccountID: command.AccountID, UserID: userID, CreatedAt: now}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification preference store is unavailable"}
+			}
+			setting.SelectedEmailFlags, setting.SelectedPushFlags, setting.SelectedInAppFlags = emailFlags, pushFlags, inAppFlags
+			setting.Muted, setting.QuietHoursEnabled, setting.QuietHoursStart, setting.QuietHoursEnd, setting.UpdatedAt = muted, quietEnabled, quietStart, quietEnd, now
+			if err := tx.Save(&setting).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "notification preferences could not be saved"}
+			}
+			return map[string]any{"id": setting.ID, "account_id": setting.AccountID, "user_id": setting.UserID, "selected_email_flags": json.RawMessage(setting.SelectedEmailFlags), "selected_push_flags": json.RawMessage(setting.SelectedPushFlags), "selected_in_app_flags": json.RawMessage(setting.SelectedInAppFlags), "muted": setting.Muted, "quiet_hours_enabled": setting.QuietHoursEnabled, "quiet_hours_start": setting.QuietHoursStart, "quiet_hours_end": setting.QuietHoursEnd, "updated_at": setting.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ntf.device.register.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "user" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "device user target is required"}
+			}
+			userValue, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || userValue == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "device user target is invalid"}
+			}
+			userID := uint(userValue)
+			if err := requireNotificationMember(ctx, command, userID); err != nil {
+				return nil, err
+			}
+			subscriptionType, _ := command.Input["subscription_type"].(string)
+			subscriptionType = strings.TrimSpace(strings.ToLower(subscriptionType))
+			if subscriptionType != "fcm" && subscriptionType != "apns" && subscriptionType != "browser" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "subscription_type is invalid"}
+			}
+			pushToken, _ := command.Input["push_token"].(string)
+			pushToken = strings.TrimSpace(pushToken)
+			if pushToken == "" || len(pushToken) > 512 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "push_token is required"}
+			}
+			deviceName, _ := command.Input["device_name"].(string)
+			appVersion, _ := command.Input["app_version"].(string)
+			deviceName, appVersion = strings.TrimSpace(deviceName), strings.TrimSpace(appVersion)
+			if len(deviceName) > 255 || len(appVersion) > 50 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "device metadata is too long"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var subscription domain.NotificationSubscription
+			result := tx.Where("account_id = ? AND user_id = ? AND subscription_type = ? AND push_token = ?", command.AccountID, userID, subscriptionType, pushToken).First(&subscription)
+			now := time.Now().UTC()
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				subscription = domain.NotificationSubscription{AccountID: command.AccountID, UserID: userID, SubscriptionType: subscriptionType, PushToken: pushToken, CreatedAt: now}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification subscription store is unavailable"}
+			}
+			subscription.DeviceName, subscription.AppVersion, subscription.UpdatedAt = deviceName, appVersion, now
+			if err := tx.Save(&subscription).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "notification device could not be registered"}
+			}
+			return map[string]any{"id": subscription.ID, "account_id": subscription.AccountID, "user_id": subscription.UserID, "subscription_type": subscription.SubscriptionType, "device_name": subscription.DeviceName, "app_version": subscription.AppVersion, "created_at": subscription.CreatedAt, "updated_at": subscription.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ntf.notifications.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			userID, err := uintFilter(query.Filter, "user_id")
 			if err != nil {

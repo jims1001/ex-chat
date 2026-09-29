@@ -6121,3 +6121,74 @@ func TestNTFNotificationCommandsValidateTENOwnershipAndStayAtomic(t *testing.T) 
 		}
 	}
 }
+
+func TestNTFPreferenceAndDeviceCommandsValidateMemberAndHideToken(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, _ := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["NTF"] = true
+	tenServer, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: tenRegistry}.Handler())
+	t.Cleanup(func() { _ = tenServer.Shutdown(context.Background()) })
+	db := newModuleTestDB(t, "NTF")
+	cfg := businessConfig("NTF")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + address, Token: tenCfg.AuthToken}}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("NTF")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	preference := foundation.CommandEnvelope{CommandID: "ntf-preference", CommandType: "ntf.preference.save.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "user", ID: "7"}, Input: map[string]any{"selected_email_flags": []any{domain.NotificationTypeConversationAssignment}, "selected_push_flags": []any{domain.NotificationTypeSystemAlert}, "selected_in_app_flags": []any{domain.NotificationTypeConversationMention}, "muted": true, "quiet_hours_enabled": true, "quiet_hours_start": "21:30", "quiet_hours_end": "07:15"}, IdempotencyKey: "ntf-preference-91", CorrelationID: "ntf-preference-correlation", CausationID: "ntf-preference-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ntf.account_deletion_status.get.v1"}}
+	for range 2 {
+		response := call(preference)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"quiet_hours_start":"21:30"`) || !strings.Contains(response.Body.String(), domain.NotificationTypeSystemAlert) {
+			t.Fatalf("preference=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	device := preference
+	device.CommandID, device.CommandType, device.IdempotencyKey, device.CorrelationID = "ntf-device", "ntf.device.register.v1", "ntf-device-91", "ntf-device-correlation"
+	device.Input = map[string]any{"subscription_type": "fcm", "push_token": "secret-device-token", "device_name": "Pixel", "app_version": "2.1.0"}
+	for range 2 {
+		response := call(device)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"subscription_type":"fcm"`) || strings.Contains(response.Body.String(), "secret-device-token") {
+			t.Fatalf("device=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	duplicate := device
+	duplicate.CommandID, duplicate.IdempotencyKey, duplicate.CorrelationID = "ntf-device-again", "ntf-device-again-91", "ntf-device-again-correlation"
+	duplicate.Input = map[string]any{"subscription_type": "fcm", "push_token": "secret-device-token", "device_name": "Pixel 2", "app_version": "2.2.0"}
+	if response := call(duplicate); response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret-device-token") || !strings.Contains(response.Body.String(), "Pixel 2") {
+		t.Fatalf("device duplicate=%d body=%s", response.Code, response.Body.String())
+	}
+	bad := preference
+	bad.CommandID, bad.IdempotencyKey, bad.CorrelationID = "ntf-preference-bad", "ntf-preference-bad-91", "ntf-preference-bad-correlation"
+	bad.Target.ID = "99"
+	if response := call(bad); response.Code != http.StatusNotFound {
+		t.Fatalf("bad member=%d body=%s", response.Code, response.Body.String())
+	}
+	var settings, subscriptions, receipts int64
+	_ = db.Model(&domain.NotificationSetting{}).Where("account_id = ? AND user_id = ?", 91, 7).Count(&settings).Error
+	_ = db.Model(&domain.NotificationSubscription{}).Where("account_id = ? AND user_id = ?", 91, 7).Count(&subscriptions).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if settings != 1 || subscriptions != 1 || receipts != 3 {
+		t.Fatalf("settings=%d subscriptions=%d receipts=%d", settings, subscriptions, receipts)
+	}
+	var stored domain.NotificationSubscription
+	if err := db.Where("account_id = ? AND user_id = ?", 91, 7).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.PushToken != "secret-device-token" || stored.DeviceName != "Pixel 2" {
+		t.Fatalf("stored token/name mismatch: %#v", stored)
+	}
+}
