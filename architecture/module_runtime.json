@@ -362,8 +362,8 @@
         "whenStopped": "不能创建或改变会话；历史消息不应被删除",
         "recovery": "状态和事件版本检查"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "declared-contract-surface-verified",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -391,7 +391,13 @@
         "cus.contact.merged.v1"
       ],
       "declaredContractSurfaceVerified": true,
-      "outboxAtomicWithCommands": true
+      "outboxAtomicWithCommands": true,
+      "automaticEventDispatchVerified": true,
+      "eventDeliveryRecoveryVerified": true,
+      "postgresMultiInstanceCommandVerified": true,
+      "mixedVersionUpgradeRollbackVerified": true,
+      "ownerBackupRestoreVerified": true,
+      "recoveryReadinessGateVerified": true
     },
     {
       "module": "MSG",

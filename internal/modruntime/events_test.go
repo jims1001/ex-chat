@@ -319,3 +319,52 @@ func TestMEDDeletedEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
 		t.Fatalf("automatic MED outbox=%d receipts=%d", outbox, receipts)
 	}
 }
+
+func TestCONDeletedEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
+	consumerDB := newModuleTestDB(t, "AUD")
+	consumerRegistry := NewContractRegistry("AUD")
+	delivered := make(chan foundation.EventEnvelope, 1)
+	if err := consumerRegistry.RegisterEvent("con.conversation.deleted.v1", func(_ context.Context, event foundation.EventEnvelope) error { delivered <- event; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := businessConfig("AUD")
+	consumerCfg.AllowedCallers["CON"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: consumerCfg, DB: consumerDB, Contracts: consumerRegistry}.Handler())
+	defer server.Shutdown(context.Background())
+	sourceDB := newModuleTestDB(t, "CON")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "automatic-con-delete-1", EventType: "con.conversation.deleted.v1", EventVersion: "v1", SourceModule: "CON", AccountID: 91, AggregateType: "Conversation", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "automatic-con-correlation", CausationID: "con-delete-command", ChangedFields: []string{"deleted"}, Payload: map[string]any{"conversation_id": 101, "operation": "deleted"}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "CON").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	sourceCfg := businessConfig("CON")
+	sourceCfg.EventPollInterval = 10 * time.Millisecond
+	sourceCfg.EventTargets = map[string]EventFanoutTarget{"AUD": {Dependency: DependencyConfig{URL: "http://" + address, Token: consumerCfg.AuthToken}, EventTypes: map[string]bool{event.EventType: true}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failures := make(chan error, 1)
+	go (Runtime{Config: sourceCfg, DB: sourceDB}).RunEventFanout(ctx, func(err error) { failures <- err })
+	select {
+	case received := <-delivered:
+		if received.SourceModule != "CON" || received.Payload["operation"] != "deleted" {
+			t.Fatalf("unexpected event: %+v", received)
+		}
+	case err := <-failures:
+		t.Fatalf("fanout error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("automatic CON fanout did not deliver")
+	}
+	deadline := time.Now().Add(time.Second)
+	var outbox, receipts int64
+	for time.Now().Before(deadline) {
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&outbox).Error
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+		if outbox == 1 && receipts == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if outbox != 1 || receipts != 1 {
+		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
+	}
+}

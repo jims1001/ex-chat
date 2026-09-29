@@ -309,6 +309,71 @@ func TestMEDSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestCONSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "CON")
+	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	if err := source.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.ConversationParticipant{ConversationID: conversation.ID, UserID: 7}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.ConversationLabel{ConversationID: conversation.ID, LabelID: 8}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	runtime := Runtime{Config: cfg, DB: source, Contracts: NewContractRegistry("CON")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "snapshot-conversation", CommandType: "con.priority.change.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversation.ID), 10)}, Input: map[string]any{"priority": "high"}, IdempotencyKey: "snapshot-conversation-91", CorrelationID: "snapshot-conversation-correlation", CausationID: "snapshot-conversation-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"}}
+	body, _ := json.Marshal(command)
+	request := httptest.NewRequest(http.MethodPost, "/contracts/commands/con.priority.change.v1", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	request.Header.Set(headerCaller, "API")
+	request.Header.Set(headerContractVersion, "v1")
+	request.Header.Set(headerCorrelationID, command.CorrelationID)
+	response := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("conversation command=%d body=%s", response.Code, response.Body.String())
+	}
+	path := filepath.Join(t.TempDir(), "con.snapshot.json")
+	if err := CreateSnapshot(source, "CON", "con-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "CON")
+	targetCfg := businessConfig("CON")
+	targetCfg.RecoveryGeneration = "con-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("CON target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "CON", "con-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("CON target not ready after restore: %v", err)
+	}
+	counts := map[string]int64{}
+	for name, model := range map[string]any{"conversations": &domain.Conversation{}, "participants": &domain.ConversationParticipant{}, "labels": &domain.ConversationLabel{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		counts[name] = count
+	}
+	var receipts, events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if counts["conversations"] != 1 || counts["participants"] != 1 || counts["labels"] != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("counts=%v receipts=%d events=%d", counts, receipts, events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.User{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("CON restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
