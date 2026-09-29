@@ -1489,6 +1489,19 @@ func TestRTEQueriesComposeOwnerContractsAndLocalCapacity(t *testing.T) {
 	if response := call("/contracts/queries/rte.assignment.get.v1", cross); response.Code != http.StatusNotFound {
 		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
 	}
+	manage := foundation.CommandEnvelope{CommandID: "capacity-manage-1", CommandType: "rte.capacity.manage.v1", AccountID: 91, Actor: base.Actor, Target: foundation.ContractTarget{Type: "user", ID: "7"}, Input: map[string]any{"user_id": 7, "conversation_limit": 6}, IdempotencyKey: "capacity-manage-key", CorrelationID: "capacity-manage-correlation", CausationID: "capacity-manage-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "rte.capacity.get.v1"}}
+	manageResponse := performContractRequest(runtime.Handler(), "/contracts/commands/rte.capacity.manage.v1", manage, func(request *http.Request) {
+		request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+		request.Header.Set(headerCaller, "API")
+		request.Header.Set(headerCorrelationID, manage.CorrelationID)
+	})
+	if manageResponse.Code != http.StatusOK || !strings.Contains(manageResponse.Body.String(), `"conversation_limit":6`) {
+		t.Fatalf("capacity manage=%d body=%s", manageResponse.Code, manageResponse.Body.String())
+	}
+	response = call("/contracts/queries/rte.capacity.get.v1", capacity)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_limit":6`) {
+		t.Fatalf("updated capacity=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestRTEQueueEnterUsesCONCommandBoundaryAndIsIdempotent(t *testing.T) {

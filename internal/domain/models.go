@@ -439,8 +439,8 @@ type TeamMember struct {
 // CapacityPolicy defines maximum active conversation workload per agent
 type CapacityPolicy struct {
 	ID                uint      `gorm:"primaryKey" json:"id"`
-	AccountID         uint      `gorm:"index;not null" json:"account_id"`
-	UserID            uint      `gorm:"uniqueIndex;not null" json:"user_id"`
+	AccountID         uint      `gorm:"index;uniqueIndex:idx_capacity_account_user;not null" json:"account_id"`
+	UserID            uint      `gorm:"uniqueIndex:idx_capacity_account_user;not null" json:"user_id"`
 	ConversationLimit int       `gorm:"default:10" json:"conversation_limit"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

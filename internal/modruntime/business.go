@@ -2036,6 +2036,42 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return err
 			}
 		}
+		if err := r.Contracts.RegisterCommand("rte.capacity.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			userID, err := uintFilter(command.Input, "user_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "user_id is required"}
+			}
+			limit64, err := int64Filter(command.Input, "conversation_limit")
+			if err != nil || limit64 < 0 || limit64 > 100000 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_limit is invalid"}
+			}
+			if err := tenClient.requireMember(ctx, command.AccountID, command.Actor, userID); err != nil {
+				return nil, err
+			}
+			tx := Transaction(ctx, r.DB)
+			var policy domain.CapacityPolicy
+			result := tx.Where("account_id = ? AND user_id = ?", command.AccountID, userID).First(&policy)
+			if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "capacity store is unavailable"}
+			}
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				policy = domain.CapacityPolicy{AccountID: command.AccountID, UserID: userID, ConversationLimit: int(limit64)}
+				if err := tx.Create(&policy).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "capacity policy could not be created"}
+				}
+			} else {
+				if err := tx.Model(&policy).Update("conversation_limit", int(limit64)).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "capacity policy could not be updated"}
+				}
+				policy.ConversationLimit = int(limit64)
+			}
+			if err := r.appendBusinessEvent(ctx, command, "rte.capacity.changed.v1", "CapacityPolicy", strconv.FormatUint(uint64(policy.ID), 10), []string{"conversation_limit"}, map[string]any{"policy_id": policy.ID, "user_id": userID, "conversation_limit": policy.ConversationLimit}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "policy_id": policy.ID, "user_id": userID, "conversation_limit": policy.ConversationLimit}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterCommand("rte.queue.enter.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			conversationID, failure := conversationCommandTarget(command)
 			if failure != nil {
