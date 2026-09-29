@@ -1219,6 +1219,94 @@ func TestMSGReadPositionUsesMonotonicJournalFactAndMemberBoundary(t *testing.T) 
 	}
 }
 
+func TestMSGEmailSendQueuesOwnerDeliveryWithoutLeakingContent(t *testing.T) {
+	conRegistry := NewContractRegistry("CON")
+	if err := conRegistry.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || id != 11 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+		}
+		return conversationView{ID: 11, AccountID: 91, ContactID: 21, Status: domain.ConversationStatusOpen}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["MSG"] = true
+	conServer, conAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: conCfg, Contracts: conRegistry}.Handler())
+	defer conServer.Shutdown(context.Background())
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "user is invalid"}
+		}
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["MSG"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "MSG")
+	cfg := businessConfig("MSG")
+	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}, "TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "email-send-1", CommandType: "msg.email.send.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: "11"}, Input: map[string]any{"conversation_id": 11, "user_id": 7, "email_type": "transcript", "to_email": "customer@example.test", "from_email": "support@example.test", "subject": "Private subject", "content_html": "<p>Private body</p>", "content_text": "Private body"}, IdempotencyKey: "email-send-key", CorrelationID: "email-send-correlation", CausationID: "email-send-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.email_delivery.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/msg.email.send.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"delivery_status":"pending"`) || strings.Contains(response.Body.String(), "customer@example.test") || strings.Contains(response.Body.String(), "Private") {
+			t.Fatalf("email=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var logs, receipts, events int64
+	_ = db.Model(&domain.EmailLog{}).Count(&logs).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%msg.email_delivery.changed.v1%").Count(&events).Error
+	if logs != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("logs=%d receipts=%d events=%d", logs, receipts, events)
+	}
+	var stored domain.EmailLog
+	if err := db.First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ToEmail != "customer@example.test" || stored.Subject != "Private subject" || stored.ContentText != "Private body" {
+		t.Fatalf("stored=%+v", stored)
+	}
+	var journal domain.LocalChangeJournal
+	if err := db.Where("action = ?", "event_outbox").First(&journal).Error; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(journal.AfterState, "customer@example.test") || strings.Contains(journal.AfterState, "Private") {
+		t.Fatalf("event leaked content=%s", journal.AfterState)
+	}
+	if err := conServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failed := command
+	failed.CommandID, failed.IdempotencyKey, failed.CorrelationID = "email-send-2", "email-send-dependency", "email-send-dependency-correlation"
+	if response := call(failed); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("dependency=%d body=%s", response.Code, response.Body.String())
+	}
+	_ = db.Model(&domain.EmailLog{}).Count(&logs).Error
+	if logs != 1 {
+		t.Fatalf("dependency wrote logs=%d", logs)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()
