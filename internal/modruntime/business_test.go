@@ -6026,6 +6026,7 @@ func TestNTFNotificationCommandsValidateTENOwnershipAndStayAtomic(t *testing.T) 
 	}
 	tenCfg := businessConfig("TEN")
 	tenCfg.AllowedCallers["NTF"] = true
+	tenCfg.AcceptedVersions["v2"] = true
 	tenServer, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: tenRegistry}.Handler())
 	t.Cleanup(func() { _ = tenServer.Shutdown(context.Background()) })
 
@@ -6286,5 +6287,102 @@ func TestNTFDeliveryDispatchAndSubscriptionPurgeStayOwnerScoped(t *testing.T) {
 		if strings.Contains(journal.AfterState, owned.PushToken) || strings.Contains(journal.AfterState, "Private title") || strings.Contains(journal.AfterState, "Private delivery body") {
 			t.Fatalf("delivery secret leaked into journal: %s", journal.AfterState)
 		}
+	}
+}
+
+func ntfRuntimeConfig(t *testing.T) Config {
+	t.Helper()
+	registry := NewContractRegistry("TEN")
+	if err := registry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, _ := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["NTF"] = true
+	tenCfg.AcceptedVersions["v2"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: registry}.Handler())
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	cfg := businessConfig("NTF")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + address, Token: tenCfg.AuthToken}}
+	return cfg
+}
+
+func TestNTFNotificationCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "NTF")
+	cfg := ntfRuntimeConfig(t)
+	command := foundation.CommandEnvelope{CommandID: "capacity-ntf", CommandType: "ntf.notification.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"user_id": 7, "notification_type": domain.NotificationTypeSystemAlert}, IdempotencyKey: "capacity-ntf-91", CorrelationID: "capacity-ntf-correlation", CausationID: "capacity-ntf-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ntf.notifications.list.v1"}}
+	const instances = 8
+	results, start := make(chan *httptest.ResponseRecorder, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for range instances {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("NTF")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			results <- performContractRequest(handler, "/contracts/commands/ntf.notification.create.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), domain.NotificationTypeSystemAlert) {
+			t.Fatalf("concurrent NTF=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var facts, receipts, events int64
+	_ = db.Model(&domain.Notification{}).Where("account_id = ?", 91).Count(&facts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if facts != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("facts=%d receipts=%d events=%d", facts, receipts, events)
+	}
+}
+
+func TestNTFMixedVersionUpgradeRollbackPreservesNotification(t *testing.T) {
+	db := newModuleTestDB(t, "NTF")
+	baseCfg := ntfRuntimeConfig(t)
+	makeRuntime := func(version string, accepted map[string]bool) Runtime {
+		cfg := baseCfg
+		cfg.ContractVersion, cfg.AcceptedVersions = version, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("NTF")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-ntf", CommandType: "ntf.notification.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"user_id": 7, "notification_type": domain.NotificationTypeSystemAlert}, IdempotencyKey: "upgrade-ntf-91", CorrelationID: "upgrade-ntf-correlation", CausationID: "upgrade-ntf-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ntf.notifications.list.v1"}}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	v2 := makeRuntime("v2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/ntf.notification.create.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := makeRuntime("v1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/ntf.notification.create.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "ntf.notifications.list.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"user_id": 7}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/ntf.notifications.list.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), domain.NotificationTypeSystemAlert) {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/ntf.notifications.list.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d", response.Code)
 	}
 }

@@ -766,8 +766,8 @@
         "whenStopped": "外部通知暂停，核心业务继续",
         "recovery": "投递保留窗口内补偿"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-declared-surface-verified",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

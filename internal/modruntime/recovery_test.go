@@ -841,6 +841,62 @@ func TestEXTSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestNTFSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "NTF")
+	now := time.Now().UTC()
+	readAt := now
+	if err := source.Create(&domain.Notification{AccountID: 91, UserID: 7, NotificationType: domain.NotificationTypeSystemAlert, ReadAt: &readAt, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.NotificationSetting{AccountID: 91, UserID: 7, SelectedEmailFlags: `[]`, SelectedPushFlags: `["system_alert"]`, SelectedInAppFlags: `[]`, QuietHoursStart: "22:00", QuietHoursEnd: "08:00", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.NotificationSubscription{AccountID: 91, UserID: 7, SubscriptionType: "fcm", PushToken: "snapshot-private-token", DeviceName: "Snapshot", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.PushDeliveryLog{AccountID: 91, UserID: 7, DeviceToken: "snapshot-private-token", Platform: "fcm", Title: "private", Body: "private", Status: "delivered", HTTPStatusCode: 200, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := foundation.EventEnvelope{EventID: "snapshot-ntf-event", EventType: "ntf.notification.created.v1", EventVersion: "v1", SourceModule: "NTF", AccountID: 91, AggregateType: "Notification", AggregateID: "1", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "snapshot-ntf", CausationID: "snapshot", ChangedFields: []string{"created"}, Payload: map[string]any{"notification_id": 1, "user_id": 7}, DataClassification: "internal"}
+	if err := NewEventOutbox(source, "NTF").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "ntf.snapshot.json")
+	if err := CreateSnapshot(source, "NTF", "ntf-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "NTF")
+	cfg := businessConfig("NTF")
+	cfg.RecoveryGeneration = "ntf-gen-1"
+	runtime := Runtime{Config: cfg, DB: target}
+	if err := runtime.Readiness(); err == nil {
+		t.Fatal("NTF target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "NTF", "ntf-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("NTF target not ready: %v", err)
+	}
+	for name, model := range map[string]any{"notifications": &domain.Notification{}, "settings": &domain.NotificationSetting{}, "subscriptions": &domain.NotificationSubscription{}, "deliveries": &domain.PushDeliveryLog{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		if count != 1 {
+			t.Fatalf("%s count=%d", name, count)
+		}
+	}
+	var events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if events != 1 {
+		t.Fatalf("events=%d", events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("NTF restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
