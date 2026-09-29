@@ -374,6 +374,75 @@ func TestCONSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestMSGSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "MSG")
+	message := domain.Message{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, Content: "before", Status: domain.MessageStatusSent}
+	if err := source.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.Attachment{AccountID: 91, MessageID: message.ID, FileType: "text/plain", DataURL: "med://asset/1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.DraftMessage{AccountID: 91, ConversationID: 11, UserID: 7, Message: "draft"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversationID, userID := uint(11), uint(7)
+	if err := source.Create(&domain.EmailLog{AccountID: 91, ConversationID: &conversationID, UserID: &userID, EmailType: "transcript", ToEmail: "customer@example.test", FromEmail: "support@example.test", Subject: "subject", ContentText: "body", Status: "pending", DeliveryStatus: "pending"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	runtime := Runtime{Config: cfg, DB: source, Contracts: NewContractRegistry("MSG")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "snapshot-message", CommandType: "msg.message.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(message.ID), 10)}, Input: map[string]any{"operation": "edit", "content": "after"}, IdempotencyKey: "snapshot-message-91", CorrelationID: "snapshot-message-correlation", CausationID: "snapshot-message-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.message.get.v1"}}
+	body, _ := json.Marshal(command)
+	request := httptest.NewRequest(http.MethodPost, "/contracts/commands/msg.message.update.v1", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	request.Header.Set(headerCaller, "API")
+	request.Header.Set(headerContractVersion, "v1")
+	request.Header.Set(headerCorrelationID, command.CorrelationID)
+	response := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("message command=%d body=%s", response.Code, response.Body.String())
+	}
+	path := filepath.Join(t.TempDir(), "msg.snapshot.json")
+	if err := CreateSnapshot(source, "MSG", "msg-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "MSG")
+	targetCfg := businessConfig("MSG")
+	targetCfg.RecoveryGeneration = "msg-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("MSG target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "MSG", "msg-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("MSG target not ready after restore: %v", err)
+	}
+	counts := map[string]int64{}
+	for name, model := range map[string]any{"messages": &domain.Message{}, "attachments": &domain.Attachment{}, "drafts": &domain.DraftMessage{}, "emails": &domain.EmailLog{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		counts[name] = count
+	}
+	var receipts, events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if counts["messages"] != 1 || counts["attachments"] != 1 || counts["drafts"] != 1 || counts["emails"] != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("counts=%v receipts=%d events=%d", counts, receipts, events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.Conversation{}, &domain.User{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("MSG restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

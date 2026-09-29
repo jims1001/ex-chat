@@ -3086,6 +3086,99 @@ func TestCONMixedVersionUpgradeRollbackPreservesConversationFact(t *testing.T) {
 	}
 }
 
+func TestMSGAnonymizeCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "MSG")
+	message := domain.Message{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeContact, SenderID: 21, MessageType: domain.MessageTypeIncoming, Content: "capacity private", EchoID: "capacity-echo", Status: domain.MessageStatusSent}
+	if err := db.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	command := foundation.CommandEnvelope{CommandID: "capacity-messages", CommandType: "msg.account_messages.anonymize.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "capacity-messages-91", CorrelationID: "capacity-messages-correlation", CausationID: "capacity-messages-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.account_deletion_status.get.v1"}}
+	const instances = 8
+	type result struct {
+		status int
+		body   string
+	}
+	results, start := make(chan result, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for index := 0; index < instances; index++ {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			response := performContractRequest(handler, "/contracts/commands/msg.account_messages.anonymize.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+			results <- result{response.Code, response.Body.String()}
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.status != http.StatusOK || !strings.Contains(response.body, `"status":"anonymized"`) {
+			t.Fatalf("concurrent anonymize=%d body=%s", response.status, response.body)
+		}
+	}
+	var stored domain.Message
+	if err := db.First(&stored, message.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var receipts, events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%anonymized%").Count(&events).Error
+	if stored.Content != "" || stored.SenderID != 0 || receipts != 1 || events != 1 {
+		t.Fatalf("stored=%+v receipts=%d events=%d", stored, receipts, events)
+	}
+}
+
+func TestMSGMixedVersionUpgradeRollbackPreservesMessageFact(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	message := domain.Message{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, Content: "before", Status: domain.MessageStatusSent}
+	if err := db.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	newRuntime := func(version, release string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("MSG")
+		cfg.ContractVersion, cfg.ReleaseVersion, cfg.AcceptedVersions = version, release, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, "msg-upgrade-correlation")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-message", CommandType: "msg.message.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(message.ID), 10)}, Input: map[string]any{"operation": "edit", "content": "after"}, IdempotencyKey: "upgrade-message-91", CorrelationID: "msg-upgrade-correlation", CausationID: "msg-upgrade-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.message.get.v1"}}
+	v2 := newRuntime("v2", "release-2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/msg.message.update.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2 write=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := newRuntime("v1", "release-1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/msg.message.update.v1", command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"after"`) {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "msg.message.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"id": message.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "content"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/msg.message.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"after"`) {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/msg.message.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestMEDUploadCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
 	db := postgresModuleDB(t, "MED")
 	cfg := businessConfig("MED")
