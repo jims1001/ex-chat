@@ -4388,3 +4388,69 @@ func newModuleTestDB(t *testing.T, module string) *gorm.DB {
 	}
 	return db
 }
+
+func TestQLTQueriesStayWithinAccountOwnedStore(t *testing.T) {
+	db := newModuleTestDB(t, "QLT")
+	now := time.Now().UTC()
+	survey := domain.CSATSurvey{AccountID: 91, ConversationID: 7001, Rating: 4, FeedbackText: "helpful", ReviewStatus: "approved", ReviewNotes: "internal-only", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&survey).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherSurvey := domain.CSATSurvey{AccountID: 92, ConversationID: 7001, Rating: 1, FeedbackText: "other-account", ReviewStatus: "flagged", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherSurvey).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := domain.QATask{AccountID: 91, TaskNumber: "QA-91-001", TargetType: "conversation", TargetID: 7001, TargetRef: "Conversation 7001", ScorecardID: 11, ScorecardName: "Support", Status: "completed", TotalScore: 88, Result: "qualified", Feedback: "owner feedback", SecondReviewNotes: "reviewed", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherTask := domain.QATask{AccountID: 92, TaskNumber: "QA-92-001", TargetType: "conversation", TargetID: 7002, ScorecardID: 12, Status: "completed", TotalScore: 25, Result: "other", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherTask).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.QAEvaluationScore{TaskID: task.ID, CriterionID: 101, CriterionTitle: "Greeting", Category: "service", MaxScore: 20, Score: 18, DeductionReason: "late greeting", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.QAEvaluationScore{TaskID: otherTask.ID, CriterionID: 102, CriterionTitle: "Other", Category: "private", MaxScore: 100, Score: 25, DeductionReason: "other-account-secret", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("QLT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("QLT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(queryType string, accountID uint, filter map[string]any) *httptest.ResponseRecorder {
+		query := foundation.QueryEnvelope{QueryType: queryType, AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+		return performContractRequest(runtime.Handler(), "/contracts/queries/"+queryType, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	response := call("qlt.csat.get.v1", 91, map[string]any{"conversation_id": survey.ConversationID})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "helpful") || strings.Contains(response.Body.String(), "internal-only") || strings.Contains(response.Body.String(), "other-account") {
+		t.Fatalf("unsafe CSAT response status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = call("qlt.review.get.v1", 91, map[string]any{"task_id": task.ID})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "QA-91-001") || strings.Contains(response.Body.String(), "other-account-secret") {
+		t.Fatalf("unsafe review response status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = call("qlt.score.get.v1", 91, map[string]any{"task_id": task.ID})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "late greeting") || strings.Contains(response.Body.String(), "other-account-secret") {
+		t.Fatalf("unsafe score response status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, queryType := range []string{"qlt.review.get.v1", "qlt.score.get.v1"} {
+		response = call(queryType, 91, map[string]any{"task_id": otherTask.ID})
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("cross-account %s status=%d body=%s", queryType, response.Code, response.Body.String())
+		}
+	}
+	response = call("qlt.csat.get.v1", 91, map[string]any{"id": otherSurvey.ID})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account CSAT status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, foreign := range []any{&domain.Conversation{}, &domain.Ticket{}, &domain.User{}, &domain.Inbox{}, &domain.Contact{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("QLT query runtime contains foreign table %T", foreign)
+		}
+	}
+}

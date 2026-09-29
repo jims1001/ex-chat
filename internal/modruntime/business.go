@@ -234,6 +234,48 @@ type ticketView struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
+type csatSurveyView struct {
+	ID              uint       `json:"id"`
+	AccountID       uint       `json:"account_id"`
+	ConversationID  uint       `json:"conversation_id"`
+	Rating          int        `json:"rating"`
+	FeedbackText    string     `json:"feedback_text"`
+	AssignedAgentID *uint      `json:"assigned_agent_id,omitempty"`
+	ReviewStatus    string     `json:"review_status"`
+	ReviewerID      *uint      `json:"reviewer_id,omitempty"`
+	ReviewedAt      *time.Time `json:"reviewed_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+type qualityReviewView struct {
+	ID                 uint       `json:"id"`
+	AccountID          uint       `json:"account_id"`
+	TaskNumber         string     `json:"task_number"`
+	TargetType         string     `json:"target_type"`
+	TargetID           uint       `json:"target_id"`
+	TargetRef          string     `json:"target_ref"`
+	ScorecardID        uint       `json:"scorecard_id"`
+	ScorecardName      string     `json:"scorecard_name"`
+	InspectorID        *uint      `json:"inspector_id,omitempty"`
+	AgentID            *uint      `json:"agent_id,omitempty"`
+	SamplingRuleID     *uint      `json:"sampling_rule_id,omitempty"`
+	DueAt              *time.Time `json:"due_at,omitempty"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
+	Status             string     `json:"status"`
+	TotalScore         int        `json:"total_score"`
+	Result             string     `json:"result"`
+	HasFatalError      bool       `json:"has_fatal_error"`
+	Feedback           string     `json:"feedback"`
+	RectificationPlan  string     `json:"rectification_plan"`
+	RectifiedAt        *time.Time `json:"rectified_at,omitempty"`
+	SecondInspectorID  *uint      `json:"second_inspector_id,omitempty"`
+	SecondReviewStatus string     `json:"second_review_status"`
+	SecondReviewNotes  string     `json:"second_review_notes,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -2592,6 +2634,70 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return nil
 		})
+	case "QLT":
+		loadReview := func(accountID, taskID uint) (*domain.QATask, error) {
+			var task domain.QATask
+			result := r.DB.Where("account_id = ? AND id = ?", accountID, taskID).First(&task)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "quality review was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "quality review store is unavailable"}
+			}
+			return &task, nil
+		}
+		if err := r.Contracts.RegisterQuery("qlt.csat.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			var survey domain.CSATSurvey
+			statement := r.DB.Where("account_id = ?", query.AccountID)
+			if id, err := uintFilter(query.Filter, "id"); err == nil {
+				statement = statement.Where("id = ?", id)
+			} else if conversationID, conversationErr := uintFilter(query.Filter, "conversation_id"); conversationErr == nil {
+				statement = statement.Where("conversation_id = ?", conversationID).Order("id DESC")
+			} else {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "id or conversation_id is required"}
+			}
+			result := statement.First(&survey)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "CSAT survey was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "CSAT store is unavailable"}
+			}
+			return &csatSurveyView{ID: survey.ID, AccountID: survey.AccountID, ConversationID: survey.ConversationID, Rating: survey.Rating, FeedbackText: survey.FeedbackText, AssignedAgentID: survey.AssignedAgentID, ReviewStatus: survey.ReviewStatus, ReviewerID: survey.ReviewerID, ReviewedAt: survey.ReviewedAt, CreatedAt: survey.CreatedAt, UpdatedAt: survey.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("qlt.review.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			taskID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				taskID, err = uintFilter(query.Filter, "task_id")
+			}
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "id or task_id is required"}
+			}
+			task, err := loadReview(query.AccountID, taskID)
+			if err != nil {
+				return nil, err
+			}
+			return qualityReviewFromModel(task), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterQuery("qlt.score.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			taskID, err := uintFilter(query.Filter, "task_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "task_id is required"}
+			}
+			task, err := loadReview(query.AccountID, taskID)
+			if err != nil {
+				return nil, err
+			}
+			var scores []domain.QAEvaluationScore
+			if err := r.DB.Where("task_id = ?", task.ID).Order("id ASC").Find(&scores).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "quality score store is unavailable"}
+			}
+			return map[string]any{"account_id": query.AccountID, "task_id": task.ID, "total_score": task.TotalScore, "result": task.Result, "has_fatal_error": task.HasFatalError, "items": scores}, nil
+		})
 	case "BIL":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
@@ -3119,6 +3225,10 @@ func messageFromModel(message domain.Message) messageView {
 
 func ticketFromModel(ticket *domain.Ticket) ticketView {
 	return ticketView{ID: ticket.ID, AccountID: ticket.AccountID, TicketNumber: ticket.TicketNumber, Title: ticket.Title, Description: ticket.Description, Status: ticket.Status, Priority: ticket.Priority, AssignedGroup: ticket.AssignedGroup, AssigneeID: ticket.AssigneeID, ContactID: ticket.ContactID, ConversationID: ticket.ConversationID, CreatorID: ticket.CreatorID, DueAt: ticket.DueAt, ResolvedAt: ticket.ResolvedAt, ClosedAt: ticket.ClosedAt, SLAStatus: ticket.SLAStatus, Version: ticket.Version, CreatedAt: ticket.CreatedAt, UpdatedAt: ticket.UpdatedAt}
+}
+
+func qualityReviewFromModel(task *domain.QATask) *qualityReviewView {
+	return &qualityReviewView{ID: task.ID, AccountID: task.AccountID, TaskNumber: task.TaskNumber, TargetType: task.TargetType, TargetID: task.TargetID, TargetRef: task.TargetRef, ScorecardID: task.ScorecardID, ScorecardName: task.ScorecardName, InspectorID: task.InspectorID, AgentID: task.AgentID, SamplingRuleID: task.SamplingRuleID, DueAt: task.DueAt, CompletedAt: task.CompletedAt, Status: task.Status, TotalScore: task.TotalScore, Result: task.Result, HasFatalError: task.HasFatalError, Feedback: task.Feedback, RectificationPlan: task.RectificationPlan, RectifiedAt: task.RectifiedAt, SecondInspectorID: task.SecondInspectorID, SecondReviewStatus: task.SecondReviewStatus, SecondReviewNotes: task.SecondReviewNotes, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
 }
 
 func mediaCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {

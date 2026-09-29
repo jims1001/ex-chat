@@ -618,7 +618,7 @@
         "recovery": "补收允许窗口内结果"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "runtime-query-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },
