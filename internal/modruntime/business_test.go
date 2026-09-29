@@ -5767,12 +5767,21 @@ func TestEXTBotManageValidatesCHNOwnerAndHidesCredentials(t *testing.T) {
 	if response = call(bad); response.Code != http.StatusNotFound {
 		t.Fatalf("bad bind=%d body=%s", response.Code, response.Body.String())
 	}
-	var bots, bindings, receipts int64
+	failure := bind
+	failure.CommandID, failure.IdempotencyKey, failure.CorrelationID = "ext-bot-failure", "ext-bot-failure-91", "ext-bot-failure-correlation"
+	failure.Input = map[string]any{"action": "record_failure", "error_code": "upstream_timeout"}
+	for range 2 {
+		if response = call(failure); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"failed"`) {
+			t.Fatalf("failure=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var bots, bindings, receipts, events int64
 	_ = db.Model(&domain.AgentBot{}).Count(&bots).Error
 	_ = db.Model(&domain.AgentBotInbox{}).Count(&bindings).Error
 	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
-	if bots != 1 || bindings != 1 || receipts != 2 {
-		t.Fatalf("bots=%d bindings=%d receipts=%d", bots, bindings, receipts)
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if bots != 1 || bindings != 1 || receipts != 3 || events != 1 {
+		t.Fatalf("bots=%d bindings=%d receipts=%d events=%d", bots, bindings, receipts, events)
 	}
 }
 

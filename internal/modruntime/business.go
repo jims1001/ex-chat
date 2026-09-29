@@ -3793,6 +3793,16 @@ func (r *Runtime) RegisterBusinessContracts() error {
 					return nil, &ContractFailure{Type: "state_conflict", Message: "bot could not be deleted"}
 				}
 				return map[string]any{"account_id": command.AccountID, "bot_id": bot.ID, "deleted": true}, nil
+			case "record_failure":
+				errorCode, _ := command.Input["error_code"].(string)
+				errorCode = strings.TrimSpace(errorCode)
+				if errorCode == "" || len(errorCode) > 100 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "error_code is required"}
+				}
+				if err := r.appendBusinessEvent(ctx, command, "ext.bot.failed.v1", "AgentBot", command.Target.ID, []string{"failure"}, map[string]any{"bot_id": bot.ID, "error_code": errorCode}); err != nil {
+					return nil, err
+				}
+				return map[string]any{"account_id": command.AccountID, "bot_id": bot.ID, "status": "failed", "error_code": errorCode}, nil
 			default:
 				return nil, &ContractFailure{Type: "validation_failed", Message: "bot action is invalid"}
 			}
