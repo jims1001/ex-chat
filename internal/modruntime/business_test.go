@@ -923,6 +923,94 @@ func TestMSGQueriesExposeOwnerSafeViewsAndDeletionCounts(t *testing.T) {
 	}
 }
 
+func TestMSGMessageCreateValidatesConversationSenderAndReplay(t *testing.T) {
+	conRegistry := NewContractRegistry("CON")
+	if err := conRegistry.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || id != 11 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+		}
+		return conversationView{ID: 11, AccountID: 91, ContactID: 21, Status: domain.ConversationStatusOpen}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["MSG"] = true
+	conServer, conAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: conCfg, Contracts: conRegistry}.Handler())
+	defer conServer.Shutdown(context.Background())
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "user is invalid"}
+		}
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["MSG"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "MSG")
+	cfg := businessConfig("MSG")
+	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}, "TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "message-create-1", CommandType: "msg.message.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: "11"}, Input: map[string]any{"conversation_id": 11, "sender_type": "User", "sender_id": 7, "message_type": "outgoing", "content_type": "text", "content": "hello", "echo_id": "echo-1"}, IdempotencyKey: "message-create-key", CorrelationID: "message-create-correlation", CausationID: "message-create-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.message.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/msg.message.create.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"hello"`) {
+			t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	second := command
+	second.CommandID, second.IdempotencyKey, second.CorrelationID = "message-create-2", "message-create-second-key", "message-create-second-correlation"
+	response := call(second)
+	if response.Code != http.StatusOK {
+		t.Fatalf("echo replay=%d body=%s", response.Code, response.Body.String())
+	}
+	var messages, receipts, events int64
+	_ = db.Model(&domain.Message{}).Count(&messages).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%msg.message.created.v1%").Count(&events).Error
+	if messages != 1 || receipts != 2 || events != 1 {
+		t.Fatalf("messages=%d receipts=%d events=%d", messages, receipts, events)
+	}
+	badSender := command
+	badSender.CommandID, badSender.IdempotencyKey, badSender.CorrelationID = "message-create-3", "message-create-bad-sender", "message-create-bad-correlation"
+	badSender.Input["sender_id"] = 9
+	badSender.Input["echo_id"] = "echo-2"
+	if response := call(badSender); response.Code != http.StatusNotFound {
+		t.Fatalf("bad sender=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := conServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failed := command
+	failed.CommandID, failed.IdempotencyKey, failed.CorrelationID = "message-create-4", "message-create-dependency", "message-create-dependency-correlation"
+	failed.Input["echo_id"] = "echo-3"
+	if response := call(failed); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("dependency=%d body=%s", response.Code, response.Body.String())
+	}
+	_ = db.Model(&domain.Message{}).Count(&messages).Error
+	if messages != 1 {
+		t.Fatalf("dependency wrote messages=%d", messages)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()
@@ -1428,6 +1516,49 @@ func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	gap.Payload = map[string]any{"base_contact_id": 303, "merged_contact_id": 404}
 	if response := deliver(gap); response.Code != http.StatusConflict {
 		t.Fatalf("gap merge event status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCONConsumesMessageCreatedEventAsIdempotentActivity(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC().Add(-time.Hour)}
+	other := domain.Conversation{AccountID: 92, InboxID: 22, ContactID: 32, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC().Add(-time.Hour)}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	cfg.AllowedCallers["MSG"] = true
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "message-created-con-1", EventType: "msg.message.created.v1", EventVersion: "v1", SourceModule: "MSG", AccountID: 91, AggregateType: "Message", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "Contact", ID: "21", AuthSource: "module"}, CorrelationID: "message-event-correlation", CausationID: "message-create-1", ChangedFields: []string{"created"}, Payload: map[string]any{"message_id": 101, "conversation_id": conversation.ID, "sender_type": "Contact", "sender_id": 21, "message_type": "incoming", "status": "sent"}, DataClassification: "internal"}
+	for index := 0; index < 2; index++ {
+		response := deliverEvent(runtime.Handler(), event, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "MSG")
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("event=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var stored, untouched domain.Conversation
+	_ = db.First(&stored, conversation.ID).Error
+	_ = db.First(&untouched, other.ID).Error
+	if stored.UnreadCount != 1 || stored.ObjectVersion != 2 || stored.LastActivityAt.Before(now) {
+		t.Fatalf("stored=%+v", stored)
+	}
+	if untouched.UnreadCount != 0 || untouched.ObjectVersion != 1 {
+		t.Fatalf("untouched=%+v", untouched)
+	}
+	var changes int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", "con-activity-"+event.EventID).Count(&changes).Error
+	if changes != 1 {
+		t.Fatalf("activity changes=%d", changes)
 	}
 }
 

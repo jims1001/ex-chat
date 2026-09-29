@@ -1473,7 +1473,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
+		if err := r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {
 				return &ContractFailure{Type: "validation_failed", Message: "base_contact_id is required"}
@@ -1486,8 +1486,107 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return &ContractFailure{Type: "state_conflict", Message: "conversation contact projection could not be reassigned"}
 			}
 			return nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterEvent("msg.message.created.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
+			conversationID, err := uintFilter(event.Payload, "conversation_id")
+			if err != nil {
+				return &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
+			}
+			senderID, _ := uintFilter(event.Payload, "sender_id")
+			messageType, _ := event.Payload["message_type"].(string)
+			incoming := messageType == domain.MessageTypeIncoming
+			if err := repository.NewConversationRepositoryWithReadPorts(Transaction(ctx, r.DB), nil, nil, nil, nil, nil, nil, nil).ApplyMessageActivity(event.AccountID, conversationID, senderID, incoming, event.OccurredAt, event.EventID); errors.Is(err, gorm.ErrRecordNotFound) {
+				return &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			} else if err != nil {
+				return &ContractFailure{Type: "state_conflict", Message: "conversation activity could not be applied"}
+			}
+			return nil
 		})
 	case "MSG":
+		if err := r.Contracts.RegisterCommand("msg.message.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, err := uintFilter(command.Input, "conversation_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
+			}
+			if command.Target.Type != "conversation" || command.Target.ID != strconv.FormatUint(uint64(conversationID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation target must match conversation_id"}
+			}
+			content, _ := command.Input["content"].(string)
+			content = strings.TrimSpace(content)
+			if content == "" || len(content) > 100000 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message content is invalid"}
+			}
+			conDependency, ok := r.Config.Dependencies["CON"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation validation is unavailable"}
+			}
+			query := foundation.QueryEnvelope{QueryType: "con.conversation.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": conversationID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id", "contact_id", "status"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+			var conversation conversationView
+			if err := newModuleClient("MSG", conDependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &conversation); err != nil {
+				return nil, err
+			}
+			if conversation.AccountID != command.AccountID || conversation.Status == domain.ConversationStatusDeleting {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			senderType, _ := command.Input["sender_type"].(string)
+			senderID, senderErr := uintFilter(command.Input, "sender_id")
+			messageType, _ := command.Input["message_type"].(string)
+			messageType = strings.ToLower(strings.TrimSpace(messageType))
+			switch strings.ToLower(strings.TrimSpace(senderType)) {
+			case "contact":
+				senderType = domain.SenderTypeContact
+				if senderErr != nil || senderID != conversation.ContactID || messageType != domain.MessageTypeIncoming {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "contact sender was not found"}
+				}
+			case "user":
+				senderType = domain.SenderTypeUser
+				if senderErr != nil || messageType != domain.MessageTypeOutgoing {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "outgoing user sender is invalid"}
+				}
+				tenDependency, exists := r.Config.Dependencies["TEN"]
+				if !exists {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "sender validation is unavailable"}
+				}
+				if err := newModuleClient("MSG", tenDependency, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, senderID); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, &ContractFailure{Type: "validation_failed", Message: "sender_type is invalid"}
+			}
+			contentType, _ := command.Input["content_type"].(string)
+			contentType = strings.TrimSpace(contentType)
+			if contentType == "" {
+				contentType = "text"
+			}
+			private, _ := command.Input["private"].(bool)
+			if private && messageType != domain.MessageTypeOutgoing {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "incoming message cannot be private"}
+			}
+			echoID, _ := command.Input["echo_id"].(string)
+			echoID = strings.TrimSpace(echoID)
+			tx := Transaction(ctx, r.DB)
+			if echoID != "" {
+				var existing domain.Message
+				if err := tx.Where("account_id = ? AND conversation_id = ? AND echo_id = ?", command.AccountID, conversationID, echoID).First(&existing).Error; err == nil {
+					return messageFromModel(existing), nil
+				} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+				}
+			}
+			now := time.Now().UTC()
+			message := domain.Message{AccountID: command.AccountID, ConversationID: conversationID, SenderType: senderType, SenderID: senderID, MessageType: messageType, ContentType: contentType, Content: content, Private: private, Status: "sent", EchoID: echoID, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&message).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "message could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "msg.message.created.v1", "Message", strconv.FormatUint(uint64(message.ID), 10), []string{"created"}, map[string]any{"message_id": message.ID, "conversation_id": conversationID, "sender_type": senderType, "sender_id": senderID, "message_type": messageType, "content_type": contentType, "private": private, "status": message.Status}); err != nil {
+				return nil, err
+			}
+			return messageFromModel(message), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("msg.message.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			messageID, err := uintFilter(query.Filter, "id")
 			if err != nil {

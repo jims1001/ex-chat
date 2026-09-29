@@ -388,7 +388,8 @@
         "con.conversation.deleted.v1"
       ],
       "implementedConsumedEvents": [
-        "cus.contact.merged.v1"
+        "cus.contact.merged.v1",
+        "msg.message.created.v1"
       ],
       "declaredContractSurfaceVerified": true,
       "outboxAtomicWithCommands": true,
@@ -425,7 +426,7 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "queries-implemented",
+      "acceptanceStatus": "partial-create-command",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -437,6 +438,12 @@
         "msg.delivery_status.get.v1",
         "msg.email_delivery.get.v1",
         "msg.account_deletion_status.get.v1"
+      ],
+      "implementedIndependentCommands": [
+        "msg.message.create.v1"
+      ],
+      "implementedIndependentEvents": [
+        "msg.message.created.v1"
       ]
     },
     {
