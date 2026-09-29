@@ -58,7 +58,7 @@
         "recovery": "会话和撤销状态一致"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-contract-surface-verified",
+      "acceptanceStatus": "runtime-capacity-upgrade-delivery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [

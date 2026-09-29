@@ -5879,3 +5879,88 @@ func TestEXTWebhookLifecycleAndAccountRevokeStayScoped(t *testing.T) {
 		t.Fatalf("own=%d other=%d receipts=%d events=%d", own, other, receipts, events)
 	}
 }
+
+func TestEXTPluginInstallAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "EXT")
+	app := domain.PlatformApp{Name: "Capacity App", Token: "capacity-ext-token", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := db.Create(&app).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("EXT")
+	command := foundation.CommandEnvelope{CommandID: "capacity-ext", CommandType: "ext.plugin.install.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"app_id": strconv.FormatUint(uint64(app.ID), 10), "settings": "private"}, IdempotencyKey: "capacity-ext-91", CorrelationID: "capacity-ext-correlation", CausationID: "capacity-ext-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ext.installation.get.v1"}}
+	const instances = 8
+	results, start := make(chan *httptest.ResponseRecorder, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for range instances {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("EXT")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			results <- performContractRequest(handler, "/contracts/commands/ext.plugin.install.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"installed"`) {
+			t.Fatalf("concurrent EXT=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var facts, receipts, events int64
+	_ = db.Model(&domain.IntegrationInstallation{}).Where("account_id = ?", 91).Count(&facts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if facts != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("facts=%d receipts=%d events=%d", facts, receipts, events)
+	}
+}
+
+func TestEXTMixedVersionUpgradeRollbackPreservesInstallation(t *testing.T) {
+	db := newModuleTestDB(t, "EXT")
+	app := domain.PlatformApp{Name: "Rollback App", Token: "rollback-ext-token", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := db.Create(&app).Error; err != nil {
+		t.Fatal(err)
+	}
+	makeRuntime := func(version string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("EXT")
+		cfg.ContractVersion, cfg.AcceptedVersions = version, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("EXT")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-ext", CommandType: "ext.plugin.install.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"app_id": strconv.FormatUint(uint64(app.ID), 10)}, IdempotencyKey: "upgrade-ext-91", CorrelationID: "upgrade-ext-correlation", CausationID: "upgrade-ext-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ext.installation.get.v1"}}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	v2 := makeRuntime("v2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/ext.plugin.install.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := makeRuntime("v1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/ext.plugin.install.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "ext.installation.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"app_id": strconv.FormatUint(uint64(app.ID), 10)}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/ext.installation.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"installed"`) {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/ext.installation.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d", response.Code)
+	}
+}
