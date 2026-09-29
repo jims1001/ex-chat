@@ -1039,6 +1039,54 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterQuery("con.status_history.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			conversationID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation id is required"}
+			}
+			var exists int64
+			if err := r.DB.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", query.AccountID, conversationID).Count(&exists).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			if exists == 0 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			var rows []domain.LocalChangeJournal
+			if err := r.DB.Where("account_id = ? AND action = ? AND object_type = ? AND object_display_id = ?", query.AccountID, "event_outbox", "Conversation", strconv.FormatUint(uint64(conversationID), 10)).Order("object_version_after ASC, occurred_at ASC").Find(&rows).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation history is unavailable"}
+			}
+			history := make([]map[string]any, 0, len(rows))
+			for _, row := range rows {
+				var event foundation.EventEnvelope
+				if json.Unmarshal([]byte(row.AfterState), &event) != nil || !strings.HasPrefix(event.EventType, "con.conversation") {
+					continue
+				}
+				history = append(history, map[string]any{"event_id": event.EventID, "event_type": event.EventType, "version": event.AggregateVersion, "occurred_at": event.OccurredAt, "changed_fields": event.ChangedFields})
+			}
+			return map[string]any{"conversation_id": conversationID, "items": history}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("con.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			owned := r.DB.Model(&domain.Conversation{}).Select("id").Where("account_id = ?", query.AccountID)
+			counts := map[string]int64{}
+			statements := map[string]*gorm.DB{
+				"conversation_count": r.DB.Model(&domain.Conversation{}).Where("account_id = ?", query.AccountID),
+				"label_link_count":   r.DB.Model(&domain.ConversationLabel{}).Where("conversation_id IN (?)", owned),
+				"participant_count":  r.DB.Model(&domain.ConversationParticipant{}).Where("conversation_id IN (?)", owned),
+			}
+			for name, statement := range statements {
+				var count int64
+				if err := statement.Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			counts["account_id"] = int64(query.AccountID)
+			return counts, nil
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {

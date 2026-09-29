@@ -363,12 +363,14 @@
         "recovery": "状态和事件版本检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-conversation-queries",
+      "acceptanceStatus": "queries-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
         "con.conversation.get.v1",
-        "con.conversations.list.v1"
+        "con.conversations.list.v1",
+        "con.status_history.get.v1",
+        "con.account_deletion_status.get.v1"
       ],
       "implementedConsumedEvents": [
         "cus.contact.merged.v1"

@@ -856,6 +856,61 @@ func TestCONConversationGetAndListExposeOwnerSafeViews(t *testing.T) {
 	}
 }
 
+func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	now := time.Now().UTC()
+	owned := domain.Conversation{AccountID: 91, DisplayID: 201, InboxID: 11, ContactID: 21, Status: domain.ConversationStatusResolved, Priority: "medium", ObjectVersion: 2, LastActivityAt: now, CreatedAt: now, UpdatedAt: now}
+	other := domain.Conversation{AccountID: 92, DisplayID: 202, InboxID: 12, ContactID: 22, Status: domain.ConversationStatusOpen, Priority: "low", ObjectVersion: 1, LastActivityAt: now, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range []any{
+		&domain.ConversationLabel{ConversationID: owned.ID, LabelID: 31},
+		&domain.ConversationParticipant{ConversationID: owned.ID, UserID: 41, CreatedAt: now},
+		&domain.ConversationLabel{ConversationID: other.ID, LabelID: 32},
+		&domain.ConversationParticipant{ConversationID: other.ID, UserID: 42, CreatedAt: now},
+	} {
+		if err := db.Create(relation).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	event := foundation.EventEnvelope{EventID: "con-status-history-1", EventType: "con.conversation_status.changed.v1", EventVersion: "v1", SourceModule: "CON", AccountID: 91, AggregateType: "Conversation", AggregateID: strconv.FormatUint(uint64(owned.ID), 10), AggregateVersion: 2, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "con-history-correlation", CausationID: "con-status-command", ChangedFields: []string{"status"}, Payload: map[string]any{"status": "resolved", "private": "must-not-return"}, DataClassification: "internal"}
+	if err := NewEventOutbox(db, "CON").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(path string, query foundation.QueryEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	base := foundation.QueryEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+	history := base
+	history.QueryType, history.Filter = "con.status_history.get.v1", map[string]any{"id": owned.ID}
+	response := call("/contracts/queries/con.status_history.get.v1", history)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "con.conversation_status.changed.v1") || !strings.Contains(response.Body.String(), `"version":2`) || strings.Contains(response.Body.String(), "must-not-return") {
+		t.Fatalf("status history=%d body=%s", response.Code, response.Body.String())
+	}
+	history.AccountID = 92
+	if response := call("/contracts/queries/con.status_history.get.v1", history); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account history=%d body=%s", response.Code, response.Body.String())
+	}
+	deletion := base
+	deletion.QueryType, deletion.Filter = "con.account_deletion_status.get.v1", map[string]any{}
+	response = call("/contracts/queries/con.account_deletion_status.get.v1", deletion)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_count":1`) || !strings.Contains(response.Body.String(), `"label_link_count":1`) || !strings.Contains(response.Body.String(), `"participant_count":1`) {
+		t.Fatalf("deletion status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}
