@@ -2068,6 +2068,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if err := r.appendBusinessEvent(ctx, command, "rte.capacity.changed.v1", "CapacityPolicy", strconv.FormatUint(uint64(policy.ID), 10), []string{"conversation_limit"}, map[string]any{"policy_id": policy.ID, "user_id": userID, "conversation_limit": policy.ConversationLimit}); err != nil {
 				return nil, err
 			}
+			if err := r.appendBusinessEvent(ctx, command, "rte.availability.changed.v1", "RoutingAvailability", strconv.FormatUint(uint64(userID), 10), []string{"accepting_new_conversations"}, map[string]any{"user_id": userID, "accepting_new_conversations": policy.ConversationLimit != 0, "reason": "capacity_limit_changed"}); err != nil {
+				return nil, err
+			}
 			return map[string]any{"account_id": command.AccountID, "policy_id": policy.ID, "user_id": userID, "conversation_limit": policy.ConversationLimit}, nil
 		}); err != nil {
 			return err

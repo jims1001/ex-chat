@@ -492,7 +492,7 @@
         "recovery": "重算队列和容量"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "commands-and-queries-implemented",
+      "acceptanceStatus": "declared-surface-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -507,6 +507,12 @@
         "rte.assignment.transfer.v1",
         "rte.assignment.release.v1",
         "rte.capacity.manage.v1"
+      ],
+      "implementedIndependentEvents": [
+        "rte.assignment.changed.v1",
+        "rte.queue.changed.v1",
+        "rte.availability.changed.v1",
+        "rte.capacity.changed.v1"
       ]
     },
     {

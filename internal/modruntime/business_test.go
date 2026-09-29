@@ -1502,6 +1502,21 @@ func TestRTEQueriesComposeOwnerContractsAndLocalCapacity(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"conversation_limit":6`) {
 		t.Fatalf("updated capacity=%d body=%s", response.Code, response.Body.String())
 	}
+	var outbox []domain.LocalChangeJournal
+	if err := db.Where("source_module = ? AND action = ?", "RTE", "event_outbox").Find(&outbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	eventTypes := map[string]bool{}
+	for _, record := range outbox {
+		var event foundation.EventEnvelope
+		if err := json.Unmarshal([]byte(record.AfterState), &event); err != nil {
+			t.Fatal(err)
+		}
+		eventTypes[event.EventType] = true
+	}
+	if !eventTypes["rte.capacity.changed.v1"] || !eventTypes["rte.availability.changed.v1"] {
+		t.Fatalf("capacity event types=%v", eventTypes)
+	}
 }
 
 func TestRTEQueueEnterUsesCONCommandBoundaryAndIsIdempotent(t *testing.T) {
@@ -3277,6 +3292,32 @@ func TestMSGIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.Conversation{}, &domain.User{}, &domain.Team{}} {
 		if db.Migrator().HasTable(foreign) {
 			t.Fatalf("MSG runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
+func TestRTEIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "RTE")
+	cfg := businessConfig("RTE")
+	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://127.0.0.1:1", Token: "con"}, "TEN": {URL: "http://127.0.0.1:2", Token: "ten"}, "CHN": {URL: "http://127.0.0.1:3", Token: "chn"}}
+	registry := NewContractRegistry("RTE")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"rte.queue.enter.v1", "rte.assignment.claim.v1", "rte.assignment.transfer.v1", "rte.assignment.release.v1", "rte.capacity.manage.v1"} {
+		if registry.commands[capability] == nil {
+			t.Fatalf("missing RTE command %s", capability)
+		}
+	}
+	for _, capability := range []string{"rte.queue.get.v1", "rte.assignment.get.v1", "rte.candidates.list.v1", "rte.capacity.get.v1"} {
+		if registry.queries[capability] == nil {
+			t.Fatalf("missing RTE query %s", capability)
+		}
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}, &domain.User{}, &domain.Team{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("RTE runtime contains foreign table %T", foreign)
 		}
 	}
 }
