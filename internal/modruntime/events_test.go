@@ -266,3 +266,56 @@ func TestRuntimeEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
 		t.Fatalf("automatic outbox=%d receipts=%d", outbox, receipts)
 	}
 }
+
+func TestMEDDeletedEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
+	consumerDB := newModuleTestDB(t, "AUD")
+	consumerRegistry := NewContractRegistry("AUD")
+	delivered := make(chan foundation.EventEnvelope, 1)
+	if err := consumerRegistry.RegisterEvent("med.media.deleted.v1", func(_ context.Context, event foundation.EventEnvelope) error {
+		delivered <- event
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := businessConfig("AUD")
+	consumerCfg.AllowedCallers["MED"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: consumerCfg, DB: consumerDB, Contracts: consumerRegistry}.Handler())
+	defer server.Shutdown(context.Background())
+
+	sourceDB := newModuleTestDB(t, "MED")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "automatic-media-delete-1", EventType: "med.media.deleted.v1", EventVersion: "v1", SourceModule: "MED", AccountID: 91, AggregateType: "MediaAsset", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "automatic-media-correlation", CausationID: "media-delete-command", ChangedFields: []string{"status"}, Payload: map[string]any{"asset_id": 101, "status": "deleted"}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "MED").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	sourceCfg := businessConfig("MED")
+	sourceCfg.EventPollInterval = 10 * time.Millisecond
+	sourceCfg.EventTargets = map[string]EventFanoutTarget{"AUD": {Dependency: DependencyConfig{URL: "http://" + address, Token: consumerCfg.AuthToken}, EventTypes: map[string]bool{event.EventType: true}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errors := make(chan error, 1)
+	go (Runtime{Config: sourceCfg, DB: sourceDB}).RunEventFanout(ctx, func(err error) { errors <- err })
+	select {
+	case received := <-delivered:
+		if received.SourceModule != "MED" || received.Payload["status"] != "deleted" {
+			t.Fatalf("unexpected delivered event: %+v", received)
+		}
+	case err := <-errors:
+		t.Fatalf("automatic MED fanout error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("automatic MED fanout did not deliver pending event")
+	}
+	var outbox, receipts int64
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&outbox).Error
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+		if outbox == 1 && receipts == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if outbox != 1 || receipts != 1 {
+		t.Fatalf("automatic MED outbox=%d receipts=%d", outbox, receipts)
+	}
+}

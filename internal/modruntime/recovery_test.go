@@ -244,6 +244,71 @@ func TestCUSSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestMEDSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "MED")
+	cfg := businessConfig("MED")
+	runtime := Runtime{Config: cfg, DB: source, Contracts: NewContractRegistry("MED")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "snapshot-media", CommandType: "med.upload.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"file_name": "restore.pdf", "content_type": "application/pdf", "file_size": 1024}, IdempotencyKey: "snapshot-media-91", CorrelationID: "snapshot-media-correlation", CausationID: "snapshot-media-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "med.asset.get.v1"}}
+	body, _ := json.Marshal(command)
+	request := httptest.NewRequest(http.MethodPost, "/contracts/commands/med.upload.create.v1", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	request.Header.Set(headerCaller, "API")
+	request.Header.Set(headerContractVersion, "v1")
+	request.Header.Set(headerCorrelationID, command.CorrelationID)
+	response := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("media command status=%d body=%s", response.Code, response.Body.String())
+	}
+	var asset domain.MediaAsset
+	if err := source.Where("account_id = ?", 91).First(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := source.Create(&domain.SecurityScan{AccountID: 91, AssetID: asset.ID, Status: "clean", ScannedAt: now, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.AccessGrant{AccountID: 91, AssetID: asset.ID, SubjectType: "user", SubjectID: "7", Scope: "read", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "med.snapshot.json")
+	if err := CreateSnapshot(source, "MED", "med-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "MED")
+	targetCfg := businessConfig("MED")
+	targetCfg.RecoveryGeneration = "med-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("MED target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "MED", "med-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("MED target not ready after restore: %v", err)
+	}
+	counts := map[string]int64{}
+	for name, model := range map[string]any{"assets": &domain.MediaAsset{}, "uploads": &domain.UploadSession{}, "scans": &domain.SecurityScan{}, "grants": &domain.AccessGrant{}} {
+		var count int64
+		_ = target.Model(model).Where("account_id = ?", 91).Count(&count).Error
+		counts[name] = count
+	}
+	var receipts int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if counts["assets"] != 1 || counts["uploads"] != 1 || counts["scans"] != 1 || counts["grants"] != 1 || receipts != 1 {
+		t.Fatalf("restored counts=%v receipts=%d", counts, receipts)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Attachment{}, &domain.Conversation{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("MED restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

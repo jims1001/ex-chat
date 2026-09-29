@@ -1873,6 +1873,103 @@ func TestMEDIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	}
 }
 
+func TestMEDUploadCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "MED")
+	cfg := businessConfig("MED")
+	command := foundation.CommandEnvelope{CommandID: "capacity-media", CommandType: "med.upload.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"file_name": "capacity.pdf", "content_type": "application/pdf", "file_size": 4096, "checksum": "sha256:capacity"}, IdempotencyKey: "capacity-media-91", CorrelationID: "capacity-media-correlation", CausationID: "capacity-media-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "med.asset.get.v1"}}
+	const instances = 8
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, instances)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for i := 0; i < instances; i++ {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MED")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			response := performContractRequest(handler, "/contracts/commands/med.upload.create.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+			results <- result{status: response.Code, body: response.Body.String()}
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.status != http.StatusOK || !strings.Contains(response.body, "capacity.pdf") {
+			t.Fatalf("concurrent media status=%d body=%s", response.status, response.body)
+		}
+	}
+	var assets, uploads, receipts int64
+	_ = db.Model(&domain.MediaAsset{}).Where("account_id = ? AND file_name = ?", 91, "capacity.pdf").Count(&assets).Error
+	_ = db.Model(&domain.UploadSession{}).Where("account_id = ?", 91).Count(&uploads).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if assets != 1 || uploads != 1 || receipts != 1 {
+		t.Fatalf("assets=%d uploads=%d receipts=%d", assets, uploads, receipts)
+	}
+}
+
+func TestMEDMixedVersionUpgradeRollbackPreservesAssetFact(t *testing.T) {
+	db := newModuleTestDB(t, "MED")
+	newRuntime := func(version, release string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("MED")
+		cfg.ContractVersion, cfg.ReleaseVersion, cfg.AcceptedVersions = version, release, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MED")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, "med-upgrade-correlation")
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-media", CommandType: "med.upload.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"file_name": "rollback.pdf", "content_type": "application/pdf", "file_size": 2048}, IdempotencyKey: "upgrade-media-91", CorrelationID: "med-upgrade-correlation", CausationID: "med-upgrade-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "med.asset.get.v1"}}
+	v2 := newRuntime("v2", "release-2", map[string]bool{"v1": true, "v2": true})
+	response := call(v2, "v2", "/contracts/commands/med.upload.create.v1", command)
+	if response.Code != http.StatusOK {
+		t.Fatalf("v2 write status=%d body=%s", response.Code, response.Body.String())
+	}
+	var created struct {
+		Data mediaUploadView `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.Data.Asset.ID == 0 {
+		t.Fatalf("decode created asset: %v body=%s", err, response.Body.String())
+	}
+	v1 := newRuntime("v1", "release-1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/med.upload.create.v1", command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "rollback.pdf") {
+		t.Fatalf("v1 replay status=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "med.asset.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"id": created.Data.Asset.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "status"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/med.asset.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "rollback.pdf") {
+		t.Fatalf("v1 read status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/med.asset.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rolled-back runtime accepted v2 status=%d body=%s", response.Code, response.Body.String())
+	}
+	var assets, uploads, receipts int64
+	_ = db.Model(&domain.MediaAsset{}).Count(&assets).Error
+	_ = db.Model(&domain.UploadSession{}).Count(&uploads).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if assets != 1 || uploads != 1 || receipts != 1 {
+		t.Fatalf("rollback assets=%d uploads=%d receipts=%d", assets, uploads, receipts)
+	}
+}
+
 func TestCUSContactCommandAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
 	db := postgresModuleDB(t, "CUS")
 	cfg := businessConfig("CUS")

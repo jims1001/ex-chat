@@ -317,8 +317,8 @@
         "whenStopped": "新附件暂停，纯文本消息仍可运行",
         "recovery": "补传和孤立引用清理"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "declared-surface-implemented",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
