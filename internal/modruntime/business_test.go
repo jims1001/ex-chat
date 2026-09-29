@@ -4454,3 +4454,75 @@ func TestQLTQueriesStayWithinAccountOwnedStore(t *testing.T) {
 		}
 	}
 }
+
+func TestQLTSurveyCreateAndSubmitUseCONOwnerAndCommitAtomically(t *testing.T) {
+	now := time.Now().UTC()
+	conDB := newModuleTestDB(t, "CON")
+	agentID := uint(7)
+	conversation := domain.Conversation{AccountID: 91, UUID: "qlt-conversation-91", DisplayID: 7001, InboxID: 21, ContactID: 31, AssigneeID: &agentID, Status: domain.ConversationStatusResolved, Priority: domain.PriorityMedium, ObjectVersion: 1, CreatedAt: now, UpdatedAt: now}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["QLT"] = true
+	conRuntime := Runtime{Config: conCfg, DB: conDB, Contracts: NewContractRegistry("CON")}
+	if err := conRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	conServer := httptest.NewServer(conRuntime.Handler())
+	defer conServer.Close()
+
+	db := newModuleTestDB(t, "QLT")
+	cfg := businessConfig("QLT")
+	cfg.Dependencies["CON"] = DependencyConfig{URL: conServer.URL, Token: conCfg.AuthToken}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("QLT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversation.ID), 10)}, Input: map[string]any{}, CausationID: "qlt-test", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "qlt.csat.get.v1"}}
+	create := base
+	create.CommandID, create.CommandType, create.IdempotencyKey, create.CorrelationID = "qlt-survey-create", "qlt.survey.create.v1", "qlt-survey-create-91", "qlt-survey-create-correlation"
+	for index := 0; index < 2; index++ {
+		response := call(create)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"rating":0`) {
+			t.Fatalf("survey create status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	submit := base
+	submit.CommandID, submit.CommandType, submit.IdempotencyKey, submit.CorrelationID = "qlt-csat-submit", "qlt.csat.submit.v1", "qlt-csat-submit-91", "qlt-csat-submit-correlation"
+	submit.Input = map[string]any{"rating": 5, "feedback_text": "excellent"}
+	for index := 0; index < 2; index++ {
+		response := call(submit)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"rating":5`) || !strings.Contains(response.Body.String(), "excellent") {
+			t.Fatalf("CSAT submit status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var surveyCount, eventCount int64
+	_ = db.Model(&domain.CSATSurvey{}).Where("account_id = ? AND conversation_id = ?", 91, conversation.ID).Count(&surveyCount).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%qlt.csat.received.v1%").Count(&eventCount).Error
+	if surveyCount != 1 || eventCount != 1 {
+		t.Fatalf("survey_count=%d event_count=%d", surveyCount, eventCount)
+	}
+	var stored domain.CSATSurvey
+	if err := db.Where("account_id = ? AND conversation_id = ?", 91, conversation.ID).First(&stored).Error; err != nil || stored.Rating != 5 || stored.AssignedAgentID == nil || *stored.AssignedAgentID != agentID {
+		t.Fatalf("stored survey=%+v err=%v", stored, err)
+	}
+	foreign := create
+	foreign.CommandID, foreign.IdempotencyKey, foreign.AccountID = "qlt-survey-foreign", "qlt-survey-foreign", 92
+	if response := call(foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account create status=%d body=%s", response.Code, response.Body.String())
+	}
+	invalid := submit
+	invalid.CommandID, invalid.IdempotencyKey = "qlt-csat-invalid", "qlt-csat-invalid"
+	invalid.Input = map[string]any{"rating": 6}
+	if response := call(invalid); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid rating status=%d body=%s", response.Code, response.Body.String())
+	}
+}

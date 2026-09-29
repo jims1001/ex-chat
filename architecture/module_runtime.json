@@ -618,7 +618,7 @@
         "recovery": "补收允许窗口内结果"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-query-boundary-verified",
+      "acceptanceStatus": "runtime-csat-command-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

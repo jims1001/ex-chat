@@ -2646,6 +2646,89 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return &task, nil
 		}
+		loadConversation := func(ctx context.Context, command foundation.CommandEnvelope) (*conversationView, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			configured, ok := r.Config.Dependencies["CON"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "CON validation is unavailable"}
+			}
+			query := foundation.QueryEnvelope{QueryType: "con.conversation.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": conversationID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id", "assignee_id"}, Consistency: "strong", RequestedAt: command.RequestedAt}
+			var conversation conversationView
+			if err := newModuleClient("QLT", configured, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &conversation); err != nil {
+				return nil, err
+			}
+			return &conversation, nil
+		}
+		if err := r.Contracts.RegisterCommand("qlt.survey.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversation, err := loadConversation(ctx, command)
+			if err != nil {
+				return nil, err
+			}
+			tx := Transaction(ctx, r.DB)
+			var survey domain.CSATSurvey
+			result := tx.Where("account_id = ? AND conversation_id = ?", command.AccountID, conversation.ID).First(&survey)
+			if result.Error == nil {
+				return &csatSurveyView{ID: survey.ID, AccountID: survey.AccountID, ConversationID: survey.ConversationID, Rating: survey.Rating, FeedbackText: survey.FeedbackText, AssignedAgentID: survey.AssignedAgentID, ReviewStatus: survey.ReviewStatus, ReviewerID: survey.ReviewerID, ReviewedAt: survey.ReviewedAt, CreatedAt: survey.CreatedAt, UpdatedAt: survey.UpdatedAt}, nil
+			}
+			if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "CSAT store is unavailable"}
+			}
+			now := time.Now().UTC()
+			survey = domain.CSATSurvey{AccountID: command.AccountID, ConversationID: conversation.ID, Rating: 0, AssignedAgentID: conversation.AssigneeID, ReviewStatus: "pending", CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&survey).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "CSAT survey could not be created"}
+			}
+			return &csatSurveyView{ID: survey.ID, AccountID: survey.AccountID, ConversationID: survey.ConversationID, Rating: survey.Rating, AssignedAgentID: survey.AssignedAgentID, ReviewStatus: survey.ReviewStatus, CreatedAt: survey.CreatedAt, UpdatedAt: survey.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("qlt.csat.submit.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversation, err := loadConversation(ctx, command)
+			if err != nil {
+				return nil, err
+			}
+			rating, ratingErr := uintFilter(command.Input, "rating")
+			if ratingErr != nil || rating < 1 || rating > 5 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rating must be between 1 and 5"}
+			}
+			feedback, _ := command.Input["feedback_text"].(string)
+			feedback = strings.TrimSpace(feedback)
+			if len(feedback) > 4000 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "feedback_text is too long"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var survey domain.CSATSurvey
+			result := tx.Where("account_id = ? AND conversation_id = ?", command.AccountID, conversation.ID).First(&survey)
+			now := time.Now().UTC()
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				survey = domain.CSATSurvey{AccountID: command.AccountID, ConversationID: conversation.ID, Rating: int(rating), FeedbackText: feedback, AssignedAgentID: conversation.AssigneeID, ReviewStatus: "pending", CreatedAt: now, UpdatedAt: now}
+				if err := tx.Create(&survey).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "CSAT response could not be created"}
+				}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "CSAT store is unavailable"}
+			} else {
+				updates := map[string]any{"rating": int(rating), "feedback_text": feedback, "review_status": "pending", "reviewer_id": nil, "review_notes": "", "reviewed_at": nil, "updated_at": now}
+				if survey.AssignedAgentID == nil {
+					updates["assigned_agent_id"] = conversation.AssigneeID
+				}
+				if err := tx.Model(&survey).Updates(updates).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "CSAT response could not be updated"}
+				}
+				if err := tx.First(&survey, survey.ID).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "CSAT store is unavailable"}
+				}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "qlt.csat.received.v1", "CSATSurvey", strconv.FormatUint(uint64(survey.ID), 10), []string{"rating", "feedback_text", "review_status"}, map[string]any{"survey_id": survey.ID, "conversation_id": survey.ConversationID, "rating": survey.Rating, "review_status": survey.ReviewStatus}); err != nil {
+				return nil, err
+			}
+			return &csatSurveyView{ID: survey.ID, AccountID: survey.AccountID, ConversationID: survey.ConversationID, Rating: survey.Rating, FeedbackText: survey.FeedbackText, AssignedAgentID: survey.AssignedAgentID, ReviewStatus: survey.ReviewStatus, CreatedAt: survey.CreatedAt, UpdatedAt: survey.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("qlt.csat.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			var survey domain.CSATSurvey
 			statement := r.DB.Where("account_id = ?", query.AccountID)
