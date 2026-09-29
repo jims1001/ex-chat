@@ -3108,6 +3108,119 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("kb.document.delete.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "article" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "article target is required"}
+			}
+			articleID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || articleID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "article target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var article domain.Article
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(articleID)).First(&article)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "article was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "article store is unavailable"}
+			}
+			if result := tx.Where("account_id = ? AND id = ?", command.AccountID, article.ID).Delete(&domain.Article{}); result.Error != nil || result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "article could not be deleted"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "kb.knowledge.deleted.v1", "Article", command.Target.ID, []string{"deleted"}, map[string]any{"article_id": article.ID, "portal_id": article.PortalID, "category_id": article.CategoryID}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "article_id": article.ID, "deleted": true}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("kb.portal.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			action, _ := command.Input["action"].(string)
+			action = strings.ToLower(strings.TrimSpace(action))
+			name, _ := command.Input["name"].(string)
+			slug, _ := command.Input["slug"].(string)
+			name, slug = strings.TrimSpace(name), strings.ToLower(strings.TrimSpace(slug))
+			tx := Transaction(ctx, r.DB)
+			var portal domain.Portal
+			switch action {
+			case "create":
+				if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) || name == "" || slug == "" || len(name) > 255 || len(slug) > 128 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "account target, name and slug are required"}
+				}
+				portal = domain.Portal{AccountID: command.AccountID, Name: name, Slug: slug, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+				if err := tx.Create(&portal).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "portal could not be created"}
+				}
+			case "update":
+				if command.Target.Type != "portal" {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "portal target is required"}
+				}
+				portalID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+				if parseErr != nil || portalID == 0 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "portal target is invalid"}
+				}
+				result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(portalID)).First(&portal)
+				if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "portal was not found"}
+				}
+				if result.Error != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "portal store is unavailable"}
+				}
+				updates := map[string]any{"updated_at": time.Now().UTC()}
+				if name != "" && len(name) <= 255 {
+					updates["name"] = name
+				}
+				if slug != "" && len(slug) <= 128 {
+					updates["slug"] = slug
+				}
+				for _, field := range []string{"custom_domain", "color", "header_text"} {
+					if value, ok := command.Input[field].(string); ok {
+						updates[field] = strings.TrimSpace(value)
+					}
+				}
+				if len(updates) == 1 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "portal updates are required"}
+				}
+				if err := tx.Model(&domain.Portal{}).Where("account_id = ? AND id = ?", command.AccountID, portal.ID).Updates(updates).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "portal could not be updated"}
+				}
+				if err := tx.Where("account_id = ? AND id = ?", command.AccountID, portal.ID).First(&portal).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "portal store is unavailable"}
+				}
+			default:
+				return nil, &ContractFailure{Type: "validation_failed", Message: "portal action must be create or update"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "kb.portal.changed.v1", "Portal", strconv.FormatUint(uint64(portal.ID), 10), []string{action}, map[string]any{"portal_id": portal.ID, "action": action, "slug": portal.Slug}); err != nil {
+				return nil, err
+			}
+			return portalFromModel(&portal), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("kb.account_content.purge.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			counts := map[string]int64{}
+			for _, item := range []struct {
+				name  string
+				model any
+			}{{"articles", &domain.Article{}}, {"categories", &domain.Category{}}, {"portals", &domain.Portal{}}} {
+				result := tx.Where("account_id = ?", command.AccountID).Delete(item.model)
+				if result.Error != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "knowledge content could not be purged"}
+				}
+				counts[item.name] = result.RowsAffected
+			}
+			if err := r.appendBusinessEvent(ctx, command, "kb.knowledge.deleted.v1", "Account", command.Target.ID, []string{"purged"}, map[string]any{"article_count": counts["articles"], "category_count": counts["categories"], "portal_count": counts["portals"]}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "article_count": counts["articles"], "category_count": counts["categories"], "portal_count": counts["portals"], "ready": true}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("kb.content.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, err := uintFilter(query.Filter, "id")
 			if err != nil {

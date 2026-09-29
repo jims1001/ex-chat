@@ -5029,3 +5029,102 @@ func TestKBArticleCreatePublishArchiveValidateOwnersAndEvents(t *testing.T) {
 		t.Fatalf("foreign author status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestKBDeletePortalManageAndPurgeStayAccountScoped(t *testing.T) {
+	now := time.Now().UTC()
+	db := newModuleTestDB(t, "KB")
+	otherPortal := domain.Portal{AccountID: 92, Name: "Other", Slug: "other-help", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherPortal).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherCategory := domain.Category{AccountID: 92, PortalID: otherPortal.ID, Name: "Other", Slug: "other", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherCategory).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherArticle := domain.Article{AccountID: 92, PortalID: otherPortal.ID, CategoryID: otherCategory.ID, AuthorID: 8, Title: "Other", Slug: "other", Content: "secret", Status: "draft", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherArticle).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("KB")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("KB")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CausationID: "kb-boundary-test", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "kb.account_deletion_status.get.v1"}}
+	createPortal := base
+	createPortal.CommandID, createPortal.CommandType, createPortal.IdempotencyKey, createPortal.CorrelationID = "kb-portal-create", "kb.portal.manage.v1", "kb-portal-create-91", "kb-portal-create-correlation"
+	createPortal.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	createPortal.Input = map[string]any{"action": "create", "name": "Help", "slug": "help-91"}
+	var portalResult struct {
+		Data portalView `json:"data"`
+	}
+	for range 2 {
+		response := call(createPortal)
+		if response.Code != http.StatusOK {
+			t.Fatalf("portal create status=%d body=%s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &portalResult); err != nil || portalResult.Data.ID == 0 {
+			t.Fatalf("portal decode err=%v body=%s", err, response.Body.String())
+		}
+	}
+	updatePortal := base
+	updatePortal.CommandID, updatePortal.CommandType, updatePortal.IdempotencyKey, updatePortal.CorrelationID = "kb-portal-update", "kb.portal.manage.v1", "kb-portal-update-91", "kb-portal-update-correlation"
+	updatePortal.Target = foundation.ContractTarget{Type: "portal", ID: strconv.FormatUint(uint64(portalResult.Data.ID), 10)}
+	updatePortal.Input = map[string]any{"action": "update", "header_text": "Updated"}
+	if response := call(updatePortal); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Updated") {
+		t.Fatalf("portal update status=%d body=%s", response.Code, response.Body.String())
+	}
+	category := domain.Category{AccountID: 91, PortalID: portalResult.Data.ID, Name: "FAQ", Slug: "faq", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&category).Error; err != nil {
+		t.Fatal(err)
+	}
+	article := domain.Article{AccountID: 91, PortalID: portalResult.Data.ID, CategoryID: category.ID, AuthorID: 7, Title: "Delete", Slug: "delete", Content: "remove", Status: "draft", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&article).Error; err != nil {
+		t.Fatal(err)
+	}
+	deleteArticle := base
+	deleteArticle.CommandID, deleteArticle.CommandType, deleteArticle.IdempotencyKey, deleteArticle.CorrelationID = "kb-delete", "kb.document.delete.v1", "kb-delete-91", "kb-delete-correlation"
+	deleteArticle.Target = foundation.ContractTarget{Type: "article", ID: strconv.FormatUint(uint64(article.ID), 10)}
+	deleteArticle.Input = map[string]any{}
+	for range 2 {
+		if response := call(deleteArticle); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"deleted":true`) {
+			t.Fatalf("delete status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	foreignDelete := deleteArticle
+	foreignDelete.CommandID, foreignDelete.IdempotencyKey = "kb-delete-foreign", "kb-delete-foreign"
+	foreignDelete.Target.ID = strconv.FormatUint(uint64(otherArticle.ID), 10)
+	if response := call(foreignDelete); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	purge := base
+	purge.CommandID, purge.CommandType, purge.IdempotencyKey, purge.CorrelationID = "kb-purge", "kb.account_content.purge.v1", "kb-purge-91", "kb-purge-correlation"
+	purge.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	purge.Input = map[string]any{}
+	for range 2 {
+		if response := call(purge); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":true`) {
+			t.Fatalf("purge status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	for _, model := range []any{&domain.Portal{}, &domain.Category{}, &domain.Article{}} {
+		var own, other int64
+		_ = db.Model(model).Where("account_id = ?", 91).Count(&own).Error
+		_ = db.Model(model).Where("account_id = ?", 92).Count(&other).Error
+		if own != 0 || other != 1 {
+			t.Fatalf("model=%T own=%d other=%d", model, own, other)
+		}
+	}
+	var receipts, events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if receipts != 4 || events != 4 {
+		t.Fatalf("receipts=%d events=%d", receipts, events)
+	}
+}
