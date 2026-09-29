@@ -3308,6 +3308,105 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return map[string]any{"account_id": query.AccountID, "portal_count": counts["portal_count"], "category_count": counts["category_count"], "article_count": counts["article_count"], "ready": counts["portal_count"]+counts["category_count"]+counts["article_count"] == 0}, nil
 		})
 	case "BIL":
+		orderView := func(order *domain.Order) map[string]any {
+			return map[string]any{"id": order.ID, "account_id": order.AccountID, "order_id": order.OrderID, "contact_id": order.ContactID, "conversation_id": order.ConversationID, "amount_yuan": order.AmountYuan, "order_status": order.OrderStatus, "carrier": order.Carrier, "tracking_number": order.TrackingNumber, "warehouse_synced": order.WarehouseSynced, "created_at": order.CreatedAt, "updated_at": order.UpdatedAt}
+		}
+		if err := r.Contracts.RegisterCommand("bil.checkout.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
+			}
+			orderID, _ := command.Input["order_id"].(string)
+			orderID = strings.TrimSpace(orderID)
+			amount, amountErr := floatFilter(command.Input, "amount_yuan")
+			if orderID == "" || len(orderID) > 100 || amountErr != nil || amount <= 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order_id and positive amount_yuan are required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var duplicate int64
+			if err := tx.Model(&domain.Order{}).Where("account_id = ? AND order_id = ?", command.AccountID, orderID).Count(&duplicate).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
+			}
+			if duplicate > 0 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "order_id already exists"}
+			}
+			now := time.Now().UTC()
+			order := domain.Order{AccountID: command.AccountID, OrderID: orderID, AmountYuan: amount, OrderStatus: "pending", CreatedAt: now, UpdatedAt: now}
+			if value, ok := command.Input["customer_name"].(string); ok {
+				order.CustomerName = strings.TrimSpace(value)
+			}
+			if value, ok := command.Input["customer_email"].(string); ok {
+				order.CustomerEmail = strings.TrimSpace(value)
+			}
+			if value, ok := command.Input["customer_phone"].(string); ok {
+				order.CustomerPhone = strings.TrimSpace(value)
+			}
+			if value, ok := command.Input["items_json"].(string); ok {
+				order.ItemsJSON = value
+			}
+			if err := tx.Create(&order).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "order could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "bil.order.changed.v1", "Order", strconv.FormatUint(uint64(order.ID), 10), []string{"created"}, map[string]any{"order_id": order.ID, "external_order_id": order.OrderID, "status": order.OrderStatus, "amount_yuan": order.AmountYuan}); err != nil {
+				return nil, err
+			}
+			return orderView(&order), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("bil.order.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "order" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order target is required"}
+			}
+			orderID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || orderID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var order domain.Order
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(orderID)).First(&order)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "order was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
+			}
+			updates, changed := map[string]any{}, []string{}
+			if status, ok := command.Input["order_status"].(string); ok {
+				status = strings.ToLower(strings.TrimSpace(status))
+				if !map[string]bool{"pending": true, "processing": true, "shipped": true, "in_transit": true, "delivered": true, "cancelled": true}[status] {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "order_status is invalid"}
+				}
+				updates["order_status"], changed = status, append(changed, "order_status")
+			}
+			for _, field := range []string{"carrier", "tracking_number"} {
+				if value, ok := command.Input[field].(string); ok {
+					updates[field], changed = strings.TrimSpace(value), append(changed, field)
+				}
+			}
+			if value, ok := command.Input["warehouse_synced"].(bool); ok {
+				updates["warehouse_synced"], changed = value, append(changed, "warehouse_synced")
+				if value {
+					now := time.Now().UTC()
+					updates["synced_at"] = &now
+				}
+			}
+			if len(changed) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order updates are required"}
+			}
+			updates["updated_at"] = time.Now().UTC()
+			if err := tx.Model(&domain.Order{}).Where("account_id = ? AND id = ?", command.AccountID, order.ID).Updates(updates).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "order could not be updated"}
+			}
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, order.ID).First(&order).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "bil.order.changed.v1", "Order", command.Target.ID, changed, map[string]any{"order_id": order.ID, "external_order_id": order.OrderID, "status": order.OrderStatus, "carrier": order.Carrier, "tracking_number": order.TrackingNumber, "warehouse_synced": order.WarehouseSynced}); err != nil {
+				return nil, err
+			}
+			return orderView(&order), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("bil.order.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, idErr := uintFilter(query.Filter, "id")
 			orderID, _ := query.Filter["order_id"].(string)
@@ -3331,7 +3430,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
 			}
-			return map[string]any{"id": order.ID, "account_id": order.AccountID, "order_id": order.OrderID, "contact_id": order.ContactID, "conversation_id": order.ConversationID, "amount_yuan": order.AmountYuan, "order_status": order.OrderStatus, "carrier": order.Carrier, "tracking_number": order.TrackingNumber, "warehouse_synced": order.WarehouseSynced, "created_at": order.CreatedAt, "updated_at": order.UpdatedAt}, nil
+			return orderView(&order), nil
 		}); err != nil {
 			return err
 		}
@@ -3945,6 +4044,29 @@ func int64Filter(filter map[string]any, key string) (int64, error) {
 		return int64(typed), nil
 	default:
 		return 0, errors.New("filter is invalid")
+	}
+}
+
+func floatFilter(filter map[string]any, key string) (float64, error) {
+	value, ok := filter[key]
+	if !ok {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	switch typed := value.(type) {
+	case float64:
+		return typed, nil
+	case float32:
+		return float64(typed), nil
+	case int:
+		return float64(typed), nil
+	case int64:
+		return float64(typed), nil
+	case uint:
+		return float64(typed), nil
+	case json.Number:
+		return typed.Float64()
+	default:
+		return 0, fmt.Errorf("%s must be numeric", key)
 	}
 }
 

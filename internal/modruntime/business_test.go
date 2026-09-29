@@ -5289,3 +5289,58 @@ func TestBILQueriesStayAccountScopedAndExposeOwnerSafeViews(t *testing.T) {
 		}
 	}
 }
+
+func TestBILCheckoutAndOrderUpdateAreScopedAtomicAndIdempotent(t *testing.T) {
+	db := newModuleTestDB(t, "BIL")
+	now := time.Now().UTC()
+	foreign := domain.Order{AccountID: 92, OrderID: "FOREIGN", AmountYuan: 9, OrderStatus: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("BIL")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("BIL")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	create := foundation.CommandEnvelope{CommandID: "bil-checkout", CommandType: "bil.checkout.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"order_id": "ORD-CHECKOUT", "amount_yuan": 88.5, "customer_name": "Private", "customer_email": "private@example.test", "items_json": `[{"sku":"secret"}]`}, IdempotencyKey: "bil-checkout-91", CorrelationID: "bil-checkout-correlation", CausationID: "bil-checkout-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "bil.order.get.v1"}}
+	for range 2 {
+		response := call(create)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"order_status":"pending"`) || strings.Contains(response.Body.String(), "Private") || strings.Contains(response.Body.String(), "secret") {
+			t.Fatalf("checkout status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var order domain.Order
+	if err := db.Where("account_id = ? AND order_id = ?", 91, "ORD-CHECKOUT").First(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	update := create
+	update.CommandID, update.CommandType, update.IdempotencyKey, update.CorrelationID = "bil-order-update", "bil.order.update.v1", "bil-order-update-91", "bil-order-update-correlation"
+	update.Target = foundation.ContractTarget{Type: "order", ID: strconv.FormatUint(uint64(order.ID), 10)}
+	update.Input = map[string]any{"order_status": "shipped", "carrier": "AU Post", "tracking_number": "TRACK-CHECKOUT", "warehouse_synced": true}
+	for range 2 {
+		response := call(update)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"order_status":"shipped"`) || !strings.Contains(response.Body.String(), "TRACK-CHECKOUT") {
+			t.Fatalf("update status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	foreignUpdate := update
+	foreignUpdate.CommandID, foreignUpdate.IdempotencyKey = "bil-order-foreign", "bil-order-foreign"
+	foreignUpdate.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	if response := call(foreignUpdate); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign update status=%d body=%s", response.Code, response.Body.String())
+	}
+	var orders, receipts, events int64
+	_ = db.Model(&domain.Order{}).Where("account_id = ?", 91).Count(&orders).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if orders != 1 || receipts != 2 || events != 2 {
+		t.Fatalf("orders=%d receipts=%d events=%d", orders, receipts, events)
+	}
+}
