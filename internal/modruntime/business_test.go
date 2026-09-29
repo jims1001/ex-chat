@@ -5567,3 +5567,80 @@ func TestBILMixedVersionUpgradeRollbackPreservesOrderFact(t *testing.T) {
 		t.Fatalf("rollback accepted v2=%d", response.Code)
 	}
 }
+
+func TestEXTQueriesStayAccountScopedAndHideSecrets(t *testing.T) {
+	db := newModuleTestDB(t, "EXT")
+	now := time.Now().UTC()
+	app := domain.PlatformApp{Name: "Catalog App", Token: "catalog-secret-token", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&app).Error; err != nil {
+		t.Fatal(err)
+	}
+	installation := domain.IntegrationInstallation{AccountID: 91, AppID: "catalog-app", Status: "installed", Settings: `{"secret":"hidden"}`, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&installation).Error; err != nil {
+		t.Fatal(err)
+	}
+	bot := domain.AgentBot{AccountID: 91, Name: "Helper", Description: "safe", OutgoingURL: "https://bot.example.test", BotType: "webhook", BotConfig: `{"secret":true}`, AccessToken: "bot-secret", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&bot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.AgentBotInbox{AccountID: 91, AgentBotID: bot.ID, InboxID: 11, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	webhook := domain.Webhook{AccountID: 91, URL: "https://hook.example.test", Secret: "hook-secret", Subscriptions: `["message.created"]`, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&webhook).Error; err != nil {
+		t.Fatal(err)
+	}
+	delivery := domain.WebhookDelivery{AccountID: 91, WebhookID: webhook.ID, Event: "message.created", URL: webhook.URL, Payload: `{"private":true}`, ResponseCode: 200, ResponseBody: "private response", Attempts: 1, Status: "delivered", CreatedAt: now}
+	if err := db.Create(&delivery).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignInstallation := domain.IntegrationInstallation{AccountID: 92, AppID: "foreign", Status: "installed", Settings: "foreign-secret", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreignInstallation).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignBot := domain.AgentBot{AccountID: 92, Name: "Foreign", OutgoingURL: "https://foreign.example.test", AccessToken: "foreign-token", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreignBot).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignDelivery := domain.WebhookDelivery{AccountID: 92, WebhookID: 99, Event: "foreign", URL: "https://foreign.example.test", Payload: "foreign-payload", Status: "dead_letter", CreatedAt: now}
+	if err := db.Create(&foreignDelivery).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("EXT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("EXT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(queryType string, accountID uint, filter map[string]any) *httptest.ResponseRecorder {
+		query := foundation.QueryEnvelope{QueryType: queryType, AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+		return performContractRequest(runtime.Handler(), "/contracts/queries/"+queryType, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := call("ext.catalog.list.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Catalog App") || strings.Contains(response.Body.String(), "catalog-secret-token") {
+		t.Fatalf("catalog status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ext.installation.get.v1", 91, map[string]any{"id": installation.ID}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), "hidden") {
+		t.Fatalf("installation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ext.bot.get.v1", 91, map[string]any{"id": bot.ID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"inbox_ids":[11]`) || strings.Contains(response.Body.String(), "bot-secret") || strings.Contains(response.Body.String(), `"secret":true`) {
+		t.Fatalf("bot status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ext.delivery.get.v1", 91, map[string]any{"id": delivery.ID}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), "private") || strings.Contains(response.Body.String(), webhook.URL) {
+		t.Fatalf("delivery status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ext.account_deletion_status.get.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) || !strings.Contains(response.Body.String(), `"agent_bot_count":1`) {
+		t.Fatalf("deletion status=%d body=%s", response.Code, response.Body.String())
+	}
+	for queryType, id := range map[string]uint{"ext.installation.get.v1": foreignInstallation.ID, "ext.bot.get.v1": foreignBot.ID, "ext.delivery.get.v1": foreignDelivery.ID} {
+		if response := call(queryType, 91, map[string]any{"id": id}); response.Code != http.StatusNotFound {
+			t.Fatalf("cross-account %s status=%d body=%s", queryType, response.Code, response.Body.String())
+		}
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("EXT runtime contains foreign table %T", foreign)
+		}
+	}
+}

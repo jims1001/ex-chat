@@ -3613,6 +3613,96 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return nil
 		})
+	case "EXT":
+		if err := r.Contracts.RegisterQuery("ext.catalog.list.v1", func(_ context.Context, _ foundation.QueryEnvelope) (any, error) {
+			var apps []domain.PlatformApp
+			if err := r.DB.Order("id ASC").Find(&apps).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "extension catalog is unavailable"}
+			}
+			items := make([]map[string]any, 0, len(apps))
+			for _, app := range apps {
+				items = append(items, map[string]any{"id": app.ID, "name": app.Name, "created_at": app.CreatedAt, "updated_at": app.UpdatedAt})
+			}
+			return map[string]any{"items": items}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("ext.installation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			appID, _ := query.Filter["app_id"].(string)
+			appID = strings.TrimSpace(appID)
+			var installation domain.IntegrationInstallation
+			ownerQuery := r.DB.Where("account_id = ?", query.AccountID)
+			if id, err := uintFilter(query.Filter, "id"); err == nil {
+				ownerQuery = ownerQuery.Where("id = ?", id)
+			} else if appID != "" {
+				ownerQuery = ownerQuery.Where("app_id = ?", appID)
+			} else {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "installation id or app_id is required"}
+			}
+			result := ownerQuery.First(&installation)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "installation was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "installation store is unavailable"}
+			}
+			return map[string]any{"id": installation.ID, "account_id": installation.AccountID, "app_id": installation.AppID, "status": installation.Status, "created_at": installation.CreatedAt, "updated_at": installation.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("ext.bot.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "bot id is required"}
+			}
+			var bot domain.AgentBot
+			result := r.DB.Where("account_id = ? AND id = ?", query.AccountID, id).First(&bot)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "bot was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot store is unavailable"}
+			}
+			var inboxIDs []uint
+			if err := r.DB.Model(&domain.AgentBotInbox{}).Where("account_id = ? AND agent_bot_id = ?", query.AccountID, bot.ID).Order("inbox_id ASC").Pluck("inbox_id", &inboxIDs).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "bot binding store is unavailable"}
+			}
+			return map[string]any{"id": bot.ID, "account_id": bot.AccountID, "name": bot.Name, "description": bot.Description, "outgoing_url": bot.OutgoingURL, "bot_type": bot.BotType, "avatar_url": bot.AvatarURL, "inbox_ids": inboxIDs, "created_at": bot.CreatedAt, "updated_at": bot.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("ext.delivery.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "delivery id is required"}
+			}
+			var delivery domain.WebhookDelivery
+			result := r.DB.Where("account_id = ? AND id = ?", query.AccountID, id).First(&delivery)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "delivery was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "delivery store is unavailable"}
+			}
+			return map[string]any{"id": delivery.ID, "account_id": delivery.AccountID, "webhook_id": delivery.WebhookID, "event": delivery.Event, "response_code": delivery.ResponseCode, "attempts": delivery.Attempts, "status": delivery.Status, "created_at": delivery.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterQuery("ext.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			counts := map[string]int64{}
+			for name, model := range map[string]any{"agent_bot_count": &domain.AgentBot{}, "agent_bot_inbox_count": &domain.AgentBotInbox{}, "dashboard_app_count": &domain.DashboardApp{}, "installation_count": &domain.IntegrationInstallation{}, "webhook_count": &domain.Webhook{}, "delivery_count": &domain.WebhookDelivery{}} {
+				var count int64
+				if err := r.DB.Model(model).Where("account_id = ?", query.AccountID).Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "extension deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			total := int64(0)
+			for _, count := range counts {
+				total += count
+			}
+			return map[string]any{"account_id": query.AccountID, "agent_bot_count": counts["agent_bot_count"], "agent_bot_inbox_count": counts["agent_bot_inbox_count"], "dashboard_app_count": counts["dashboard_app_count"], "installation_count": counts["installation_count"], "webhook_count": counts["webhook_count"], "delivery_count": counts["delivery_count"], "ready": total == 0}, nil
+		})
 	case "OPS":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
