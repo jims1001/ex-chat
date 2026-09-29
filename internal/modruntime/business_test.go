@@ -5344,3 +5344,89 @@ func TestBILCheckoutAndOrderUpdateAreScopedAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("orders=%d receipts=%d events=%d", orders, receipts, events)
 	}
 }
+
+func TestBILPaymentAndRefundEnforceOwnerAmountAndBalance(t *testing.T) {
+	db := newModuleTestDB(t, "BIL")
+	now := time.Now().UTC()
+	order := domain.Order{AccountID: 91, OrderID: "PAY-91", AmountYuan: 100, OrderStatus: "pending", CreatedAt: now, UpdatedAt: now}
+	foreign := domain.Order{AccountID: 92, OrderID: "PAY-92", AmountYuan: 200, OrderStatus: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("BIL")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("BIL")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CausationID: "bil-payment-test", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "bil.payment.get.v1"}}
+	pay := base
+	pay.CommandID, pay.CommandType, pay.IdempotencyKey, pay.CorrelationID = "bil-pay", "bil.payment.process.v1", "bil-pay-91", "bil-pay-correlation"
+	pay.Target = foundation.ContractTarget{Type: "order", ID: strconv.FormatUint(uint64(order.ID), 10)}
+	pay.Input = map[string]any{"amount": 100.0, "currency": "AUD"}
+	var paymentResult struct {
+		Data struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	for range 2 {
+		response := call(pay)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"completed"`) {
+			t.Fatalf("pay status=%d body=%s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &paymentResult); err != nil || paymentResult.Data.ID == 0 {
+			t.Fatalf("payment decode err=%v body=%s", err, response.Body.String())
+		}
+	}
+	fail := base
+	fail.CommandID, fail.CommandType, fail.IdempotencyKey, fail.CorrelationID = "bil-pay-failed", "bil.payment.process.v1", "bil-pay-failed-91", "bil-pay-failed-correlation"
+	fail.Target = pay.Target
+	fail.Input = map[string]any{"amount": 10.0, "currency": "AUD", "outcome": "failed"}
+	if response := call(fail); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"failed"`) {
+		t.Fatalf("failed payment status=%d body=%s", response.Code, response.Body.String())
+	}
+	refund := base
+	refund.CommandID, refund.CommandType, refund.IdempotencyKey, refund.CorrelationID = "bil-refund", "bil.refund.create.v1", "bil-refund-91", "bil-refund-correlation"
+	refund.Target = foundation.ContractTarget{Type: "payment", ID: strconv.FormatUint(uint64(paymentResult.Data.ID), 10)}
+	refund.Input = map[string]any{"amount": 40.0}
+	for range 2 {
+		response := call(refund)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"refunded_total":40`) {
+			t.Fatalf("refund status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	over := refund
+	over.CommandID, over.IdempotencyKey, over.Input = "bil-refund-over", "bil-refund-over-91", map[string]any{"amount": 61.0}
+	if response := call(over); response.Code != http.StatusConflict {
+		t.Fatalf("over refund status=%d body=%s", response.Code, response.Body.String())
+	}
+	foreignPay := pay
+	foreignPay.CommandID, foreignPay.IdempotencyKey = "bil-pay-foreign", "bil-pay-foreign"
+	foreignPay.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	if response := call(foreignPay); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign pay status=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "bil.balance.get.v1", AccountID: 91, Actor: base.Actor, Filter: map[string]any{}, Sort: []string{"id"}, Page: "1", Fields: []string{"balance"}, Consistency: "strong", RequestedAt: now}
+	response := performContractRequest(runtime.Handler(), "/contracts/queries/bil.balance.get.v1", query, func(request *http.Request) {
+		request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+		request.Header.Set(headerCaller, "API")
+	})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"balance":-60`) {
+		t.Fatalf("balance status=%d body=%s", response.Code, response.Body.String())
+	}
+	var receipts, events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if receipts != 3 || events != 3 {
+		t.Fatalf("receipts=%d events=%d", receipts, events)
+	}
+}

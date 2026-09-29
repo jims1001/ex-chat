@@ -696,7 +696,7 @@
         "recovery": "支付回调补读和对账"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-order-command-boundary-verified",
+      "acceptanceStatus": "runtime-payment-refund-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [

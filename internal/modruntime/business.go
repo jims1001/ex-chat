@@ -3407,6 +3407,91 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("bil.payment.process.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "order" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order target is required"}
+			}
+			orderID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || orderID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var order domain.Order
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(orderID)).First(&order)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "order was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
+			}
+			amount, amountErr := floatFilter(command.Input, "amount")
+			currency, _ := command.Input["currency"].(string)
+			outcome, _ := command.Input["outcome"].(string)
+			currency, outcome = strings.ToUpper(strings.TrimSpace(currency)), strings.ToLower(strings.TrimSpace(outcome))
+			if amountErr != nil || amount <= 0 || currency == "" || len(currency) > 10 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "positive amount and currency are required"}
+			}
+			if outcome == "" {
+				outcome = "completed"
+			}
+			if outcome != "completed" && outcome != "failed" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "payment outcome is invalid"}
+			}
+			actionType, eventType := "deduction", "bil.payment.completed.v1"
+			if outcome == "failed" {
+				actionType, eventType = "payment_failed", "bil.payment.failed.v1"
+			}
+			payment := domain.AccountBilling{AccountID: command.AccountID, ActionType: actionType, Amount: amount, Currency: currency, Description: "order:" + strconv.FormatUint(uint64(order.ID), 10), CreatedAt: time.Now().UTC()}
+			if err := tx.Create(&payment).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "payment could not be recorded"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, eventType, "AccountBilling", strconv.FormatUint(uint64(payment.ID), 10), []string{"payment"}, map[string]any{"payment_id": payment.ID, "order_id": order.ID, "amount": payment.Amount, "currency": payment.Currency, "status": outcome}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": payment.ID, "account_id": payment.AccountID, "order_id": order.ID, "amount": payment.Amount, "currency": payment.Currency, "status": outcome, "created_at": payment.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("bil.refund.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "payment" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "payment target is required"}
+			}
+			paymentID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || paymentID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "payment target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var payment domain.AccountBilling
+			result := tx.Where("account_id = ? AND id = ? AND action_type = ?", command.AccountID, uint(paymentID), "deduction").First(&payment)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "completed payment was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "payment store is unavailable"}
+			}
+			amount, amountErr := floatFilter(command.Input, "amount")
+			if amountErr != nil || amount <= 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "positive refund amount is required"}
+			}
+			description := "refund:" + strconv.FormatUint(uint64(payment.ID), 10)
+			var refunded float64
+			if err := tx.Model(&domain.AccountBilling{}).Where("account_id = ? AND action_type = ? AND description = ?", command.AccountID, "deposit", description).Select("COALESCE(SUM(amount), 0)").Scan(&refunded).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "refund store is unavailable"}
+			}
+			if refunded+amount > payment.Amount {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "refund exceeds completed payment"}
+			}
+			refund := domain.AccountBilling{AccountID: command.AccountID, ActionType: "deposit", Amount: amount, Currency: payment.Currency, Description: description, CreatedAt: time.Now().UTC()}
+			if err := tx.Create(&refund).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "refund could not be recorded"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "bil.payment.refunded.v1", "AccountBilling", strconv.FormatUint(uint64(payment.ID), 10), []string{"refunded"}, map[string]any{"payment_id": payment.ID, "refund_id": refund.ID, "amount": refund.Amount, "currency": refund.Currency, "refunded_total": refunded + amount}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": refund.ID, "account_id": refund.AccountID, "payment_id": payment.ID, "amount": refund.Amount, "currency": refund.Currency, "refunded_total": refunded + amount, "status": "refunded", "created_at": refund.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("bil.order.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, idErr := uintFilter(query.Filter, "id")
 			orderID, _ := query.Filter["order_id"].(string)
