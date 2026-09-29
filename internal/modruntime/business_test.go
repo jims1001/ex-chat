@@ -5775,3 +5775,98 @@ func TestEXTBotManageValidatesCHNOwnerAndHidesCredentials(t *testing.T) {
 		t.Fatalf("bots=%d bindings=%d receipts=%d", bots, bindings, receipts)
 	}
 }
+
+func TestEXTWebhookLifecycleAndAccountRevokeStayScoped(t *testing.T) {
+	db := newModuleTestDB(t, "EXT")
+	now := time.Now().UTC()
+	foreign := domain.Webhook{AccountID: 92, URL: "https://foreign.example.test", Secret: "foreign-secret", Subscriptions: `["*"]`, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.IntegrationInstallation{AccountID: 91, AppID: "1", Status: "installed", Settings: "private", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("EXT")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("EXT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CausationID: "ext-webhook-test", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ext.delivery.get.v1"}}
+	create := base
+	create.CommandID, create.CommandType, create.IdempotencyKey, create.CorrelationID = "ext-hook-create", "ext.webhook.manage.v1", "ext-hook-create-91", "ext-hook-create-correlation"
+	create.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	create.Input = map[string]any{"action": "create", "url": "https://hook.example.test", "secret": "must-not-leak", "subscriptions": `["message.created"]`}
+	var hook struct {
+		Data struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	for range 2 {
+		response := call(create)
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "must-not-leak") {
+			t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &hook); err != nil || hook.Data.ID == 0 {
+			t.Fatalf("decode hook=%v", err)
+		}
+	}
+	dispatch := base
+	dispatch.CommandID, dispatch.CommandType, dispatch.IdempotencyKey, dispatch.CorrelationID = "ext-dispatch", "ext.webhook.dispatch.v1", "ext-dispatch-91", "ext-dispatch-correlation"
+	dispatch.Target = foundation.ContractTarget{Type: "webhook", ID: strconv.FormatUint(uint64(hook.Data.ID), 10)}
+	dispatch.Input = map[string]any{"event": "message.created", "payload": `{"private":"must-not-return"}`}
+	var queued struct {
+		Data struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	for range 2 {
+		response := call(dispatch)
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "must-not-return") {
+			t.Fatalf("dispatch=%d body=%s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil || queued.Data.ID == 0 {
+			t.Fatalf("decode delivery=%v", err)
+		}
+	}
+	record := base
+	record.CommandID, record.CommandType, record.IdempotencyKey, record.CorrelationID = "ext-record", "ext.delivery.record.v1", "ext-record-91", "ext-record-correlation"
+	record.Target = foundation.ContractTarget{Type: "delivery", ID: strconv.FormatUint(uint64(queued.Data.ID), 10)}
+	record.Input = map[string]any{"status": "delivered", "response_code": 200, "response_body": "private-response"}
+	for range 2 {
+		response := call(record)
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "private-response") || !strings.Contains(response.Body.String(), `"status":"delivered"`) {
+			t.Fatalf("record=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	bad := dispatch
+	bad.CommandID, bad.IdempotencyKey = "ext-dispatch-foreign", "ext-dispatch-foreign"
+	bad.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	if response := call(bad); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign=%d body=%s", response.Code, response.Body.String())
+	}
+	revoke := base
+	revoke.CommandID, revoke.CommandType, revoke.IdempotencyKey, revoke.CorrelationID = "ext-revoke", "ext.account_authorizations.revoke.v1", "ext-revoke-91", "ext-revoke-correlation"
+	revoke.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	revoke.Input = map[string]any{}
+	for range 2 {
+		response := call(revoke)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":true`) {
+			t.Fatalf("revoke=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var own, other, receipts, events int64
+	_ = db.Model(&domain.Webhook{}).Where("account_id = ?", 91).Count(&own).Error
+	_ = db.Model(&domain.Webhook{}).Where("account_id = ?", 92).Count(&other).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if own != 0 || other != 1 || receipts != 4 || events != 2 {
+		t.Fatalf("own=%d other=%d receipts=%d events=%d", own, other, receipts, events)
+	}
+}

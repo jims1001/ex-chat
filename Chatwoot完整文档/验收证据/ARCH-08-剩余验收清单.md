@@ -35,7 +35,7 @@
 | QLT | 4 Command/3 Query/3 Event 完整接入 | 自动事件投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 八类所有者快照恢复与门禁通过 |
 | KB | 6 Command/5 Query 已接入并完成账号边界验证 | 5 类事件均有生产路径且自动投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | Portal/Category/Article 与日志恢复、readiness 门禁通过 |
 | BIL | 5 Command/3 Query 已接入并完成账号边界验证 | 5 类生产事件均有原子写入和自动投递路径，合并事件消费已接入 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | 四类所有者数据与日志恢复、readiness 门禁通过 |
-| EXT | 3 Command/5 Query 已接入并完成账号边界验证 | 插件安装/禁用事件原子写入通过 | 待验收 | 待验收 | 待验收 |
+| EXT | 7 Command/5 Query 已接入并完成账号边界验证 | 4 类事件均有生产路径且插件/Webhook 事件原子写入通过 | 待验收 | 待验收 | 待验收 |
 | NTF | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | AUT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | OPS | 合并事件消费已接入 | 待验收 | 事件去重通过 | 待验收 | 待验收 |
@@ -246,3 +246,6 @@
 
 - 已完成并验证：EXT AgentBot 创建更新删除均限制本账号，绑定前经 CHN 合同验证 Inbox，EXT 不读取 CHN 表且凭据不出域（E-ARCH-08-v166）。
 - 下一项：EXT Webhook 管理、分发及投递记录命令。
+
+- 已完成并验证：EXT Webhook 管理、分发、投递记录与账号清理按账号执行；Secret、Payload、ResponseBody 不出域，7 Command/5 Query/4 Event 声明面齐全（E-ARCH-08-v167）。
+- 下一项：EXT PostgreSQL 多实例、版本回退、事件投递和备份恢复验收。

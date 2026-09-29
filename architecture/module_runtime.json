@@ -58,7 +58,7 @@
         "recovery": "会话和撤销状态一致"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-bot-command-boundary-verified",
+      "acceptanceStatus": "runtime-contract-surface-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [

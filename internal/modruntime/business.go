@@ -3799,6 +3799,168 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		webhookView := func(webhook *domain.Webhook) map[string]any {
+			return map[string]any{"id": webhook.ID, "account_id": webhook.AccountID, "url": webhook.URL, "subscriptions": webhook.Subscriptions, "created_at": webhook.CreatedAt, "updated_at": webhook.UpdatedAt}
+		}
+		deliveryView := func(delivery *domain.WebhookDelivery) map[string]any {
+			return map[string]any{"id": delivery.ID, "account_id": delivery.AccountID, "webhook_id": delivery.WebhookID, "event": delivery.Event, "response_code": delivery.ResponseCode, "attempts": delivery.Attempts, "status": delivery.Status, "created_at": delivery.CreatedAt}
+		}
+		if err := r.Contracts.RegisterCommand("ext.webhook.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			action, _ := command.Input["action"].(string)
+			action = strings.ToLower(strings.TrimSpace(action))
+			tx := Transaction(ctx, r.DB)
+			if action == "create" {
+				if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
+				}
+				urlValue, _ := command.Input["url"].(string)
+				subscriptions, _ := command.Input["subscriptions"].(string)
+				urlValue, subscriptions = strings.TrimSpace(urlValue), strings.TrimSpace(subscriptions)
+				var names []string
+				if (!strings.HasPrefix(urlValue, "https://") && !strings.HasPrefix(urlValue, "http://")) || len(urlValue) > 1024 || json.Unmarshal([]byte(subscriptions), &names) != nil || len(names) == 0 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "HTTP url and subscription list are required"}
+				}
+				secret, _ := command.Input["secret"].(string)
+				webhook := domain.Webhook{AccountID: command.AccountID, URL: urlValue, Secret: secret, Subscriptions: subscriptions, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+				if err := tx.Create(&webhook).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "webhook could not be created"}
+				}
+				return webhookView(&webhook), nil
+			}
+			if command.Target.Type != "webhook" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "webhook target is required"}
+			}
+			webhookID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || webhookID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "webhook target is invalid"}
+			}
+			var webhook domain.Webhook
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(webhookID)).First(&webhook)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "webhook was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "webhook store is unavailable"}
+			}
+			switch action {
+			case "update":
+				updates := map[string]any{"updated_at": time.Now().UTC()}
+				for _, field := range []string{"url", "secret", "subscriptions"} {
+					if value, ok := command.Input[field].(string); ok {
+						updates[field] = strings.TrimSpace(value)
+					}
+				}
+				if len(updates) == 1 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "webhook updates are required"}
+				}
+				if err := tx.Model(&domain.Webhook{}).Where("account_id = ? AND id = ?", command.AccountID, webhook.ID).Updates(updates).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "webhook could not be updated"}
+				}
+				if err := tx.Where("account_id = ? AND id = ?", command.AccountID, webhook.ID).First(&webhook).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "webhook store is unavailable"}
+				}
+				return webhookView(&webhook), nil
+			case "delete":
+				if err := tx.Where("account_id = ? AND webhook_id = ?", command.AccountID, webhook.ID).Delete(&domain.WebhookDelivery{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "webhook deliveries could not be deleted"}
+				}
+				if result := tx.Where("account_id = ? AND id = ?", command.AccountID, webhook.ID).Delete(&domain.Webhook{}); result.Error != nil || result.RowsAffected != 1 {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "webhook could not be deleted"}
+				}
+				return map[string]any{"account_id": command.AccountID, "webhook_id": webhook.ID, "deleted": true}, nil
+			default:
+				return nil, &ContractFailure{Type: "validation_failed", Message: "webhook action is invalid"}
+			}
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ext.webhook.dispatch.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "webhook" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "webhook target is required"}
+			}
+			webhookID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || webhookID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "webhook target is invalid"}
+			}
+			eventName, _ := command.Input["event"].(string)
+			payload, _ := command.Input["payload"].(string)
+			eventName = strings.TrimSpace(eventName)
+			if eventName == "" || payload == "" || !json.Valid([]byte(payload)) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "event and JSON payload are required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var webhook domain.Webhook
+			if result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(webhookID)).First(&webhook); errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "webhook was not found"}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "webhook store is unavailable"}
+			}
+			delivery := domain.WebhookDelivery{AccountID: command.AccountID, WebhookID: webhook.ID, Event: eventName, URL: webhook.URL, Payload: payload, Attempts: 0, Status: "pending", CreatedAt: time.Now().UTC()}
+			if err := tx.Create(&delivery).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "webhook delivery could not be queued"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ext.webhook_delivery.changed.v1", "WebhookDelivery", strconv.FormatUint(uint64(delivery.ID), 10), []string{"queued"}, map[string]any{"delivery_id": delivery.ID, "webhook_id": delivery.WebhookID, "event": delivery.Event, "status": delivery.Status, "attempts": delivery.Attempts}); err != nil {
+				return nil, err
+			}
+			return deliveryView(&delivery), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ext.delivery.record.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "delivery" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "delivery target is required"}
+			}
+			deliveryID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || deliveryID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "delivery target is invalid"}
+			}
+			status, _ := command.Input["status"].(string)
+			status = strings.ToLower(strings.TrimSpace(status))
+			if status != "delivered" && status != "dead_letter" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "delivery status is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var delivery domain.WebhookDelivery
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(deliveryID)).First(&delivery)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "delivery was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "delivery store is unavailable"}
+			}
+			responseCode, _ := int64Filter(command.Input, "response_code")
+			responseBody, _ := command.Input["response_body"].(string)
+			delivery.Status, delivery.ResponseCode, delivery.ResponseBody, delivery.Attempts = status, int(responseCode), responseBody, delivery.Attempts+1
+			if err := tx.Model(&domain.WebhookDelivery{}).Where("account_id = ? AND id = ?", command.AccountID, delivery.ID).Updates(map[string]any{"status": delivery.Status, "response_code": delivery.ResponseCode, "response_body": delivery.ResponseBody, "attempts": delivery.Attempts}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "delivery result could not be recorded"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ext.webhook_delivery.changed.v1", "WebhookDelivery", command.Target.ID, []string{"status", "attempts"}, map[string]any{"delivery_id": delivery.ID, "webhook_id": delivery.WebhookID, "event": delivery.Event, "status": delivery.Status, "attempts": delivery.Attempts, "response_code": delivery.ResponseCode}); err != nil {
+				return nil, err
+			}
+			return deliveryView(&delivery), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ext.account_authorizations.revoke.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "matching account target is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			counts := map[string]int64{}
+			for _, item := range []struct {
+				name  string
+				model any
+			}{{"agent_bot_inboxes", &domain.AgentBotInbox{}}, {"agent_bots", &domain.AgentBot{}}, {"deliveries", &domain.WebhookDelivery{}}, {"webhooks", &domain.Webhook{}}, {"dashboard_apps", &domain.DashboardApp{}}, {"installations", &domain.IntegrationInstallation{}}} {
+				result := tx.Where("account_id = ?", command.AccountID).Delete(item.model)
+				if result.Error != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "account authorizations could not be revoked"}
+				}
+				counts[item.name] = result.RowsAffected
+			}
+			return map[string]any{"account_id": command.AccountID, "agent_bot_inbox_count": counts["agent_bot_inboxes"], "agent_bot_count": counts["agent_bots"], "delivery_count": counts["deliveries"], "webhook_count": counts["webhooks"], "dashboard_app_count": counts["dashboard_apps"], "installation_count": counts["installations"], "ready": true}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ext.catalog.list.v1", func(_ context.Context, _ foundation.QueryEnvelope) (any, error) {
 			var apps []domain.PlatformApp
 			if err := r.DB.Order("id ASC").Find(&apps).Error; err != nil {
