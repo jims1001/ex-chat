@@ -30,25 +30,25 @@ const (
 	PermissionKnowledgeBaseManage             = "knowledge_base_manage"
 
 	// System Extended Permissions
-	PermissionAdministrator    = "administrator"
-	PermissionAgentManage      = "agent_manage"
-	PermissionCustomRoleManage = "custom_role_manage"
-	PermissionInboxManage      = "inbox_manage"
-	PermissionTeamManage       = "team_manage"
-	PermissionReportView       = "report_view"
-	PermissionAutomationManage = "automation_manage"
-	PermissionSLAManage        = "sla_manage"
-	PermissionAIManage         = "ai_manage"
-	PermissionAuditManage      = "audit_manage"
-	PermissionBillingManage    = "billing_manage"
-	PermissionSettingsManage   = "settings_manage"
-	PermissionQAManage         = "qa_manage"
-	PermissionTicketView       = "ticket_view"
-	PermissionTicketManage     = "ticket_manage"
-	PermissionQAView           = "qa_view"
-	PermissionQAEvaluate       = "qa_evaluate"
-	PermissionQAAppeal         = "qa_appeal"
-	PermissionQAAppealReview   = "qa_appeal_review"
+	PermissionAdministrator      = "administrator"
+	PermissionAgentManage        = "agent_manage"
+	PermissionCustomRoleManage   = "custom_role_manage"
+	PermissionInboxManage        = "inbox_manage"
+	PermissionTeamManage         = "team_manage"
+	PermissionReportView         = "report_view"
+	PermissionAutomationManage   = "automation_manage"
+	PermissionSLAManage          = "sla_manage"
+	PermissionAIManage           = "ai_manage"
+	PermissionAuditManage        = "audit_manage"
+	PermissionBillingManage      = "billing_manage"
+	PermissionSettingsManage     = "settings_manage"
+	PermissionQAManage           = "qa_manage"
+	PermissionTicketView         = "ticket_view"
+	PermissionTicketManage       = "ticket_manage"
+	PermissionQAView             = "qa_view"
+	PermissionQAEvaluate         = "qa_evaluate"
+	PermissionQAAppeal           = "qa_appeal"
+	PermissionQAAppealReview     = "qa_appeal_review"
 )
 
 // Availability constants
@@ -202,15 +202,15 @@ func (u *User) IsSuperAdmin() bool {
 
 // AccountUser associates a user with a tenant account
 type AccountUser struct {
-	ID                    uint      `gorm:"primaryKey" json:"id"`
-	AccountID             uint      `gorm:"index;not null" json:"account_id"`
-	UserID                uint      `gorm:"index;not null" json:"user_id"`
-	Role                  string    `gorm:"size:50;default:'agent'" json:"role"`
-	Availability          string    `gorm:"size:50;default:'online'" json:"availability"`
-	AgentCapacityPolicyID *uint     `gorm:"index" json:"agent_capacity_policy_id"`
-	CustomRoleID          *uint     `gorm:"index" json:"custom_role_id"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                    uint                 `gorm:"primaryKey" json:"id"`
+	AccountID             uint                 `gorm:"index;not null" json:"account_id"`
+	UserID                uint                 `gorm:"index;not null" json:"user_id"`
+	Role                  string               `gorm:"size:50;default:'agent'" json:"role"`
+	Availability          string               `gorm:"size:50;default:'online'" json:"availability"`
+	AgentCapacityPolicyID *uint                `gorm:"index" json:"agent_capacity_policy_id"`
+	CustomRoleID          *uint                `gorm:"index" json:"custom_role_id"`
+	CreatedAt             time.Time            `json:"created_at"`
+	UpdatedAt             time.Time            `json:"updated_at"`
 
 	Account             *Account             `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 	User                *User                `gorm:"foreignKey:UserID" json:"user,omitempty"`
@@ -224,23 +224,23 @@ type Inbox struct {
 	AccountID           uint      `gorm:"index;not null" json:"account_id"`
 	Name                string    `gorm:"size:255;not null" json:"name"`
 	ChannelType         string    `gorm:"size:50;not null;default:'Channel::WebWidget'" json:"channel_type"`
-	AvatarURL           string    `gorm:"size:512" json:"avatar_url"`
-	WebsiteToken        string    `gorm:"size:128;uniqueIndex;not null" json:"website_token"`
-	GreetingMessage     string    `gorm:"type:text" json:"greeting_message"`
-	GreetingEnabled     bool      `gorm:"default:true" json:"greeting_enabled"`
-	WorkingHoursEnabled bool      `gorm:"default:false" json:"working_hours_enabled"`
-	OutOfOfficeMessage  string    `gorm:"type:text" json:"out_of_office_message"`
-	Timezone            string    `gorm:"size:100;default:'UTC'" json:"timezone"`
-	WorkingHours        string    `gorm:"type:text" json:"working_hours"` // JSON array of WorkingHourConfig
-	AssignmentPolicyID  *uint     `gorm:"index" json:"assignment_policy_id"`
-	CSATSurveyEnabled   bool      `gorm:"default:false" json:"csat_survey_enabled"`
-	CSATConfig          string    `gorm:"type:text" json:"csat_config"`
-	ProviderConfig      string    `gorm:"type:text" json:"provider_config"`
-	HMACMandatory       bool      `gorm:"default:false" json:"hmac_mandatory"`
-	HMACToken           string    `gorm:"size:255" json:"hmac_token"`
-	WebhookURL          string    `gorm:"size:1024" json:"webhook_url"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	AvatarURL           string            `gorm:"size:512" json:"avatar_url"`
+	WebsiteToken        string            `gorm:"size:128;uniqueIndex;not null" json:"website_token"`
+	GreetingMessage     string            `gorm:"type:text" json:"greeting_message"`
+	GreetingEnabled     bool              `gorm:"default:true" json:"greeting_enabled"`
+	WorkingHoursEnabled bool              `gorm:"default:false" json:"working_hours_enabled"`
+	OutOfOfficeMessage  string            `gorm:"type:text" json:"out_of_office_message"`
+	Timezone            string            `gorm:"size:100;default:'UTC'" json:"timezone"`
+	WorkingHours        string            `gorm:"type:text" json:"working_hours"` // JSON array of WorkingHourConfig
+	AssignmentPolicyID  *uint             `gorm:"index" json:"assignment_policy_id"`
+	CSATSurveyEnabled   bool              `gorm:"default:false" json:"csat_survey_enabled"`
+	CSATConfig          string            `gorm:"type:text" json:"csat_config"`
+	ProviderConfig      string            `gorm:"type:text" json:"provider_config"`
+	HMACMandatory       bool              `gorm:"default:false" json:"hmac_mandatory"`
+	HMACToken           string            `gorm:"size:255" json:"hmac_token"`
+	WebhookURL          string            `gorm:"size:1024" json:"webhook_url"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 
 	Members          []User            `gorm:"many2many:inbox_members;" json:"members,omitempty"`
 	AssignmentPolicy *AssignmentPolicy `gorm:"foreignKey:AssignmentPolicyID" json:"assignment_policy,omitempty"`
@@ -291,20 +291,20 @@ type ContactInbox struct {
 
 // Conversation represents a chat thread between a contact and agents
 type Conversation struct {
-	ID                 uint       `gorm:"primaryKey" json:"id"`
-	UUID               string     `gorm:"size:100;index" json:"uuid"`
-	DisplayID          uint       `gorm:"index;not null" json:"display_id"`
-	AccountID          uint       `gorm:"index;not null" json:"account_id"`
-	InboxID            uint       `gorm:"index;not null" json:"inbox_id"`
-	ContactID          uint       `gorm:"index;not null" json:"contact_id"`
-	AssigneeID         *uint      `gorm:"index" json:"assignee_id"`
-	TeamID             *uint      `gorm:"index" json:"team_id"`
-	SLAPolicyID        *uint      `gorm:"index" json:"sla_policy_id"`
-	Status             string     `gorm:"size:50;default:'open';index" json:"status"`
-	Priority           string     `gorm:"size:50;default:'medium'" json:"priority"`
-	SLAStatus          string     `gorm:"size:50;default:'active'" json:"sla_status"`
-	CustomAttributes   string     `gorm:"type:text" json:"custom_attributes"`
-	ObjectVersion      int        `gorm:"default:1" json:"object_version"`
+	ID               uint       `gorm:"primaryKey" json:"id"`
+	UUID             string     `gorm:"size:100;index" json:"uuid"`
+	DisplayID        uint       `gorm:"index;not null" json:"display_id"`
+	AccountID        uint       `gorm:"index;not null" json:"account_id"`
+	InboxID          uint       `gorm:"index;not null" json:"inbox_id"`
+	ContactID        uint       `gorm:"index;not null" json:"contact_id"`
+	AssigneeID       *uint      `gorm:"index" json:"assignee_id"`
+	TeamID           *uint      `gorm:"index" json:"team_id"`
+	SLAPolicyID      *uint      `gorm:"index" json:"sla_policy_id"`
+	Status           string     `gorm:"size:50;default:'open';index" json:"status"`
+	Priority         string     `gorm:"size:50;default:'medium'" json:"priority"`
+	SLAStatus        string     `gorm:"size:50;default:'active'" json:"sla_status"`
+	CustomAttributes string     `gorm:"type:text" json:"custom_attributes"`
+	ObjectVersion    int        `gorm:"default:1" json:"object_version"`
 	SnoozedUntil       *time.Time `json:"snoozed_until"`
 	LastActivityAt     time.Time  `gorm:"index" json:"last_activity_at"`
 	AgentLastSeenAt    *time.Time `json:"agent_last_seen_at"`
@@ -359,38 +359,38 @@ type ContactFilterRequest struct {
 
 // Message represents an individual text or event entry in a conversation
 type Message struct {
-	ID                uint       `gorm:"primaryKey" json:"id"`
-	AccountID         uint       `gorm:"index;not null" json:"account_id"`
-	ConversationID    uint       `gorm:"index;not null" json:"conversation_id"`
-	SenderType        string     `gorm:"size:50;not null" json:"sender_type"`
-	SenderID          uint       `gorm:"index;not null" json:"sender_id"`
-	MessageType       string     `gorm:"size:50;default:'incoming'" json:"message_type"`
-	ContentType       string     `gorm:"size:50;default:'text'" json:"content_type"`
-	Content           string     `gorm:"type:text;not null" json:"content"`
-	Translations      string     `gorm:"type:text" json:"translations,omitempty"`
-	ContentAttributes string     `gorm:"type:text" json:"content_attributes,omitempty"`
-	Private           bool       `gorm:"default:false" json:"private"`
-	Status            string     `gorm:"size:50;default:'sent'" json:"status"`
-	EchoID            string     `gorm:"size:255;index" json:"echo_id"`
-	Deleted           bool       `gorm:"default:false;index" json:"deleted"`
-	DeletedAt         *time.Time `json:"deleted_at,omitempty"`
-	EditedAt          *time.Time `json:"edited_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	AccountID      uint      `gorm:"index;not null" json:"account_id"`
+	ConversationID uint      `gorm:"index;not null" json:"conversation_id"`
+	SenderType     string    `gorm:"size:50;not null" json:"sender_type"`
+	SenderID       uint      `gorm:"index;not null" json:"sender_id"`
+	MessageType    string    `gorm:"size:50;default:'incoming'" json:"message_type"`
+	ContentType    string    `gorm:"size:50;default:'text'" json:"content_type"`
+	Content        string    `gorm:"type:text;not null" json:"content"`
+	Translations   string    `gorm:"type:text" json:"translations,omitempty"`
+	ContentAttributes string `gorm:"type:text" json:"content_attributes,omitempty"`
+	Private        bool      `gorm:"default:false" json:"private"`
+	Status         string     `gorm:"size:50;default:'sent'" json:"status"`
+	EchoID         string     `gorm:"size:255;index" json:"echo_id"`
+	Deleted        bool       `gorm:"default:false;index" json:"deleted"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+	EditedAt       *time.Time `json:"edited_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 
 	Sender any `gorm:"-" json:"sender,omitempty"`
 }
 
 // Label represents a tag that can be attached to conversations
 type Label struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	AccountID     uint      `gorm:"index;not null" json:"account_id"`
-	Title         string    `gorm:"size:100;not null" json:"title"`
-	Description   string    `gorm:"size:255" json:"description"`
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	AccountID   uint      `gorm:"index;not null" json:"account_id"`
+	Title       string    `gorm:"size:100;not null" json:"title"`
+	Description string    `gorm:"size:255" json:"description"`
 	Color         string    `gorm:"size:50;default:'#1f93ff'" json:"color"`
 	ShowOnSidebar bool      `gorm:"default:false" json:"show_on_sidebar"`
 	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // ConversationLabel join table
@@ -448,13 +448,13 @@ type CapacityPolicy struct {
 
 // AgentCapacityPolicy represents an enterprise-grade agent capacity policy with per-inbox limits
 type AgentCapacityPolicy struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	AccountID      uint      `gorm:"index;not null" json:"account_id"`
-	Name           string    `gorm:"size:255;not null" json:"name"`
-	Description    string    `gorm:"type:text" json:"description"`
-	ExclusionRules string    `gorm:"type:text" json:"exclusion_rules"` // JSON config for older than hours, excluded labels
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             uint                 `gorm:"primaryKey" json:"id"`
+	AccountID      uint                 `gorm:"index;not null" json:"account_id"`
+	Name           string               `gorm:"size:255;not null" json:"name"`
+	Description    string               `gorm:"type:text" json:"description"`
+	ExclusionRules string               `gorm:"type:text" json:"exclusion_rules"` // JSON config for older than hours, excluded labels
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
 
 	InboxCapacityLimits []InboxCapacityLimit `gorm:"foreignKey:AgentCapacityPolicyID" json:"inbox_capacity_limits,omitempty"`
 	AccountUsers        []AccountUser        `gorm:"foreignKey:AgentCapacityPolicyID" json:"account_users,omitempty"`
@@ -490,8 +490,8 @@ type AssignmentPolicy struct {
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 
-	FallbackAssignee *User `gorm:"foreignKey:FallbackAssigneeID" json:"fallback_assignee,omitempty"`
-	FallbackTeam     *Team `gorm:"foreignKey:FallbackTeamID" json:"fallback_team,omitempty"`
+	FallbackAssignee   *User     `gorm:"foreignKey:FallbackAssigneeID" json:"fallback_assignee,omitempty"`
+	FallbackTeam       *Team     `gorm:"foreignKey:FallbackTeamID" json:"fallback_team,omitempty"`
 }
 
 // CustomAttributeDefinition defines custom fields for Contact or Conversation
@@ -529,8 +529,8 @@ type AutomationRule struct {
 	Name        string    `gorm:"size:255;not null" json:"name"`
 	Description string    `gorm:"type:text" json:"description"`
 	EventName   string    `gorm:"size:100;not null" json:"event_name"` // conversation_created, message_created
-	Conditions  string    `gorm:"type:text" json:"conditions"`         // JSON condition rules
-	Actions     string    `gorm:"type:text" json:"actions"`            // JSON action steps
+	Conditions  string    `gorm:"type:text" json:"conditions"`        // JSON condition rules
+	Actions     string    `gorm:"type:text" json:"actions"`           // JSON action steps
 	Active      bool      `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -544,7 +544,7 @@ type AutomationRuleExecution struct {
 	ConversationID uint      `gorm:"index;not null" json:"conversation_id"`
 	MessageID      *uint     `gorm:"index" json:"message_id,omitempty"`
 	EventName      string    `gorm:"size:100;not null" json:"event_name"`
-	Status         string    `gorm:"size:50;not null" json:"status"`  // success, failed, partial_failed, depth_exceeded
+	Status         string    `gorm:"size:50;not null" json:"status"` // success, failed, partial_failed, depth_exceeded
 	ActionResults  string    `gorm:"type:text" json:"action_results"` // JSON array of action execution results
 	DurationMs     int64     `json:"duration_ms"`
 	TriggeredAt    time.Time `gorm:"index;not null" json:"triggered_at"`
@@ -554,6 +554,7 @@ type AutomationRuleExecution struct {
 	Rule         *AutomationRule `gorm:"foreignKey:RuleID" json:"rule,omitempty"`
 	Conversation *Conversation   `gorm:"foreignKey:ConversationID" json:"conversation,omitempty"`
 }
+
 
 // ----------------- HELP 帮助中心 -----------------
 
@@ -795,9 +796,9 @@ type NotificationSetting struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
 	AccountID          uint      `gorm:"uniqueIndex:idx_notif_acc_user;not null" json:"account_id"`
 	UserID             uint      `gorm:"uniqueIndex:idx_notif_acc_user;not null" json:"user_id"`
-	SelectedEmailFlags string    `gorm:"type:text" json:"selected_email_flags"`  // JSON array e.g. ["conversation_assignment", "sla_breach"]
-	SelectedPushFlags  string    `gorm:"type:text" json:"selected_push_flags"`   // JSON array
-	SelectedInAppFlags string    `gorm:"type:text" json:"selected_in_app_flags"` // JSON array
+	SelectedEmailFlags string    `gorm:"type:text" json:"selected_email_flags"`   // JSON array e.g. ["conversation_assignment", "sla_breach"]
+	SelectedPushFlags  string    `gorm:"type:text" json:"selected_push_flags"`    // JSON array
+	SelectedInAppFlags string    `gorm:"type:text" json:"selected_in_app_flags"`  // JSON array
 	Muted              bool      `gorm:"default:false" json:"muted"`
 	QuietHoursEnabled  bool      `gorm:"default:false" json:"quiet_hours_enabled"`
 	QuietHoursStart    string    `gorm:"size:10;default:'22:00'" json:"quiet_hours_start"`
@@ -897,10 +898,10 @@ type Campaign struct {
 	Description     string     `gorm:"type:text" json:"description"`
 	Message         string     `gorm:"type:text;not null" json:"message"`
 	CampaignType    string     `gorm:"size:50;default:'one_off'" json:"campaign_type"` // one_off, ongoing
-	Status          string     `gorm:"size:50;default:'draft'" json:"status"`          // draft, scheduled, active, paused, completed, cancelled
+	Status          string     `gorm:"size:50;default:'draft'" json:"status"`         // draft, scheduled, active, paused, completed, cancelled
 	ScheduledAt     *time.Time `json:"scheduled_at"`
-	Audience        string     `gorm:"type:text" json:"audience"`                // JSON filter
-	TriggerRules    string     `gorm:"type:text" json:"trigger_rules,omitempty"` // URL/metadata/event filter for ongoing
+	Audience        string     `gorm:"type:text" json:"audience"`                     // JSON filter
+	TriggerRules    string     `gorm:"type:text" json:"trigger_rules,omitempty"`       // URL/metadata/event filter for ongoing
 	SenderID        *uint      `json:"sender_id,omitempty"`
 	DeliveriesCount int64      `gorm:"-" json:"deliveries_count,omitempty"`
 	SentCount       int64      `gorm:"-" json:"sent_count,omitempty"`
@@ -914,16 +915,16 @@ type Campaign struct {
 
 // SLAPolicy defines response and resolution time targets for customer conversations
 type SLAPolicy struct {
-	ID                         uint      `gorm:"primaryKey" json:"id"`
-	AccountID                  uint      `gorm:"index;not null" json:"account_id"`
-	Name                       string    `gorm:"size:255;not null" json:"name"`
-	Description                string    `gorm:"type:text" json:"description"`
+	ID                          uint      `gorm:"primaryKey" json:"id"`
+	AccountID                   uint      `gorm:"index;not null" json:"account_id"`
+	Name                        string    `gorm:"size:255;not null" json:"name"`
+	Description                 string    `gorm:"type:text" json:"description"`
 	FirstResponseTimeThreshold int       `gorm:"default:3600" json:"first_response_time_threshold"` // in seconds
 	NextResponseTimeThreshold  int       `gorm:"default:0" json:"next_response_time_threshold"`     // in seconds
-	ResolutionTimeThreshold    int       `gorm:"default:86400" json:"resolution_time_threshold"`    // in seconds
-	OnlyDuringBusinessHours    bool      `gorm:"default:true" json:"only_during_business_hours"`
-	CreatedAt                  time.Time `json:"created_at"`
-	UpdatedAt                  time.Time `json:"updated_at"`
+	ResolutionTimeThreshold    int       `gorm:"default:86400" json:"resolution_time_threshold"`   // in seconds
+	OnlyDuringBusinessHours     bool      `gorm:"default:true" json:"only_during_business_hours"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
 }
 
 // AppliedSLA status constants
@@ -963,7 +964,7 @@ type SLAEvent struct {
 	SLAPolicyID    uint      `gorm:"index;not null" json:"sla_policy_id"`
 	InboxID        uint      `gorm:"index;not null" json:"inbox_id"`
 	EventType      string    `gorm:"size:50;not null;index" json:"event_type"` // frt, nrt, rt
-	Meta           string    `gorm:"type:text" json:"meta"`                    // e.g. {"message_id": 123}
+	Meta           string    `gorm:"type:text" json:"meta"`                     // e.g. {"message_id": 123}
 	CreatedAt      time.Time `gorm:"index" json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 
@@ -1076,7 +1077,7 @@ type CustomFilter struct {
 	UserID     uint      `gorm:"index;not null" json:"user_id"`
 	Name       string    `gorm:"size:255;not null" json:"name"`
 	FilterType string    `gorm:"size:50;not null" json:"filter_type"` // conversation, contact
-	Query      string    `gorm:"type:text;not null" json:"query"`     // JSON filter query
+	Query      string    `gorm:"type:text;not null" json:"query"`      // JSON filter query
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
@@ -1110,7 +1111,7 @@ type Call struct {
 	InboxID         uint      `gorm:"index;not null" json:"inbox_id"`
 	ConversationID  *uint     `gorm:"index" json:"conversation_id"`
 	AgentID         *uint     `gorm:"index" json:"agent_id"`
-	Status          string    `gorm:"size:50;default:'initiated'" json:"status"`   // initiated, ringing, in_progress, completed, failed, rejected
+	Status          string    `gorm:"size:50;default:'initiated'" json:"status"` // initiated, ringing, in_progress, completed, failed, rejected
 	Direction       string    `gorm:"size:50;default:'outbound'" json:"direction"` // inbound, outbound
 	Duration        int       `gorm:"default:0" json:"duration"`                   // in seconds
 	RecordingURL    string    `gorm:"size:1024" json:"recording_url"`
@@ -1202,7 +1203,7 @@ type DataImport struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	AccountID        uint      `gorm:"index;not null" json:"account_id"`
 	SourceProvider   string    `gorm:"size:100;default:'csv'" json:"source_provider"` // csv, json
-	ImportType       string    `gorm:"size:100;not null" json:"import_type"`          // contacts, conversations
+	ImportType       string    `gorm:"size:100;not null" json:"import_type"`           // contacts, conversations
 	Status           string    `gorm:"size:50;default:'pending'" json:"status"`       // staged, validated, processing, completed, failed, cancelled, discarded
 	TotalRecords     int       `gorm:"default:0" json:"total_records"`
 	ProcessedRecords int       `gorm:"default:0" json:"processed_records"`
@@ -1413,20 +1414,20 @@ const (
 
 // CopilotThread represents a multi-turn AI assistant conversation thread
 type CopilotThread struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	AccountID      uint       `gorm:"index;not null" json:"account_id"`
-	UserID         uint       `gorm:"index;not null" json:"user_id"`
-	ConversationID *uint      `gorm:"index" json:"conversation_id,omitempty"`
-	AssistantID    *uint      `gorm:"index" json:"assistant_id,omitempty"`
-	Title          string     `gorm:"size:255;not null" json:"title"`
-	Status         string     `gorm:"size:50;default:'active';index" json:"status"` // active, archived, pinned
-	Context        string     `gorm:"type:text" json:"context,omitempty"`
-	Metadata       string     `gorm:"type:text" json:"metadata,omitempty"`
-	MessageCount   int        `gorm:"default:0" json:"message_count"`
-	TotalTokens    int        `gorm:"default:0" json:"total_tokens"`
-	LastMessageAt  *time.Time `gorm:"index" json:"last_message_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             uint                   `gorm:"primaryKey" json:"id"`
+	AccountID      uint                   `gorm:"index;not null" json:"account_id"`
+	UserID         uint                   `gorm:"index;not null" json:"user_id"`
+	ConversationID *uint                  `gorm:"index" json:"conversation_id,omitempty"`
+	AssistantID    *uint                  `gorm:"index" json:"assistant_id,omitempty"`
+	Title          string                 `gorm:"size:255;not null" json:"title"`
+	Status         string                 `gorm:"size:50;default:'active';index" json:"status"` // active, archived, pinned
+	Context        string                 `gorm:"type:text" json:"context,omitempty"`
+	Metadata       string                 `gorm:"type:text" json:"metadata,omitempty"`
+	MessageCount   int                    `gorm:"default:0" json:"message_count"`
+	TotalTokens    int                    `gorm:"default:0" json:"total_tokens"`
+	LastMessageAt  *time.Time             `gorm:"index" json:"last_message_at,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
 
 	Account      *Account               `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 	User         *User                  `gorm:"foreignKey:UserID" json:"user,omitempty"`
@@ -1437,19 +1438,19 @@ type CopilotThread struct {
 
 // CopilotThreadMessage represents a single message in a CopilotThread
 type CopilotThreadMessage struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	AccountID        uint      `gorm:"index;not null" json:"account_id"`
-	ThreadID         uint      `gorm:"index;not null" json:"thread_id"`
-	Role             string    `gorm:"size:50;not null;index" json:"role"` // user, assistant, system
-	Content          string    `gorm:"type:text;not null" json:"content"`
-	Citations        string    `gorm:"type:text" json:"citations,omitempty"`
-	SuggestedActions string    `gorm:"type:text" json:"suggested_actions,omitempty"`
-	TokenCount       int       `gorm:"default:0" json:"token_count"`
-	Feedback         string    `gorm:"size:50;default:'none'" json:"feedback"` // none, thumbs_up, thumbs_down
-	FeedbackNotes    string    `gorm:"type:text" json:"feedback_notes,omitempty"`
-	Metadata         string    `gorm:"type:text" json:"metadata,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               uint           `gorm:"primaryKey" json:"id"`
+	AccountID        uint           `gorm:"index;not null" json:"account_id"`
+	ThreadID         uint           `gorm:"index;not null" json:"thread_id"`
+	Role             string         `gorm:"size:50;not null;index" json:"role"` // user, assistant, system
+	Content          string         `gorm:"type:text;not null" json:"content"`
+	Citations        string         `gorm:"type:text" json:"citations,omitempty"`
+	SuggestedActions string         `gorm:"type:text" json:"suggested_actions,omitempty"`
+	TokenCount       int            `gorm:"default:0" json:"token_count"`
+	Feedback         string         `gorm:"size:50;default:'none'" json:"feedback"` // none, thumbs_up, thumbs_down
+	FeedbackNotes    string         `gorm:"type:text" json:"feedback_notes,omitempty"`
+	Metadata         string         `gorm:"type:text" json:"metadata,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 
 	Thread *CopilotThread `gorm:"foreignKey:ThreadID" json:"thread,omitempty"`
 }
@@ -1479,20 +1480,20 @@ const (
 type AICustomTool struct {
 	ID                   uint      `gorm:"primaryKey" json:"id"`
 	AccountID            uint      `gorm:"index;not null" json:"account_id"`
-	Name                 string    `gorm:"size:100;not null;index" json:"name"`                  // Function name e.g. query_order
-	Title                string    `gorm:"size:255;not null" json:"title"`                       // Display name e.g. 查询订单
-	Description          string    `gorm:"type:text;not null" json:"description"`                // Prompt definition for LLM
-	Category             string    `gorm:"size:100;default:'custom'" json:"category"`            // e.g. 订单插件, 物流插件
+	Name                 string    `gorm:"size:100;not null;index" json:"name"` // Function name e.g. query_order
+	Title                string    `gorm:"size:255;not null" json:"title"`       // Display name e.g. 查询订单
+	Description          string    `gorm:"type:text;not null" json:"description"` // Prompt definition for LLM
+	Category             string    `gorm:"size:100;default:'custom'" json:"category"` // e.g. 订单插件, 物流插件
 	ToolType             string    `gorm:"size:50;default:'internal_function'" json:"tool_type"` // internal_function, webhook, http_api
 	EndpointURL          string    `gorm:"size:1024" json:"endpoint_url,omitempty"`
 	HTTPMethod           string    `gorm:"size:10;default:'POST'" json:"http_method,omitempty"`
-	Headers              string    `gorm:"type:text" json:"headers,omitempty"`     // JSON Headers map
+	Headers              string    `gorm:"type:text" json:"headers,omitempty"` // JSON Headers map
 	InputSchema          string    `gorm:"type:text;not null" json:"input_schema"` // JSON Schema for parameters
 	OutputSchema         string    `gorm:"type:text" json:"output_schema,omitempty"`
 	PermissionLevel      string    `gorm:"size:50;default:'readonly'" json:"permission_level"` // readonly, write_confirm, write_strong_confirm
 	RequiresConfirmation bool      `gorm:"default:false" json:"requires_confirmation"`
 	TimeoutSeconds       int       `gorm:"default:10" json:"timeout_seconds"`
-	Status               string    `gorm:"size:50;default:'active';index" json:"status"`    // active, restricted, draft, deprecated
+	Status               string    `gorm:"size:50;default:'active';index" json:"status"` // active, restricted, draft, deprecated
 	Environment          string    `gorm:"size:50;default:'production'" json:"environment"` // production, staging, shadow
 	DailyCalls           int       `gorm:"default:0" json:"daily_calls"`
 	TotalCalls           int64     `gorm:"default:0" json:"total_calls"`
@@ -1500,28 +1501,28 @@ type AICustomTool struct {
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 
-	Account *Account `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	Account              *Account  `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 }
 
 // AIToolExecutionLog records execution and test results of custom AI tools
 type AIToolExecutionLog struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	AccountID      uint      `gorm:"index;not null" json:"account_id"`
-	ToolID         uint      `gorm:"index;not null" json:"tool_id"`
-	ToolName       string    `gorm:"size:100;not null;index" json:"tool_name"`
-	UserID         uint      `gorm:"index;not null" json:"user_id"`
-	ConversationID *uint     `gorm:"index" json:"conversation_id,omitempty"`
-	ExecutionMode  string    `gorm:"size:50;default:'production'" json:"execution_mode"` // test, production, shadow
-	InputParams    string    `gorm:"type:text" json:"input_params"`
-	OutputResult   string    `gorm:"type:text" json:"output_result"`
-	Status         string    `gorm:"size:50;not null;index" json:"status"` // success, failed, timeout, rejected_by_policy
-	ErrorMessage   string    `gorm:"type:text" json:"error_message,omitempty"`
-	LatencyMs      int64     `json:"latency_ms"`
-	TokensConsumed int       `gorm:"default:0" json:"tokens_consumed"`
-	CreatedAt      time.Time `gorm:"index" json:"created_at"`
+	ID             uint          `gorm:"primaryKey" json:"id"`
+	AccountID      uint          `gorm:"index;not null" json:"account_id"`
+	ToolID         uint          `gorm:"index;not null" json:"tool_id"`
+	ToolName       string        `gorm:"size:100;not null;index" json:"tool_name"`
+	UserID         uint          `gorm:"index;not null" json:"user_id"`
+	ConversationID *uint         `gorm:"index" json:"conversation_id,omitempty"`
+	ExecutionMode  string        `gorm:"size:50;default:'production'" json:"execution_mode"` // test, production, shadow
+	InputParams    string        `gorm:"type:text" json:"input_params"`
+	OutputResult   string        `gorm:"type:text" json:"output_result"`
+	Status         string        `gorm:"size:50;not null;index" json:"status"` // success, failed, timeout, rejected_by_policy
+	ErrorMessage   string        `gorm:"type:text" json:"error_message,omitempty"`
+	LatencyMs      int64         `json:"latency_ms"`
+	TokensConsumed int           `gorm:"default:0" json:"tokens_consumed"`
+	CreatedAt      time.Time     `gorm:"index" json:"created_at"`
 
-	Account *Account      `gorm:"foreignKey:AccountID" json:"account,omitempty"`
-	Tool    *AICustomTool `gorm:"foreignKey:ToolID" json:"tool,omitempty"`
+	Account        *Account      `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	Tool           *AICustomTool `gorm:"foreignKey:ToolID" json:"tool,omitempty"`
 }
 
 // Order represents an e-commerce / CRM order associated with customer interactions
@@ -1553,33 +1554,33 @@ type Order struct {
 
 // Ticket represents a service or escalation ticket created by agents, customer requests, or automated AI tools
 type Ticket struct {
-	ID               uint       `gorm:"primaryKey" json:"id"`
-	AccountID        uint       `gorm:"uniqueIndex:idx_account_ticket_num;index;not null" json:"account_id"`
-	TicketNumber     string     `gorm:"uniqueIndex:idx_account_ticket_num;size:100;not null" json:"ticket_number"`
-	Title            string     `gorm:"size:255;not null" json:"title"`
-	Description      string     `gorm:"type:text" json:"description"`
-	Status           string     `gorm:"size:50;default:'open';index" json:"status"` // open, pending, resolved, closed
-	Priority         string     `gorm:"size:50;default:'high'" json:"priority"`     // low, medium, high, urgent
-	AssignedGroup    string     `gorm:"size:100" json:"assigned_group"`
-	AssigneeID       *uint      `gorm:"index" json:"assignee_id"`
-	ContactID        *uint      `gorm:"index" json:"contact_id"`
-	ConversationID   *uint      `gorm:"index" json:"conversation_id"`
-	CreatorID        *uint      `gorm:"index" json:"creator_id"`
-	CustomAttributes string     `gorm:"type:text" json:"custom_attributes"`
-	SLAPolicyID      *uint      `gorm:"index" json:"sla_policy_id"`
-	DueAt            *time.Time `json:"due_at"`
-	ResolvedAt       *time.Time `json:"resolved_at"`
-	ClosedAt         *time.Time `json:"closed_at"`
-	SLAStatus        string     `gorm:"size:50;default:'normal'" json:"sla_status"` // normal, warning, breached, achieved
-	WaitingReason    string     `gorm:"size:255" json:"waiting_reason"`             // 等待事项（如：等待客户确认新发票抬头、补充报错截图等）
-	ResumeAt         *time.Time `json:"resume_at"`                                  // 预计恢复/唤醒处理时间
-	AutoCloseAt      *time.Time `json:"auto_close_at"`                              // 超时未回复自动关闭时间
-	ReminderCount    int        `gorm:"default:0" json:"reminder_count"`            // 已向客户发送提醒的次数
-	LastRemindedAt   *time.Time `json:"last_reminded_at"`                           // 最近一次提醒时间
-	StatusReason     string     `gorm:"size:255" json:"status_reason"`              // 状态变更说明
-	Version          int        `gorm:"default:1;not null" json:"version"`          // 乐观并发控制版本号
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID               uint             `gorm:"primaryKey" json:"id"`
+	AccountID        uint             `gorm:"uniqueIndex:idx_account_ticket_num;index;not null" json:"account_id"`
+	TicketNumber     string           `gorm:"uniqueIndex:idx_account_ticket_num;size:100;not null" json:"ticket_number"`
+	Title            string           `gorm:"size:255;not null" json:"title"`
+	Description      string           `gorm:"type:text" json:"description"`
+	Status           string           `gorm:"size:50;default:'open';index" json:"status"` // open, pending, resolved, closed
+	Priority         string           `gorm:"size:50;default:'high'" json:"priority"`     // low, medium, high, urgent
+	AssignedGroup    string           `gorm:"size:100" json:"assigned_group"`
+	AssigneeID       *uint            `gorm:"index" json:"assignee_id"`
+	ContactID        *uint            `gorm:"index" json:"contact_id"`
+	ConversationID   *uint            `gorm:"index" json:"conversation_id"`
+	CreatorID        *uint            `gorm:"index" json:"creator_id"`
+	CustomAttributes string           `gorm:"type:text" json:"custom_attributes"`
+	SLAPolicyID      *uint            `gorm:"index" json:"sla_policy_id"`
+	DueAt            *time.Time       `json:"due_at"`
+	ResolvedAt       *time.Time       `json:"resolved_at"`
+	ClosedAt         *time.Time       `json:"closed_at"`
+	SLAStatus        string           `gorm:"size:50;default:'normal'" json:"sla_status"` // normal, warning, breached, achieved
+	WaitingReason    string           `gorm:"size:255" json:"waiting_reason"`             // 等待事项（如：等待客户确认新发票抬头、补充报错截图等）
+	ResumeAt         *time.Time       `json:"resume_at"`                                  // 预计恢复/唤醒处理时间
+	AutoCloseAt      *time.Time       `json:"auto_close_at"`                              // 超时未回复自动关闭时间
+	ReminderCount    int              `gorm:"default:0" json:"reminder_count"`            // 已向客户发送提醒的次数
+	LastRemindedAt   *time.Time       `json:"last_reminded_at"`                           // 最近一次提醒时间
+	StatusReason     string           `gorm:"size:255" json:"status_reason"`              // 状态变更说明
+	Version          int              `gorm:"default:1;not null" json:"version"`          // 乐观并发控制版本号
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
 
 	Account         *Account              `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 	Contact         *Contact              `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
@@ -1661,6 +1662,8 @@ type TicketStatusHistory struct {
 
 	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }
+
+
 
 // CustomRole defines custom agent role and granular permissions
 type CustomRole struct {
@@ -1792,16 +1795,16 @@ const (
 
 // QAScorecard defines a quality assurance scorecard template
 type QAScorecard struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	AccountID    uint      `gorm:"index;not null" json:"account_id"`
-	Name         string    `gorm:"size:100;not null" json:"name"`
-	Description  string    `gorm:"size:255" json:"description"`
-	TotalScore   int       `gorm:"default:100" json:"total_score"`
-	PassingScore int       `gorm:"default:85" json:"passing_score"`
-	Status       string    `gorm:"size:20;default:'active'" json:"status"` // active, archived
-	Version      int       `gorm:"default:1;not null" json:"version"`      // 模板版本控制
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uint          `gorm:"primaryKey" json:"id"`
+	AccountID    uint          `gorm:"index;not null" json:"account_id"`
+	Name         string        `gorm:"size:100;not null" json:"name"`
+	Description  string        `gorm:"size:255" json:"description"`
+	TotalScore   int           `gorm:"default:100" json:"total_score"`
+	PassingScore int           `gorm:"default:85" json:"passing_score"`
+	Status       string        `gorm:"size:20;default:'active'" json:"status"` // active, archived
+	Version      int           `gorm:"default:1;not null" json:"version"`      // 模板版本控制
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
 
 	Criteria []QACriterion `gorm:"foreignKey:ScorecardID" json:"criteria,omitempty"`
 }
@@ -1829,7 +1832,7 @@ type QASamplingRule struct {
 	TargetType          string    `gorm:"size:20;not null" json:"target_type"` // conversation, ticket
 	ScorecardID         uint      `gorm:"index;not null" json:"scorecard_id"`
 	SamplingRate        float64   `gorm:"default:10.0" json:"sampling_rate"` // percentage or batch count
-	Conditions          string    `gorm:"type:text" json:"conditions"`       // JSON filters (teams, low rating, breach etc.)
+	Conditions          string    `gorm:"type:text" json:"conditions"`        // JSON filters (teams, low rating, breach etc.)
 	AssignedInspectorID *uint     `gorm:"index" json:"assigned_inspector_id"`
 	Status              string    `gorm:"size:20;default:'active'" json:"status"` // active, disabled
 	CreatedAt           time.Time `json:"created_at"`
@@ -1844,7 +1847,7 @@ type QATask struct {
 	ID                 uint       `gorm:"primaryKey" json:"id"`
 	AccountID          uint       `gorm:"uniqueIndex:idx_account_task_num;index;not null" json:"account_id"`
 	TaskNumber         string     `gorm:"uniqueIndex:idx_account_task_num;size:50;not null" json:"task_number"` // e.g. QA-20260912-0001
-	TargetType         string     `gorm:"size:20;not null" json:"target_type"`                                  // conversation, ticket
+	TargetType         string     `gorm:"size:20;not null" json:"target_type"` // conversation, ticket
 	TargetID           uint       `gorm:"index;not null" json:"target_id"`
 	TargetRef          string     `gorm:"size:100" json:"target_ref"` // e.g. 会话 #10842, 工单 TK-240720-008
 	ScorecardID        uint       `gorm:"index;not null" json:"scorecard_id"`
@@ -1861,7 +1864,7 @@ type QATask struct {
 	Feedback           string     `gorm:"type:text" json:"feedback"`
 	RectificationPlan  string     `gorm:"type:text" json:"rectification_plan"`
 	RectifiedAt        *time.Time `json:"rectified_at"`
-	SecondInspectorID  *uint      `gorm:"index" json:"second_inspector_id,omitempty"`         // 双人复核/校准质检员
+	SecondInspectorID  *uint      `gorm:"index" json:"second_inspector_id,omitempty"` // 双人复核/校准质检员
 	SecondReviewStatus string     `gorm:"size:30;default:'none'" json:"second_review_status"` // none, pending, approved, disputed
 	SecondReviewNotes  string     `gorm:"type:text" json:"second_review_notes,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
@@ -1891,27 +1894,27 @@ type QAEvaluationScore struct {
 
 // QAAppeal records appeals and independent review against QA results
 type QAAppeal struct {
-	ID                   uint       `gorm:"primaryKey" json:"id"`
-	AccountID            uint       `gorm:"uniqueIndex:idx_account_appeal_num;index;not null" json:"account_id"`
-	TaskID               uint       `gorm:"index;not null" json:"task_id"`
-	AppealNumber         string     `gorm:"uniqueIndex:idx_account_appeal_num;size:50;not null" json:"appeal_number"` // e.g. AP-20260912-0001
-	AppellantID          uint       `gorm:"index;not null" json:"appellant_id"`
-	OriginalScore        int        `json:"original_score"`
-	OriginalFatal        bool       `gorm:"default:false" json:"original_fatal"`
-	AdjustedScore        *int       `json:"adjusted_score"`
-	RevokeFatal          bool       `gorm:"default:false" json:"revoke_fatal"`
-	DemandType           string     `gorm:"size:50;default:'score_adjustment'" json:"demand_type"` // score_adjustment, revoke_fatal, re_inspection
-	DisputedCriterionIDs string     `gorm:"type:text" json:"disputed_criterion_ids"`               // JSON array of criterion IDs
-	Reason               string     `gorm:"type:text;not null" json:"reason"`
-	EvidenceNotes        string     `gorm:"type:text" json:"evidence_notes"`
-	EvidenceURLs         string     `gorm:"type:text" json:"evidence_urls"` // JSON array of attachment URLs
-	EvidenceFrozen       bool       `gorm:"default:false" json:"evidence_frozen"`
-	ReviewerID           *uint      `gorm:"index" json:"reviewer_id"`                // 回避原则：不能与 Task.InspectorID 相同
-	Status               string     `gorm:"size:30;default:'pending'" json:"status"` // pending, under_review, need_evidence, upheld, adjusted, rejected
-	ReviewComments       string     `gorm:"type:text" json:"review_comments"`
-	ReviewedAt           *time.Time `json:"reviewed_at"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	ID                    uint       `gorm:"primaryKey" json:"id"`
+	AccountID             uint       `gorm:"uniqueIndex:idx_account_appeal_num;index;not null" json:"account_id"`
+	TaskID                uint       `gorm:"index;not null" json:"task_id"`
+	AppealNumber          string     `gorm:"uniqueIndex:idx_account_appeal_num;size:50;not null" json:"appeal_number"` // e.g. AP-20260912-0001
+	AppellantID           uint       `gorm:"index;not null" json:"appellant_id"`
+	OriginalScore         int        `json:"original_score"`
+	OriginalFatal         bool       `gorm:"default:false" json:"original_fatal"`
+	AdjustedScore         *int       `json:"adjusted_score"`
+	RevokeFatal           bool       `gorm:"default:false" json:"revoke_fatal"`
+	DemandType            string     `gorm:"size:50;default:'score_adjustment'" json:"demand_type"` // score_adjustment, revoke_fatal, re_inspection
+	DisputedCriterionIDs  string     `gorm:"type:text" json:"disputed_criterion_ids"`               // JSON array of criterion IDs
+	Reason                string     `gorm:"type:text;not null" json:"reason"`
+	EvidenceNotes         string     `gorm:"type:text" json:"evidence_notes"`
+	EvidenceURLs          string     `gorm:"type:text" json:"evidence_urls"` // JSON array of attachment URLs
+	EvidenceFrozen        bool       `gorm:"default:false" json:"evidence_frozen"`
+	ReviewerID            *uint      `gorm:"index" json:"reviewer_id"`               // 回避原则：不能与 Task.InspectorID 相同
+	Status                string     `gorm:"size:30;default:'pending'" json:"status"` // pending, under_review, need_evidence, upheld, adjusted, rejected
+	ReviewComments        string     `gorm:"type:text" json:"review_comments"`
+	ReviewedAt            *time.Time `json:"reviewed_at"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 
 	Task       *QATask            `gorm:"foreignKey:TaskID" json:"task,omitempty"`
 	Appellant  *User              `gorm:"foreignKey:AppellantID" json:"appellant,omitempty"`
@@ -1935,14 +1938,14 @@ type QAAppealActivity struct {
 
 // InboxMessageTemplate represents a persistent WhatsApp or channel message template stored in database
 type InboxMessageTemplate struct {
-	ID                 uint       `gorm:"primaryKey" json:"id"`
-	AccountID          uint       `gorm:"index;not null" json:"account_id"`
-	InboxID            uint       `gorm:"index;not null" json:"inbox_id"`
-	Name               string     `gorm:"size:255;not null;index" json:"name"`
-	Status             string     `gorm:"size:50;not null;default:'APPROVED'" json:"status"`  // APPROVED, PENDING, REJECTED, PAUSED
-	Category           string     `gorm:"size:50;not null;default:'UTILITY'" json:"category"` // UTILITY, MARKETING, AUTHENTICATION
-	Language           string     `gorm:"size:20;not null;default:'en_US'" json:"language"`
-	Components         string     `gorm:"type:text" json:"components"` // JSON array of components
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	AccountID          uint      `gorm:"index;not null" json:"account_id"`
+	InboxID            uint      `gorm:"index;not null" json:"inbox_id"`
+	Name               string    `gorm:"size:255;not null;index" json:"name"`
+	Status             string    `gorm:"size:50;not null;default:'APPROVED'" json:"status"` // APPROVED, PENDING, REJECTED, PAUSED
+	Category           string    `gorm:"size:50;not null;default:'UTILITY'" json:"category"` // UTILITY, MARKETING, AUTHENTICATION
+	Language           string    `gorm:"size:20;not null;default:'en_US'" json:"language"`
+	Components         string    `gorm:"type:text" json:"components"` // JSON array of components
 	ProviderTemplateID string     `gorm:"size:255" json:"provider_template_id,omitempty"`
 	RejectedReason     string     `gorm:"type:text" json:"rejected_reason,omitempty"`
 	LastSyncAt         *time.Time `json:"last_sync_at,omitempty"`
@@ -1952,3 +1955,5 @@ type InboxMessageTemplate struct {
 
 	Inbox *Inbox `gorm:"foreignKey:InboxID" json:"inbox,omitempty"`
 }
+
+
