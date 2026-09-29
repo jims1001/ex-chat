@@ -425,11 +425,18 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-contact-merge-consumer",
+      "acceptanceStatus": "queries-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
         "cus.contact.merged.v1"
+      ],
+      "implementedIndependentQueries": [
+        "msg.messages.list.v1",
+        "msg.message.get.v1",
+        "msg.delivery_status.get.v1",
+        "msg.email_delivery.get.v1",
+        "msg.account_deletion_status.get.v1"
       ]
     },
     {

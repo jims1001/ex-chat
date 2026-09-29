@@ -856,6 +856,73 @@ func TestCONConversationGetAndListExposeOwnerSafeViews(t *testing.T) {
 	}
 }
 
+func TestMSGQueriesExposeOwnerSafeViewsAndDeletionCounts(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	messages := []domain.Message{{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeContact, SenderID: 21, MessageType: domain.MessageTypeIncoming, ContentType: "text", Content: "public", Status: "sent"}, {AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "private-note", Private: true, Status: "delivered"}, {AccountID: 92, ConversationID: 22, SenderType: domain.SenderTypeContact, SenderID: 32, MessageType: domain.MessageTypeIncoming, ContentType: "text", Content: "foreign", Status: "sent"}}
+	if err := db.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.Attachment{AccountID: 91, MessageID: messages[0].ID, FileType: "text/plain", DataURL: "med://asset/1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.DraftMessage{AccountID: 91, ConversationID: 11, UserID: 7, Message: "draft"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversationID := uint(11)
+	email := domain.EmailLog{AccountID: 91, ConversationID: &conversationID, EmailType: "transcript", ToEmail: "secret@example.test", FromEmail: "private@example.test", Subject: "Secret", ContentText: "body", Status: "sent", DeliveryStatus: "delivered", MaxRetries: 3}
+	if err := db.Create(&email).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	base := foundation.QueryEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	call := func(path string, payload foundation.QueryEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, "msg-query-correlation")
+		})
+	}
+	get := base
+	get.QueryType, get.Filter = "msg.message.get.v1", map[string]any{"id": messages[0].ID}
+	response := call("/contracts/queries/msg.message.get.v1", get)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"public"`) || strings.Contains(response.Body.String(), "translations") || strings.Contains(response.Body.String(), "content_attributes") {
+		t.Fatalf("get=%d body=%s", response.Code, response.Body.String())
+	}
+	list := base
+	list.QueryType, list.Filter = "msg.messages.list.v1", map[string]any{"conversation_id": 11}
+	response = call("/contracts/queries/msg.messages.list.v1", list)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total":1`) || strings.Contains(response.Body.String(), "private-note") || strings.Contains(response.Body.String(), "foreign") {
+		t.Fatalf("list=%d body=%s", response.Code, response.Body.String())
+	}
+	delivery := base
+	delivery.QueryType, delivery.Filter = "msg.delivery_status.get.v1", map[string]any{"id": messages[1].ID}
+	response = call("/contracts/queries/msg.delivery_status.get.v1", delivery)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"delivered"`) || strings.Contains(response.Body.String(), "private-note") {
+		t.Fatalf("delivery=%d body=%s", response.Code, response.Body.String())
+	}
+	emailQuery := base
+	emailQuery.QueryType, emailQuery.Filter = "msg.email_delivery.get.v1", map[string]any{"id": email.ID}
+	response = call("/contracts/queries/msg.email_delivery.get.v1", emailQuery)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"delivery_status":"delivered"`) || strings.Contains(response.Body.String(), "secret@example.test") || strings.Contains(response.Body.String(), "Secret") {
+		t.Fatalf("email=%d body=%s", response.Code, response.Body.String())
+	}
+	deletion := base
+	deletion.QueryType, deletion.Filter = "msg.account_deletion_status.get.v1", map[string]any{}
+	response = call("/contracts/queries/msg.account_deletion_status.get.v1", deletion)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"message_count":2`) || !strings.Contains(response.Body.String(), `"attachment_count":1`) || !strings.Contains(response.Body.String(), `"draft_count":1`) || !strings.Contains(response.Body.String(), `"email_log_count":1`) {
+		t.Fatalf("deletion=%d body=%s", response.Code, response.Body.String())
+	}
+	cross := get
+	cross.AccountID = 92
+	if response := call("/contracts/queries/msg.message.get.v1", cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

@@ -84,6 +84,24 @@ type conversationView struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
+type messageView struct {
+	ID             uint       `json:"id"`
+	AccountID      uint       `json:"account_id"`
+	ConversationID uint       `json:"conversation_id"`
+	SenderType     string     `json:"sender_type"`
+	SenderID       uint       `json:"sender_id"`
+	MessageType    string     `json:"message_type"`
+	ContentType    string     `json:"content_type"`
+	Content        string     `json:"content"`
+	Private        bool       `json:"private"`
+	Status         string     `json:"status"`
+	Deleted        bool       `json:"deleted"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+	EditedAt       *time.Time `json:"edited_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 type accountView struct {
 	ID       uint   `json:"id"`
 	Name     string `json:"name"`
@@ -1470,6 +1488,94 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return nil
 		})
 	case "MSG":
+		if err := r.Contracts.RegisterQuery("msg.message.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			messageID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message id is required"}
+			}
+			var message domain.Message
+			if err := r.DB.Where("account_id = ? AND id = ?", query.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			return messageFromModel(message), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("msg.messages.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			conversationID, err := uintFilter(query.Filter, "conversation_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
+			}
+			statement := r.DB.Where("account_id = ? AND conversation_id = ?", query.AccountID, conversationID)
+			if includePrivate, ok := query.Filter["include_private"].(bool); !ok || !includePrivate {
+				statement = statement.Where("private = ?", false)
+			}
+			var total int64
+			if err := statement.Model(&domain.Message{}).Count(&total).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			page := 1
+			if parsed, err := strconv.Atoi(query.Page); err == nil && parsed > 0 {
+				page = parsed
+			}
+			var messages []domain.Message
+			if err := statement.Order("id ASC").Offset((page - 1) * 50).Limit(50).Find(&messages).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			items := make([]messageView, 0, len(messages))
+			for _, message := range messages {
+				items = append(items, messageFromModel(message))
+			}
+			return map[string]any{"items": items, "total": total, "page": page, "page_size": 50}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("msg.delivery_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			messageID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message id is required"}
+			}
+			var message domain.Message
+			if err := r.DB.Select("id", "account_id", "conversation_id", "status", "deleted", "created_at", "updated_at").Where("account_id = ? AND id = ?", query.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			return map[string]any{"id": message.ID, "account_id": message.AccountID, "conversation_id": message.ConversationID, "status": message.Status, "deleted": message.Deleted, "created_at": message.CreatedAt, "updated_at": message.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("msg.email_delivery.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			emailID, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "email delivery id is required"}
+			}
+			var email domain.EmailLog
+			if err := r.DB.Select("id", "account_id", "conversation_id", "email_type", "status", "delivery_status", "retry_count", "max_retries", "next_retry_at", "last_attempt_at", "created_at", "updated_at").Where("account_id = ? AND id = ?", query.AccountID, emailID).First(&email).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "email delivery was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "email delivery store is unavailable"}
+			}
+			return map[string]any{"id": email.ID, "account_id": email.AccountID, "conversation_id": email.ConversationID, "email_type": email.EmailType, "status": email.Status, "delivery_status": email.DeliveryStatus, "retry_count": email.RetryCount, "max_retries": email.MaxRetries, "next_retry_at": email.NextRetryAt, "last_attempt_at": email.LastAttemptAt, "created_at": email.CreatedAt, "updated_at": email.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("msg.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			counts := map[string]int64{}
+			for name, statement := range map[string]*gorm.DB{"message_count": r.DB.Model(&domain.Message{}).Where("account_id = ?", query.AccountID), "attachment_count": r.DB.Model(&domain.Attachment{}).Where("account_id = ?", query.AccountID), "draft_count": r.DB.Model(&domain.DraftMessage{}).Where("account_id = ?", query.AccountID), "email_log_count": r.DB.Model(&domain.EmailLog{}).Where("account_id = ?", query.AccountID)} {
+				var count int64
+				if err := statement.Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			counts["account_id"] = int64(query.AccountID)
+			return counts, nil
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {
@@ -2016,6 +2122,10 @@ func conversationFromModel(db *gorm.DB, conversation *domain.Conversation) (*con
 		return nil, err
 	}
 	return view, nil
+}
+
+func messageFromModel(message domain.Message) messageView {
+	return messageView{ID: message.ID, AccountID: message.AccountID, ConversationID: message.ConversationID, SenderType: message.SenderType, SenderID: message.SenderID, MessageType: message.MessageType, ContentType: message.ContentType, Content: message.Content, Private: message.Private, Status: message.Status, Deleted: message.Deleted, DeletedAt: message.DeletedAt, EditedAt: message.EditedAt, CreatedAt: message.CreatedAt, UpdatedAt: message.UpdatedAt}
 }
 
 func mediaCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {
