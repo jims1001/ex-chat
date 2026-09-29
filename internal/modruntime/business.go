@@ -1704,6 +1704,56 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("msg.read_position.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "conversation" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation target is required"}
+			}
+			parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsed == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation target is invalid"}
+			}
+			conversationID := uint(parsed)
+			messageID, messageErr := uintFilter(command.Input, "message_id")
+			userID, userErr := uintFilter(command.Input, "user_id")
+			if messageErr != nil || userErr != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message_id and user_id are required"}
+			}
+			tenDependency, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "reader validation is unavailable"}
+			}
+			if err := newModuleClient("MSG", tenDependency, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, userID); err != nil {
+				return nil, err
+			}
+			tx := Transaction(ctx, r.DB)
+			var message domain.Message
+			if err := tx.Select("id", "account_id", "conversation_id").Where("account_id = ? AND conversation_id = ? AND id = ?", command.AccountID, conversationID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			aggregateID := fmt.Sprintf("%d:%d", conversationID, userID)
+			var rows []domain.LocalChangeJournal
+			if err := tx.Where("source_module = ? AND action = ? AND object_type = ? AND object_display_id = ?", "MSG", "event_outbox", "ReadPosition", aggregateID).Order("object_version_after DESC").Limit(1).Find(&rows).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "read position store is unavailable"}
+			}
+			if len(rows) == 1 {
+				var prior foundation.EventEnvelope
+				if json.Unmarshal([]byte(rows[0].AfterState), &prior) == nil {
+					if previous, err := uintFilter(prior.Payload, "message_id"); err == nil && previous > messageID {
+						return nil, &ContractFailure{Type: "state_conflict", Message: "read position cannot move backward"}
+					} else if err == nil && previous == messageID {
+						return map[string]any{"account_id": command.AccountID, "conversation_id": conversationID, "user_id": userID, "message_id": messageID}, nil
+					}
+				}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "msg.read_position.changed.v1", "ReadPosition", aggregateID, []string{"message_id"}, map[string]any{"conversation_id": conversationID, "user_id": userID, "message_id": messageID}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "conversation_id": conversationID, "user_id": userID, "message_id": messageID}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("msg.message.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			messageID, err := uintFilter(query.Filter, "id")
 			if err != nil {

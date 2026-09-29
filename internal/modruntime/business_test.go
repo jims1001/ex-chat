@@ -1152,6 +1152,73 @@ func TestMSGProviderStatusAndRetryEnforceMonotonicOwnerState(t *testing.T) {
 	}
 }
 
+func TestMSGReadPositionUsesMonotonicJournalFactAndMemberBoundary(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "user is invalid"}
+		}
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["MSG"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "MSG")
+	messages := []domain.Message{{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeContact, SenderID: 21, MessageType: domain.MessageTypeIncoming, Content: "one", Status: domain.MessageStatusSent}, {AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeContact, SenderID: 21, MessageType: domain.MessageTypeIncoming, Content: "two", Status: domain.MessageStatusSent}, {AccountID: 92, ConversationID: 22, SenderType: domain.SenderTypeContact, SenderID: 32, MessageType: domain.MessageTypeIncoming, Content: "foreign", Status: domain.MessageStatusSent}}
+	if err := db.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/msg.read_position.update.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "read-position-1", CommandType: "msg.read_position.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: "11"}, Input: map[string]any{"message_id": messages[1].ID, "user_id": 7}, IdempotencyKey: "read-position-key", CorrelationID: "read-position-correlation", CausationID: "read-position-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.delivery_status.get.v1"}}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"message_id":`+strconv.FormatUint(uint64(messages[1].ID), 10)) {
+			t.Fatalf("read position=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	same := command
+	same.CommandID, same.IdempotencyKey, same.CorrelationID = "read-position-2", "read-position-same", "read-position-same-correlation"
+	if response := call(same); response.Code != http.StatusOK {
+		t.Fatalf("same=%d body=%s", response.Code, response.Body.String())
+	}
+	backward := command
+	backward.CommandID, backward.IdempotencyKey, backward.CorrelationID = "read-position-3", "read-position-backward", "read-position-backward-correlation"
+	backward.Input = map[string]any{"message_id": messages[0].ID, "user_id": 7}
+	if response := call(backward); response.Code != http.StatusConflict {
+		t.Fatalf("backward=%d body=%s", response.Code, response.Body.String())
+	}
+	denied := command
+	denied.CommandID, denied.IdempotencyKey, denied.CorrelationID = "read-position-4", "read-position-denied", "read-position-denied-correlation"
+	denied.Input = map[string]any{"message_id": messages[1].ID, "user_id": 9}
+	if response := call(denied); response.Code != http.StatusNotFound {
+		t.Fatalf("denied=%d body=%s", response.Code, response.Body.String())
+	}
+	var events int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%msg.read_position.changed.v1%").Count(&events).Error
+	if events != 1 {
+		t.Fatalf("read position events=%d", events)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()
