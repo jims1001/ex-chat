@@ -2729,6 +2729,90 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("qlt.review.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			targetType, _ := command.Input["target_type"].(string)
+			targetType = strings.ToLower(strings.TrimSpace(targetType))
+			if targetType != "conversation" && targetType != "ticket" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "target_type must be conversation or ticket"}
+			}
+			targetID, err := uintFilter(command.Input, "target_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "target_id is required"}
+			}
+			scorecardID, err := uintFilter(command.Input, "scorecard_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "scorecard_id is required"}
+			}
+			var scorecard domain.QAScorecard
+			result := r.DB.Where("account_id = ? AND id = ? AND status = ?", command.AccountID, scorecardID, "active").First(&scorecard)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "active scorecard was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "scorecard store is unavailable"}
+			}
+			inspectorID, err := optionalUint(command.Input["inspector_id"])
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inspector_id is invalid"}
+			}
+			if inspectorID == nil {
+				parsed, parseErr := strconv.ParseUint(command.Actor.ID, 10, 64)
+				if parseErr != nil || parsed == 0 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "numeric inspector actor is required"}
+				}
+				value := uint(parsed)
+				inspectorID = &value
+			}
+			tenConfig, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN validation is unavailable"}
+			}
+			if err := newModuleClient("QLT", tenConfig, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, *inspectorID); err != nil {
+				return nil, err
+			}
+			var agentID *uint
+			var targetRef string
+			dependency, ok := r.Config.Dependencies[strings.ToUpper(map[string]string{"conversation": "CON", "ticket": "TKT"}[targetType])]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: strings.ToUpper(targetType) + " validation is unavailable"}
+			}
+			if targetType == "conversation" {
+				query := foundation.QueryEnvelope{QueryType: "con.conversation.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": targetID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "display_id", "assignee_id"}, Consistency: "strong", RequestedAt: command.RequestedAt}
+				var conversation conversationView
+				if err := newModuleClient("QLT", dependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &conversation); err != nil {
+					return nil, err
+				}
+				agentID = conversation.AssigneeID
+				targetRef = fmt.Sprintf("Conversation #%d", conversation.DisplayID)
+			} else {
+				query := foundation.QueryEnvelope{QueryType: "tkt.ticket.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": targetID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "ticket_number", "assignee_id"}, Consistency: "strong", RequestedAt: command.RequestedAt}
+				var ticket ticketView
+				if err := newModuleClient("QLT", dependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &ticket); err != nil {
+					return nil, err
+				}
+				agentID = ticket.AssigneeID
+				targetRef = ticket.TicketNumber
+			}
+			dueAt := time.Now().UTC().Add(24 * time.Hour)
+			if raw, exists := command.Input["due_at"].(string); exists && strings.TrimSpace(raw) != "" {
+				parsed, parseErr := time.Parse(time.RFC3339, raw)
+				if parseErr != nil || !parsed.After(time.Now().UTC()) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "due_at must be a future RFC3339 timestamp"}
+				}
+				dueAt = parsed.UTC()
+			}
+			now := time.Now().UTC()
+			task := domain.QATask{AccountID: command.AccountID, TaskNumber: "QA-" + strings.ToUpper(strings.ReplaceAll(foundation.GenerateUUID(), "-", "")[:12]), TargetType: targetType, TargetID: targetID, TargetRef: targetRef, ScorecardID: scorecard.ID, ScorecardName: scorecard.Name, InspectorID: inspectorID, AgentID: agentID, DueAt: &dueAt, Status: "pending", Result: "待评分", SecondReviewStatus: "none", CreatedAt: now, UpdatedAt: now}
+			if err := Transaction(ctx, r.DB).Create(&task).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "quality review could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "qlt.quality_review.changed.v1", "QATask", strconv.FormatUint(uint64(task.ID), 10), []string{"created"}, map[string]any{"task_id": task.ID, "task_number": task.TaskNumber, "target_type": task.TargetType, "target_id": task.TargetID, "status": task.Status}); err != nil {
+				return nil, err
+			}
+			return qualityReviewFromModel(&task), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("qlt.csat.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			var survey domain.CSATSurvey
 			statement := r.DB.Where("account_id = ?", query.AccountID)

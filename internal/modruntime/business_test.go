@@ -4526,3 +4526,114 @@ func TestQLTSurveyCreateAndSubmitUseCONOwnerAndCommitAtomically(t *testing.T) {
 		t.Fatalf("invalid rating status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestQLTReviewCreateValidatesScorecardTargetAndInspectorOwners(t *testing.T) {
+	now := time.Now().UTC()
+	conDB := newModuleTestDB(t, "CON")
+	agentID := uint(17)
+	conversation := domain.Conversation{AccountID: 91, UUID: "quality-target-91", DisplayID: 8101, InboxID: 21, ContactID: 31, AssigneeID: &agentID, Status: domain.ConversationStatusResolved, Priority: domain.PriorityHigh, ObjectVersion: 1, CreatedAt: now, UpdatedAt: now}
+	if err := conDB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["QLT"] = true
+	conRuntime := Runtime{Config: conCfg, DB: conDB, Contracts: NewContractRegistry("CON")}
+	if err := conRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	conServer := httptest.NewServer(conRuntime.Handler())
+	defer conServer.Close()
+	tktDB := newModuleTestDB(t, "TKT")
+	ticket := domain.Ticket{AccountID: 91, TicketNumber: "TKT-QLT-91", Title: "Quality target", Status: "resolved", Priority: domain.PriorityHigh, AssigneeID: &agentID, SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := tktDB.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	tktCfg := businessConfig("TKT")
+	tktCfg.AllowedCallers["QLT"] = true
+	tktRuntime := Runtime{Config: tktCfg, DB: tktDB, Contracts: NewContractRegistry("TKT")}
+	if err := tktRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	tktServer := httptest.NewServer(tktRuntime.Handler())
+	defer tktServer.Close()
+
+	tenDB := newModuleTestDB(t, "TEN")
+	if err := tenDB.Create(&domain.AccountUser{AccountID: 91, UserID: 7, Role: domain.RoleAdministrator, Availability: domain.AvailabilityOnline}).Error; err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["QLT"] = true
+	tenCfg.Dependencies["IAM"] = DependencyConfig{URL: "http://127.0.0.1:1", Token: "unused"}
+	tenRuntime := Runtime{Config: tenCfg, DB: tenDB, Contracts: NewContractRegistry("TEN")}
+	if err := tenRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	tenServer := httptest.NewServer(tenRuntime.Handler())
+	defer tenServer.Close()
+
+	db := newModuleTestDB(t, "QLT")
+	scorecard := domain.QAScorecard{AccountID: 91, Name: "Support Quality", TotalScore: 100, PassingScore: 85, Status: "active", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&scorecard).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignScorecard := domain.QAScorecard{AccountID: 92, Name: "Foreign", TotalScore: 100, PassingScore: 85, Status: "active", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreignScorecard).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("QLT")
+	cfg.Dependencies["CON"] = DependencyConfig{URL: conServer.URL, Token: conCfg.AuthToken}
+	cfg.Dependencies["TKT"] = DependencyConfig{URL: tktServer.URL, Token: tktCfg.AuthToken}
+	cfg.Dependencies["TEN"] = DependencyConfig{URL: tenServer.URL, Token: tenCfg.AuthToken}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("QLT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/qlt.review.create.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	command := foundation.CommandEnvelope{CommandID: "qlt-review-create", CommandType: "qlt.review.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"target_type": "conversation", "target_id": conversation.ID, "scorecard_id": scorecard.ID}, IdempotencyKey: "qlt-review-create-91", CorrelationID: "qlt-review-correlation", CausationID: "quality-sampling", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "qlt.review.get.v1"}}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Support Quality") || !strings.Contains(response.Body.String(), `"target_id":1`) {
+			t.Fatalf("review create status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var task domain.QATask
+	if err := db.Where("account_id = ?", 91).First(&task).Error; err != nil || task.AgentID == nil || *task.AgentID != agentID || task.InspectorID == nil || *task.InspectorID != 7 {
+		t.Fatalf("stored task=%+v err=%v", task, err)
+	}
+	ticketCommand := command
+	ticketCommand.CommandID, ticketCommand.IdempotencyKey = "qlt-ticket-review-create", "qlt-ticket-review-create-91"
+	ticketCommand.Input = map[string]any{"target_type": "ticket", "target_id": ticket.ID, "scorecard_id": scorecard.ID}
+	if response := call(ticketCommand); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "TKT-QLT-91") {
+		t.Fatalf("ticket review status=%d body=%s", response.Code, response.Body.String())
+	}
+	badScorecard := command
+	badScorecard.CommandID, badScorecard.IdempotencyKey = "qlt-review-foreign-scorecard", "qlt-review-foreign-scorecard"
+	badScorecard.Input = map[string]any{"target_type": "conversation", "target_id": conversation.ID, "scorecard_id": foreignScorecard.ID}
+	if response := call(badScorecard); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign scorecard status=%d body=%s", response.Code, response.Body.String())
+	}
+	badInspector := command
+	badInspector.CommandID, badInspector.IdempotencyKey = "qlt-review-foreign-inspector", "qlt-review-foreign-inspector"
+	badInspector.Input = map[string]any{"target_type": "conversation", "target_id": conversation.ID, "scorecard_id": scorecard.ID, "inspector_id": 99}
+	if response := call(badInspector); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign inspector status=%d body=%s", response.Code, response.Body.String())
+	}
+	foreignTarget := command
+	foreignTarget.CommandID, foreignTarget.IdempotencyKey = "qlt-review-foreign-target", "qlt-review-foreign-target"
+	foreignTarget.Input = map[string]any{"target_type": "conversation", "target_id": 99999, "scorecard_id": scorecard.ID}
+	if response := call(foreignTarget); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign target status=%d body=%s", response.Code, response.Body.String())
+	}
+	var taskCount, eventCount int64
+	_ = db.Model(&domain.QATask{}).Where("account_id = ?", 91).Count(&taskCount).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%qlt.quality_review.changed.v1%").Count(&eventCount).Error
+	if taskCount != 2 || eventCount != 2 {
+		t.Fatalf("task_count=%d event_count=%d", taskCount, eventCount)
+	}
+}
