@@ -363,7 +363,7 @@
         "recovery": "状态和事件版本检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-status-priority-commands",
+      "acceptanceStatus": "command-surface-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -377,7 +377,9 @@
         "con.conversation.update.v1",
         "con.assignment.change.v1",
         "con.status.change.v1",
-        "con.priority.change.v1"
+        "con.priority.change.v1",
+        "con.participant.manage.v1",
+        "con.account_conversations.anonymize.v1"
       ],
       "implementedIndependentEvents": [
         "con.conversation.created.v1",

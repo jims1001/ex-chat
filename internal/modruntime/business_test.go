@@ -1179,6 +1179,93 @@ func TestCONStatusAndPriorityChangesAreScopedAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestCONParticipantManagementAndAccountAnonymizeStayOwnerScoped(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "user is invalid"}
+		}
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && (userID == 7 || userID == 8)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["CON"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "CON")
+	assigneeID, teamID := uint(7), uint(8)
+	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, AssigneeID: &assigneeID, TeamID: &teamID, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, CustomAttributes: `{"email":"private@example.test"}`, LastActivityAt: time.Now().UTC()}
+	other := domain.Conversation{AccountID: 92, InboxID: 22, ContactID: 32, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, CustomAttributes: `{"keep":true}`, LastActivityAt: time.Now().UTC()}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.ConversationLabel{ConversationID: conversation.ID, LabelID: 3}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	manage := foundation.CommandEnvelope{CommandID: "participant-1", CommandType: "con.participant.manage.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversation.ID), 10)}, Input: map[string]any{"operation": "add", "user_ids": []any{float64(7), float64(8)}}, IdempotencyKey: "participant-key", CorrelationID: "participant-correlation", CausationID: "participant-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"}}
+	for index := 0; index < 2; index++ {
+		if response := call("/contracts/commands/con.participant.manage.v1", manage); response.Code != http.StatusOK {
+			t.Fatalf("participants=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var participants int64
+	_ = db.Model(&domain.ConversationParticipant{}).Where("conversation_id = ?", conversation.ID).Count(&participants).Error
+	if participants != 2 {
+		t.Fatalf("participants=%d", participants)
+	}
+	anonymize := manage
+	anonymize.CommandID, anonymize.CommandType, anonymize.IdempotencyKey, anonymize.CorrelationID, anonymize.CausationID = "anonymize-1", "con.account_conversations.anonymize.v1", "anonymize-key", "anonymize-correlation", "anonymize-cause"
+	anonymize.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	anonymize.Input = map[string]any{}
+	for index := 0; index < 2; index++ {
+		if response := call("/contracts/commands/con.account_conversations.anonymize.v1", anonymize); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"anonymized"`) {
+			t.Fatalf("anonymize=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var stored, untouched domain.Conversation
+	_ = db.First(&stored, conversation.ID).Error
+	_ = db.First(&untouched, other.ID).Error
+	if stored.ContactID != 0 || stored.AssigneeID != nil || stored.TeamID != nil || stored.CustomAttributes != "" || stored.ObjectVersion != 3 {
+		t.Fatalf("stored=%+v", stored)
+	}
+	if untouched.ContactID != 32 || untouched.CustomAttributes != `{"keep":true}` || untouched.ObjectVersion != 1 {
+		t.Fatalf("untouched=%+v", untouched)
+	}
+	var labels int64
+	_ = db.Model(&domain.ConversationLabel{}).Where("conversation_id = ?", conversation.ID).Count(&labels).Error
+	_ = db.Model(&domain.ConversationParticipant{}).Where("conversation_id = ?", conversation.ID).Count(&participants).Error
+	if labels != 0 || participants != 0 {
+		t.Fatalf("labels=%d participants=%d", labels, participants)
+	}
+	denied := manage
+	denied.CommandID, denied.IdempotencyKey, denied.CorrelationID = "participant-2", "participant-denied", "participant-denied-correlation"
+	denied.Input = map[string]any{"operation": "add", "user_ids": []any{float64(9)}}
+	if response := call("/contracts/commands/con.participant.manage.v1", denied); response.Code != http.StatusNotFound {
+		t.Fatalf("denied=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}

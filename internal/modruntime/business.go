@@ -1350,6 +1350,88 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("con.participant.manage.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			operation, _ := command.Input["operation"].(string)
+			operation = strings.TrimSpace(strings.ToLower(operation))
+			if operation != "add" && operation != "remove" && operation != "sync" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "participant operation is invalid"}
+			}
+			userIDs, err := uintSlice(command.Input["user_ids"])
+			if err != nil || (operation != "sync" && len(userIDs) == 0) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "participant user_ids are invalid"}
+			}
+			dependency, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "participant validation is unavailable"}
+			}
+			client := newModuleClient("CON", dependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+			for _, userID := range userIDs {
+				if err := client.requireMember(ctx, command.AccountID, command.Actor, userID); err != nil {
+					return nil, err
+				}
+			}
+			tx := Transaction(ctx, r.DB)
+			repo := repository.NewConversationRepositoryWithReadPorts(tx, nil, nil, nil, nil, nil, nil, nil)
+			var added, removed []uint
+			switch operation {
+			case "add":
+				added, err = repo.AddParticipants(command.AccountID, conversationID, userIDs)
+			case "remove":
+				var count int64
+				count, err = repo.RemoveParticipants(command.AccountID, conversationID, userIDs)
+				if count > 0 {
+					removed = userIDs
+				}
+			case "sync":
+				var result *repository.ParticipantSyncResult
+				result, err = repo.SyncParticipants(command.AccountID, conversationID, userIDs)
+				if result != nil {
+					added, removed = result.Added, result.Removed
+				}
+			}
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			if err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "participants could not be changed"}
+			}
+			if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", command.AccountID, conversationID).Updates(map[string]any{"object_version": gorm.Expr("object_version + 1"), "updated_at": time.Now().UTC()}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation version could not be changed"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation.changed.v1", "Conversation", command.Target.ID, []string{"participants"}, map[string]any{"conversation_id": conversationID, "operation": operation, "added_user_ids": added, "removed_user_ids": removed}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"conversation_id": conversationID, "operation": operation, "added_user_ids": added, "removed_user_ids": removed}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("con.account_conversations.anonymize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			owned := tx.Model(&domain.Conversation{}).Select("id").Where("account_id = ?", command.AccountID)
+			if err := tx.Where("conversation_id IN (?)", owned).Delete(&domain.ConversationParticipant{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation participants could not be anonymized"}
+			}
+			if err := tx.Where("conversation_id IN (?)", owned).Delete(&domain.ConversationLabel{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation labels could not be anonymized"}
+			}
+			result := tx.Model(&domain.Conversation{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"contact_id": 0, "assignee_id": nil, "team_id": nil, "custom_attributes": "", "agent_last_seen_at": nil, "contact_last_seen_at": nil, "assignee_last_seen_at": nil, "object_version": gorm.Expr("object_version + 1"), "updated_at": time.Now().UTC()})
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversations could not be anonymized"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation.changed.v1", "AccountConversations", command.Target.ID, []string{"anonymized"}, map[string]any{"account_id": command.AccountID, "conversation_count": result.RowsAffected, "operation": "anonymized"}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "conversation_count": result.RowsAffected, "status": "anonymized"}, nil
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {
@@ -2023,6 +2105,32 @@ func optionalUint(value any) (*uint, error) {
 		return nil, nil
 	}
 	return &parsed, nil
+}
+
+func uintSlice(value any) ([]uint, error) {
+	raw, ok := value.([]any)
+	if !ok {
+		if typed, valid := value.([]uint); valid {
+			raw = make([]any, len(typed))
+			for index := range typed {
+				raw[index] = typed[index]
+			}
+		} else {
+			return nil, errors.New("value is invalid")
+		}
+	}
+	result := make([]uint, 0, len(raw))
+	seen := map[uint]bool{}
+	for _, item := range raw {
+		parsed, err := optionalUint(item)
+		if err != nil || parsed == nil {
+			return nil, errors.New("value is invalid")
+		}
+		if !seen[*parsed] {
+			result, seen[*parsed] = append(result, *parsed), true
+		}
+	}
+	return result, nil
 }
 
 func uintSliceFilter(filter map[string]any, key string) ([]uint, bool) {
