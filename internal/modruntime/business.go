@@ -1087,6 +1087,63 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("con.conversation.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
+			}
+			inboxID, inboxErr := uintFilter(command.Input, "inbox_id")
+			contactID, contactErr := uintFilter(command.Input, "contact_id")
+			if inboxErr != nil || contactErr != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "inbox_id and contact_id are required"}
+			}
+			tenDependency, tenOK := r.Config.Dependencies["TEN"]
+			chnDependency, chnOK := r.Config.Dependencies["CHN"]
+			cusDependency, cusOK := r.Config.Dependencies["CUS"]
+			if !tenOK || !chnOK || !cusOK {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation reference validation is unavailable"}
+			}
+			if _, err := newModuleClient("CON", tenDependency, r.Config.ContractVersion, r.Config.MaxTimeout).getAccount(ctx, command.AccountID, command.Actor); err != nil {
+				return nil, err
+			}
+			parent := foundation.QueryEnvelope{AccountID: command.AccountID, Actor: command.Actor, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+			var inbox inboxView
+			parent.QueryType, parent.Filter = "chn.inbox.get.v1", map[string]any{"id": inboxID}
+			if err := newModuleClient("CON", chnDependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, parent, &inbox); err != nil {
+				return nil, err
+			}
+			var contact contactView
+			parent.QueryType, parent.Filter = "cus.contact.get.v1", map[string]any{"id": contactID}
+			if err := newModuleClient("CON", cusDependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, parent, &contact); err != nil {
+				return nil, err
+			}
+			if inbox.AccountID != command.AccountID || contact.AccountID != command.AccountID {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation reference was not found"}
+			}
+			priority, _ := command.Input["priority"].(string)
+			priority = strings.TrimSpace(strings.ToLower(priority))
+			if priority == "" {
+				priority = "medium"
+			}
+			if priority != "low" && priority != "medium" && priority != "high" && priority != "urgent" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation priority is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var maxDisplayID uint
+			if err := tx.Model(&domain.Conversation{}).Where("account_id = ?", command.AccountID).Select("COALESCE(MAX(display_id),0)").Scan(&maxDisplayID).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation sequence is unavailable"}
+			}
+			now := time.Now().UTC()
+			conversation := domain.Conversation{AccountID: command.AccountID, DisplayID: maxDisplayID + 1, InboxID: inboxID, ContactID: contactID, Status: domain.ConversationStatusOpen, Priority: priority, ObjectVersion: 1, LastActivityAt: now, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&conversation).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation.created.v1", "Conversation", strconv.FormatUint(uint64(conversation.ID), 10), []string{"created"}, map[string]any{"conversation_id": conversation.ID, "display_id": conversation.DisplayID, "inbox_id": inboxID, "contact_id": contactID, "status": conversation.Status, "priority": conversation.Priority}); err != nil {
+				return nil, err
+			}
+			return conversationFromModel(tx, &conversation)
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {
@@ -1748,6 +1805,41 @@ type moduleClient struct {
 
 func newModuleClient(caller string, dependency DependencyConfig, version string, timeout time.Duration) *moduleClient {
 	return &moduleClient{caller: caller, baseURL: strings.TrimRight(dependency.URL, "/"), token: dependency.Token, version: version, client: &http.Client{Timeout: timeout}}
+}
+
+func (c *moduleClient) query(ctx context.Context, envelope foundation.QueryEnvelope, output any) error {
+	correlationID := foundation.GenerateUUID()
+	body, _ := json.Marshal(envelope)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/contracts/queries/"+envelope.QueryType, bytes.NewReader(body))
+	if err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "dependency request could not be created"}
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set(headerCaller, c.caller)
+	request.Header.Set(headerContractVersion, c.version)
+	request.Header.Set(headerCorrelationID, correlationID)
+	response, err := c.client.Do(request)
+	if err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency is unavailable"}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var failure foundation.ContractError
+		if json.NewDecoder(response.Body).Decode(&failure) == nil && failure.Validate() == nil {
+			return &ContractFailure{Type: failure.Type, Message: failure.Message, RetryAfterMS: failure.RetryAfterMS, Details: failure.Details}
+		}
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency returned an invalid response"}
+	}
+	var payload struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || len(payload.Data) == 0 {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency returned invalid data"}
+	}
+	if err := json.Unmarshal(payload.Data, output); err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency returned incompatible data"}
+	}
+	return nil
 }
 
 func (c *moduleClient) getIdentity(ctx context.Context, parent foundation.QueryEnvelope, userID uint) (*identityView, error) {

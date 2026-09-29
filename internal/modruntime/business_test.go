@@ -911,6 +911,93 @@ func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	}
 }
 
+func TestCONConversationCreateValidatesOwnersAndCommitsAtomically(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.account.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		if query.AccountID != 91 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "account was not found"}
+		}
+		return accountView{ID: 91, Name: "Tenant", Status: "active"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["CON"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+
+	chnDB := newModuleTestDB(t, "CHN")
+	inbox := domain.Inbox{AccountID: 91, Name: "Support", ChannelType: "Channel::WebWidget"}
+	if err := repository.NewInboxRepositoryWithAccountPort(chnDB, nil).Create(&inbox); err != nil {
+		t.Fatal(err)
+	}
+	chnCfg := businessConfig("CHN")
+	chnCfg.AllowedCallers["CON"] = true
+	chnRuntime := Runtime{Config: chnCfg, DB: chnDB, Contracts: NewContractRegistry("CHN")}
+	if err := chnRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	chnServer, chnAddress := startHTTPServer(t, "127.0.0.1:0", chnRuntime.Handler())
+	defer chnServer.Shutdown(context.Background())
+
+	cusDB := newModuleTestDB(t, "CUS")
+	contact := domain.Contact{AccountID: 91, Name: "Customer", Email: "customer@example.test", PubsubToken: "private-token"}
+	if err := repository.NewContactRepositoryWithOwnerPorts(cusDB, nil, nil, nil, nil, nil).Create(&contact); err != nil {
+		t.Fatal(err)
+	}
+	cusCfg := businessConfig("CUS")
+	cusCfg.AllowedCallers["CON"] = true
+	cusRuntime := Runtime{Config: cusCfg, DB: cusDB, Contracts: NewContractRegistry("CUS")}
+	if err := cusRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	cusServer, cusAddress := startHTTPServer(t, "127.0.0.1:0", cusRuntime.Handler())
+
+	conDB := newModuleTestDB(t, "CON")
+	conCfg := businessConfig("CON")
+	conCfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CHN": {URL: "http://" + chnAddress, Token: chnCfg.AuthToken}, "CUS": {URL: "http://" + cusAddress, Token: cusCfg.AuthToken}}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: conCfg, DB: conDB, Contracts: NewContractRegistry("CON")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "conversation-create-1", CommandType: "con.conversation.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"inbox_id": inbox.ID, "contact_id": contact.ID, "priority": "high"}, IdempotencyKey: "conversation-create-91", CorrelationID: "conversation-create-correlation", CausationID: "conversation-create-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/con.conversation.create.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+conCfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"priority":"high"`) || strings.Contains(response.Body.String(), "private-token") {
+			t.Fatalf("conversation create=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var conversations, receipts, events int64
+	_ = conDB.Model(&domain.Conversation{}).Count(&conversations).Error
+	_ = conDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = conDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%con.conversation.created.v1%").Count(&events).Error
+	if conversations != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("conversations=%d receipts=%d events=%d", conversations, receipts, events)
+	}
+	if err := cusServer.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failed := command
+	failed.CommandID, failed.IdempotencyKey, failed.CorrelationID = "conversation-create-2", "conversation-create-92", "conversation-create-correlation-2"
+	if response := call(failed); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("dependency failure status=%d body=%s", response.Code, response.Body.String())
+	}
+	_ = conDB.Model(&domain.Conversation{}).Count(&conversations).Error
+	if conversations != 1 {
+		t.Fatalf("dependency failure wrote conversation count=%d", conversations)
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}
