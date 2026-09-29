@@ -3492,6 +3492,52 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("bil.invoice.issue.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "order" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order target is required"}
+			}
+			orderID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || orderID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order target is invalid"}
+			}
+			invoiceNumber, _ := command.Input["invoice_number"].(string)
+			invoiceNumber = strings.TrimSpace(invoiceNumber)
+			if invoiceNumber == "" || len(invoiceNumber) > 100 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "invoice_number is required"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var order domain.Order
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(orderID)).First(&order)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "order was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
+			}
+			description := "invoice:" + invoiceNumber + ":order:" + strconv.FormatUint(uint64(order.ID), 10)
+			var duplicate int64
+			if err := tx.Model(&domain.AccountBilling{}).Where("account_id = ? AND action_type = ? AND description LIKE ?", command.AccountID, "invoice", "invoice:"+invoiceNumber+":%").Count(&duplicate).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "invoice store is unavailable"}
+			}
+			if duplicate > 0 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "invoice_number already exists"}
+			}
+			currency, _ := command.Input["currency"].(string)
+			currency = strings.ToUpper(strings.TrimSpace(currency))
+			if currency == "" {
+				currency = "USD"
+			}
+			invoice := domain.AccountBilling{AccountID: command.AccountID, ActionType: "invoice", Amount: order.AmountYuan, Currency: currency, Description: description, CreatedAt: time.Now().UTC()}
+			if err := tx.Create(&invoice).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "invoice could not be issued"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "bil.invoice.changed.v1", "AccountBilling", strconv.FormatUint(uint64(invoice.ID), 10), []string{"issued"}, map[string]any{"invoice_id": invoice.ID, "invoice_number": invoiceNumber, "order_id": order.ID, "amount": invoice.Amount, "currency": invoice.Currency, "status": "issued"}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": invoice.ID, "account_id": invoice.AccountID, "invoice_number": invoiceNumber, "order_id": order.ID, "amount": invoice.Amount, "currency": invoice.Currency, "status": "issued", "created_at": invoice.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("bil.order.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, idErr := uintFilter(query.Filter, "id")
 			orderID, _ := query.Filter["order_id"].(string)

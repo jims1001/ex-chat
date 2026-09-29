@@ -5430,3 +5430,63 @@ func TestBILPaymentAndRefundEnforceOwnerAmountAndBalance(t *testing.T) {
 		t.Fatalf("receipts=%d events=%d", receipts, events)
 	}
 }
+
+func TestBILInvoiceIssueAndDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "BIL")
+	now := time.Now().UTC()
+	order := domain.Order{AccountID: 91, OrderID: "INV-ORDER-91", AmountYuan: 128, OrderStatus: "delivered", CreatedAt: now, UpdatedAt: now}
+	foreign := domain.Order{AccountID: 92, OrderID: "INV-ORDER-92", AmountYuan: 256, OrderStatus: "delivered", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("BIL")
+	registry := NewContractRegistry("BIL")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"bil.checkout.create.v1", "bil.order.update.v1", "bil.payment.process.v1", "bil.refund.create.v1", "bil.invoice.issue.v1"} {
+		if registry.commands[capability] == nil {
+			t.Fatalf("missing BIL command %s", capability)
+		}
+	}
+	for _, capability := range []string{"bil.order.get.v1", "bil.payment.get.v1", "bil.balance.get.v1"} {
+		if registry.queries[capability] == nil {
+			t.Fatalf("missing BIL query %s", capability)
+		}
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	issue := foundation.CommandEnvelope{CommandID: "bil-invoice", CommandType: "bil.invoice.issue.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "order", ID: strconv.FormatUint(uint64(order.ID), 10)}, Input: map[string]any{"invoice_number": "INVOICE-91", "currency": "AUD"}, IdempotencyKey: "bil-invoice-91", CorrelationID: "bil-invoice-correlation", CausationID: "bil-invoice-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "bil.payment.get.v1"}}
+	for range 2 {
+		response := call(issue)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"invoice_number":"INVOICE-91"`) || !strings.Contains(response.Body.String(), `"status":"issued"`) {
+			t.Fatalf("invoice status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	foreignIssue := issue
+	foreignIssue.CommandID, foreignIssue.IdempotencyKey = "bil-invoice-foreign", "bil-invoice-foreign"
+	foreignIssue.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	foreignIssue.Input = map[string]any{"invoice_number": "INVOICE-FOREIGN"}
+	if response := call(foreignIssue); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign invoice status=%d body=%s", response.Code, response.Body.String())
+	}
+	var invoices, receipts, events int64
+	_ = db.Model(&domain.AccountBilling{}).Where("account_id = ? AND action_type = ?", 91, "invoice").Count(&invoices).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if invoices != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("invoices=%d receipts=%d events=%d", invoices, receipts, events)
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("BIL readiness: %v", err)
+	}
+}
