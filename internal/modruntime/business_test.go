@@ -5234,3 +5234,58 @@ func TestKBDeletePortalManageAndPurgeStayAccountScoped(t *testing.T) {
 		t.Fatalf("receipts=%d events=%d", receipts, events)
 	}
 }
+
+func TestBILQueriesStayAccountScopedAndExposeOwnerSafeViews(t *testing.T) {
+	db := newModuleTestDB(t, "BIL")
+	now := time.Now().UTC()
+	order := domain.Order{AccountID: 91, OrderID: "ORD-91", CustomerName: "Private Name", CustomerEmail: "private@example.test", ShippingAddress: "Private address", AmountYuan: 88.5, OrderStatus: "processing", Carrier: "carrier", TrackingNumber: "TRACK-91", CreatedAt: now, UpdatedAt: now}
+	otherOrder := domain.Order{AccountID: 92, OrderID: "ORD-92", CustomerName: "Other", CustomerEmail: "other@example.test", ShippingAddress: "Other private", AmountYuan: 99, OrderStatus: "pending", TrackingNumber: "TRACK-92", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&otherOrder).Error; err != nil {
+		t.Fatal(err)
+	}
+	deposit := domain.AccountBilling{AccountID: 91, ActionType: "deposit", Amount: 100, Currency: "AUD", Description: "top up", CreatedAt: now}
+	if err := db.Create(&deposit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.AccountBilling{AccountID: 91, ActionType: "deduction", Amount: 25.5, Currency: "AUD", Description: "charge", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherPayment := domain.AccountBilling{AccountID: 92, ActionType: "deposit", Amount: 999, Currency: "AUD", Description: "other", CreatedAt: now}
+	if err := db.Create(&otherPayment).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("BIL")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("BIL")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(queryType string, accountID uint, filter map[string]any) *httptest.ResponseRecorder {
+		query := foundation.QueryEnvelope{QueryType: queryType, AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+		return performContractRequest(runtime.Handler(), "/contracts/queries/"+queryType, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := call("bil.order.get.v1", 91, map[string]any{"order_id": order.OrderID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "ORD-91") || strings.Contains(response.Body.String(), "Private Name") || strings.Contains(response.Body.String(), "Private address") {
+		t.Fatalf("order status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("bil.payment.get.v1", 91, map[string]any{"id": deposit.ID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"amount":100`) {
+		t.Fatalf("payment status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("bil.balance.get.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"balance":74.5`) || !strings.Contains(response.Body.String(), `"entry_count":2`) {
+		t.Fatalf("balance status=%d body=%s", response.Code, response.Body.String())
+	}
+	for queryType, id := range map[string]uint{"bil.order.get.v1": otherOrder.ID, "bil.payment.get.v1": otherPayment.ID} {
+		if response := call(queryType, 91, map[string]any{"id": id}); response.Code != http.StatusNotFound {
+			t.Fatalf("cross-account %s status=%d body=%s", queryType, response.Code, response.Body.String())
+		}
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Contact{}, &domain.Conversation{}, &domain.User{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("BIL runtime contains foreign table %T", foreign)
+		}
+	}
+}

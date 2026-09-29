@@ -696,7 +696,7 @@
         "recovery": "支付回调补读和对账"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-contact-merge-consumer",
+      "acceptanceStatus": "runtime-query-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [

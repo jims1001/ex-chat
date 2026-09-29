@@ -3308,6 +3308,70 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return map[string]any{"account_id": query.AccountID, "portal_count": counts["portal_count"], "category_count": counts["category_count"], "article_count": counts["article_count"], "ready": counts["portal_count"]+counts["category_count"]+counts["article_count"] == 0}, nil
 		})
 	case "BIL":
+		if err := r.Contracts.RegisterQuery("bil.order.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, idErr := uintFilter(query.Filter, "id")
+			orderID, _ := query.Filter["order_id"].(string)
+			trackingNumber, _ := query.Filter["tracking_number"].(string)
+			var order domain.Order
+			ownerQuery := r.DB.Where("account_id = ?", query.AccountID)
+			switch {
+			case idErr == nil:
+				ownerQuery = ownerQuery.Where("id = ?", id)
+			case strings.TrimSpace(orderID) != "":
+				ownerQuery = ownerQuery.Where("order_id = ?", strings.TrimSpace(orderID))
+			case strings.TrimSpace(trackingNumber) != "":
+				ownerQuery = ownerQuery.Where("tracking_number = ?", strings.TrimSpace(trackingNumber))
+			default:
+				return nil, &ContractFailure{Type: "validation_failed", Message: "order id, order_id or tracking_number is required"}
+			}
+			result := ownerQuery.First(&order)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "order was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "order store is unavailable"}
+			}
+			return map[string]any{"id": order.ID, "account_id": order.AccountID, "order_id": order.OrderID, "contact_id": order.ContactID, "conversation_id": order.ConversationID, "amount_yuan": order.AmountYuan, "order_status": order.OrderStatus, "carrier": order.Carrier, "tracking_number": order.TrackingNumber, "warehouse_synced": order.WarehouseSynced, "created_at": order.CreatedAt, "updated_at": order.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("bil.payment.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "payment id is required"}
+			}
+			var payment domain.AccountBilling
+			result := r.DB.Where("account_id = ? AND id = ?", query.AccountID, id).First(&payment)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "payment was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "payment store is unavailable"}
+			}
+			return map[string]any{"id": payment.ID, "account_id": payment.AccountID, "type": payment.ActionType, "amount": payment.Amount, "currency": payment.Currency, "description": payment.Description, "created_at": payment.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("bil.balance.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			var rows []domain.AccountBilling
+			if err := r.DB.Where("account_id = ?", query.AccountID).Order("id ASC").Find(&rows).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "billing store is unavailable"}
+			}
+			balance, currency := float64(0), "USD"
+			for _, row := range rows {
+				if row.Currency != "" {
+					currency = row.Currency
+				}
+				if row.ActionType == "deposit" {
+					balance += row.Amount
+				} else if row.ActionType == "deduction" {
+					balance -= row.Amount
+				}
+			}
+			return map[string]any{"account_id": query.AccountID, "balance": balance, "currency": currency, "entry_count": len(rows)}, nil
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
 			if failure != nil {
