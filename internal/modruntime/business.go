@@ -1283,6 +1283,73 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("con.status.change.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			status, _ := command.Input["status"].(string)
+			status = strings.TrimSpace(strings.ToLower(status))
+			if status != domain.ConversationStatusOpen && status != domain.ConversationStatusPending && status != domain.ConversationStatusResolved && status != domain.ConversationStatusSnoozed {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation status is invalid"}
+			}
+			updates := map[string]any{"status": status, "snoozed_until": nil, "object_version": gorm.Expr("object_version + 1"), "last_activity_at": time.Now().UTC(), "updated_at": time.Now().UTC()}
+			if status == domain.ConversationStatusSnoozed {
+				raw, ok := command.Input["snoozed_until"].(string)
+				until, err := time.Parse(time.RFC3339, raw)
+				if !ok || err != nil || !until.After(time.Now().UTC()) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "future snoozed_until is required"}
+				}
+				updates["snoozed_until"] = until.UTC()
+			}
+			tx := Transaction(ctx, r.DB)
+			result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).Updates(updates)
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation status could not be changed"}
+			}
+			if result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			var conversation domain.Conversation
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).First(&conversation).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation_status.changed.v1", "Conversation", command.Target.ID, []string{"status", "snoozed_until"}, map[string]any{"conversation_id": conversation.ID, "status": conversation.Status, "snoozed_until": conversation.SnoozedUntil, "object_version": conversation.ObjectVersion}); err != nil {
+				return nil, err
+			}
+			return conversationFromModel(tx, &conversation)
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("con.priority.change.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			priority, _ := command.Input["priority"].(string)
+			priority = strings.TrimSpace(strings.ToLower(priority))
+			if priority != "low" && priority != "medium" && priority != "high" && priority != "urgent" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation priority is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).Updates(map[string]any{"priority": priority, "object_version": gorm.Expr("object_version + 1"), "last_activity_at": time.Now().UTC(), "updated_at": time.Now().UTC()})
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation priority could not be changed"}
+			}
+			if result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			var conversation domain.Conversation
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).First(&conversation).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation.changed.v1", "Conversation", command.Target.ID, []string{"priority"}, map[string]any{"conversation_id": conversation.ID, "priority": conversation.Priority, "object_version": conversation.ObjectVersion}); err != nil {
+				return nil, err
+			}
+			return conversationFromModel(tx, &conversation)
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {

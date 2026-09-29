@@ -1107,6 +1107,78 @@ func TestCONConversationUpdateAndAssignmentValidateRemoteOwners(t *testing.T) {
 	}
 }
 
+func TestCONStatusAndPriorityChangesAreScopedAtomicAndIdempotent(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	other := domain.Conversation{AccountID: 92, InboxID: 22, ContactID: 32, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversation.ID), 10)}, RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"}}
+	status := base
+	status.CommandID, status.CommandType, status.IdempotencyKey, status.CorrelationID, status.CausationID = "status-change-1", "con.status.change.v1", "status-change-key", "status-change-correlation", "status-change-cause"
+	status.Input = map[string]any{"status": "snoozed", "snoozed_until": time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}
+	priority := base
+	priority.CommandID, priority.CommandType, priority.IdempotencyKey, priority.CorrelationID, priority.CausationID = "priority-change-1", "con.priority.change.v1", "priority-change-key", "priority-change-correlation", "priority-change-cause"
+	priority.Input = map[string]any{"priority": "urgent"}
+	for _, item := range []struct {
+		path     string
+		command  foundation.CommandEnvelope
+		contains string
+	}{{"/contracts/commands/con.status.change.v1", status, `"status":"snoozed"`}, {"/contracts/commands/con.priority.change.v1", priority, `"priority":"urgent"`}} {
+		for index := 0; index < 2; index++ {
+			response := call(item.path, item.command)
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), item.contains) {
+				t.Fatalf("change=%d body=%s", response.Code, response.Body.String())
+			}
+		}
+	}
+	var stored domain.Conversation
+	if err := db.First(&stored, conversation.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.ConversationStatusSnoozed || stored.SnoozedUntil == nil || stored.Priority != domain.PriorityUrgent || stored.ObjectVersion != 3 {
+		t.Fatalf("stored=%+v", stored)
+	}
+	var statusEvents, changedEvents, receipts int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%con.conversation_status.changed.v1%").Count(&statusEvents).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%con.conversation.changed.v1%").Count(&changedEvents).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if statusEvents != 1 || changedEvents != 1 || receipts != 2 {
+		t.Fatalf("status_events=%d changed_events=%d receipts=%d", statusEvents, changedEvents, receipts)
+	}
+	invalid := status
+	invalid.CommandID, invalid.IdempotencyKey, invalid.CorrelationID = "status-change-2", "status-invalid-key", "status-invalid-correlation"
+	invalid.Input = map[string]any{"status": "snoozed", "snoozed_until": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)}
+	if response := call("/contracts/commands/con.status.change.v1", invalid); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status=%d body=%s", response.Code, response.Body.String())
+	}
+	cross := priority
+	cross.CommandID, cross.IdempotencyKey, cross.CorrelationID = "priority-change-2", "priority-cross-key", "priority-cross-correlation"
+	cross.Target.ID = strconv.FormatUint(uint64(other.ID), 10)
+	if response := call("/contracts/commands/con.priority.change.v1", cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross priority=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}
