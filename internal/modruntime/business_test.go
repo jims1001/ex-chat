@@ -5964,3 +5964,54 @@ func TestEXTMixedVersionUpgradeRollbackPreservesInstallation(t *testing.T) {
 		t.Fatalf("rollback accepted v2=%d", response.Code)
 	}
 }
+
+func TestNTFQueriesStayAccountUserScopedAndHideDeliverySecrets(t *testing.T) {
+	db := newModuleTestDB(t, "NTF")
+	now := time.Now().UTC()
+	readAt := now
+	for _, item := range []domain.Notification{{AccountID: 91, UserID: 7, NotificationType: "conversation_assignment", CreatedAt: now, UpdatedAt: now}, {AccountID: 91, UserID: 7, NotificationType: "system_alert", ReadAt: &readAt, CreatedAt: now, UpdatedAt: now}, {AccountID: 91, UserID: 8, NotificationType: "private-other-user", CreatedAt: now, UpdatedAt: now}, {AccountID: 92, UserID: 7, NotificationType: "foreign-account", CreatedAt: now, UpdatedAt: now}} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	delivery := domain.PushDeliveryLog{AccountID: 91, UserID: 7, DeviceToken: "secret-device-token", Platform: "fcm", Title: "private title", Body: "private body", Status: "failed", HTTPStatusCode: 500, ErrorDetail: "private error", CreatedAt: now}
+	if err := db.Create(&delivery).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignDelivery := domain.PushDeliveryLog{AccountID: 92, UserID: 7, DeviceToken: "foreign", Platform: "fcm", Status: "delivered", CreatedAt: now}
+	if err := db.Create(&foreignDelivery).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("NTF")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("NTF")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(kind string, account uint, filter map[string]any) *httptest.ResponseRecorder {
+		q := foundation.QueryEnvelope{QueryType: kind, AccountID: account, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+		return performContractRequest(runtime.Handler(), "/contracts/queries/"+kind, q, func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			r.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := call("ntf.notifications.list.v1", 91, map[string]any{"user_id": 7}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "conversation_assignment") || strings.Contains(response.Body.String(), "private-other-user") || strings.Contains(response.Body.String(), "foreign-account") {
+		t.Fatalf("list=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ntf.unread_count.get.v1", 91, map[string]any{"user_id": 7}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"unread_count":1`) {
+		t.Fatalf("unread=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ntf.delivery.get.v1", 91, map[string]any{"id": delivery.ID}); response.Code != http.StatusOK || strings.Contains(response.Body.String(), "secret-device-token") || strings.Contains(response.Body.String(), "private body") || strings.Contains(response.Body.String(), "private error") {
+		t.Fatalf("delivery=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ntf.delivery.get.v1", 91, map[string]any{"id": foreignDelivery.ID}); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign delivery=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("ntf.account_deletion_status.get.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"notification_count":3`) || !strings.Contains(response.Body.String(), `"ready":false`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("NTF runtime contains foreign table %T", foreign)
+		}
+	}
+}

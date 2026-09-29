@@ -4056,6 +4056,73 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return map[string]any{"account_id": query.AccountID, "agent_bot_count": counts["agent_bot_count"], "agent_bot_inbox_count": counts["agent_bot_inbox_count"], "dashboard_app_count": counts["dashboard_app_count"], "installation_count": counts["installation_count"], "webhook_count": counts["webhook_count"], "delivery_count": counts["delivery_count"], "ready": total == 0}, nil
 		})
+	case "NTF":
+		notificationView := func(item *domain.Notification) map[string]any {
+			return map[string]any{"id": item.ID, "account_id": item.AccountID, "user_id": item.UserID, "notification_type": item.NotificationType, "primary_actor_type": item.PrimaryActorType, "primary_actor_id": item.PrimaryActorID, "secondary_actor_type": item.SecondaryActorType, "secondary_actor_id": item.SecondaryActorID, "read_at": item.ReadAt, "snoozed_until": item.SnoozedUntil, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt}
+		}
+		if err := r.Contracts.RegisterQuery("ntf.notifications.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			userID, err := uintFilter(query.Filter, "user_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "user_id is required"}
+			}
+			var rows []domain.Notification
+			ownerQuery := r.DB.Where("account_id = ? AND user_id = ?", query.AccountID, userID)
+			if unread, ok := query.Filter["unread"].(bool); ok && unread {
+				ownerQuery = ownerQuery.Where("read_at IS NULL")
+			}
+			if err := ownerQuery.Order("id DESC").Limit(100).Find(&rows).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification store is unavailable"}
+			}
+			items := make([]map[string]any, 0, len(rows))
+			for i := range rows {
+				items = append(items, notificationView(&rows[i]))
+			}
+			return map[string]any{"items": items}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("ntf.unread_count.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			userID, err := uintFilter(query.Filter, "user_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "user_id is required"}
+			}
+			var count int64
+			if err := r.DB.Model(&domain.Notification{}).Where("account_id = ? AND user_id = ? AND read_at IS NULL", query.AccountID, userID).Count(&count).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification store is unavailable"}
+			}
+			return map[string]any{"account_id": query.AccountID, "user_id": userID, "unread_count": count}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("ntf.delivery.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "delivery id is required"}
+			}
+			var delivery domain.PushDeliveryLog
+			result := r.DB.Where("account_id = ? AND id = ?", query.AccountID, id).First(&delivery)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "delivery was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "delivery store is unavailable"}
+			}
+			return map[string]any{"id": delivery.ID, "account_id": delivery.AccountID, "user_id": delivery.UserID, "platform": delivery.Platform, "status": delivery.Status, "http_status_code": delivery.HTTPStatusCode, "created_at": delivery.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterQuery("ntf.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			counts := map[string]int64{}
+			for name, model := range map[string]any{"notification_count": &domain.Notification{}, "setting_count": &domain.NotificationSetting{}, "subscription_count": &domain.NotificationSubscription{}, "delivery_count": &domain.PushDeliveryLog{}} {
+				var count int64
+				if err := r.DB.Model(model).Where("account_id = ?", query.AccountID).Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			total := counts["notification_count"] + counts["setting_count"] + counts["subscription_count"] + counts["delivery_count"]
+			return map[string]any{"account_id": query.AccountID, "notification_count": counts["notification_count"], "setting_count": counts["setting_count"], "subscription_count": counts["subscription_count"], "delivery_count": counts["delivery_count"], "ready": total == 0}, nil
+		})
 	case "OPS":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
