@@ -4866,3 +4866,77 @@ func TestQLTAppealReviewEnforcesOwnerAvoidanceAndAtomicDecision(t *testing.T) {
 		t.Fatalf("closed appeal status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestKBQueriesStayAccountScopedAndDoNotPreloadIAM(t *testing.T) {
+	db := newModuleTestDB(t, "KB")
+	now := time.Now().UTC()
+	portal := domain.Portal{AccountID: 91, Name: "Help", Slug: "help-91", CustomDomain: "help.example.test", Color: "#123456", HeaderText: "Welcome", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&portal).Error; err != nil {
+		t.Fatal(err)
+	}
+	category := domain.Category{AccountID: 91, PortalID: portal.ID, Name: "FAQ", Slug: "faq", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&category).Error; err != nil {
+		t.Fatal(err)
+	}
+	published := domain.Article{AccountID: 91, PortalID: portal.ID, CategoryID: category.ID, AuthorID: 7, Title: "Published", Slug: "published", Content: "safe content", Status: "published", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&published).Error; err != nil {
+		t.Fatal(err)
+	}
+	draft := domain.Article{AccountID: 91, PortalID: portal.ID, CategoryID: category.ID, AuthorID: 7, Title: "Draft", Slug: "draft", Content: "private draft", Status: "draft", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&draft).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherPortal := domain.Portal{AccountID: 92, Name: "Other", Slug: "help-92", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherPortal).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherArticle := domain.Article{AccountID: 92, PortalID: otherPortal.ID, CategoryID: 1, AuthorID: 8, Title: "Other", Slug: "other", Content: "other secret", Status: "published", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherArticle).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("KB")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("KB")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(queryType string, accountID uint, filter map[string]any) *httptest.ResponseRecorder {
+		query := foundation.QueryEnvelope{QueryType: queryType, AccountID: accountID, Actor: foundation.ContractActor{Type: "System", ID: "api", AuthSource: "module"}, Filter: filter, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: now}
+		return performContractRequest(runtime.Handler(), "/contracts/queries/"+queryType, query, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+		})
+	}
+	if response := call("kb.content.get.v1", 91, map[string]any{"id": published.ID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "safe content") || strings.Contains(response.Body.String(), "other secret") {
+		t.Fatalf("content status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("kb.version.get.v1", 91, map[string]any{"article_id": published.ID}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "content_version") || strings.Contains(response.Body.String(), "safe content") {
+		t.Fatalf("version status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("kb.public_view.get.v1", 91, map[string]any{"portal_slug": portal.Slug, "article_slug": published.Slug}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "safe content") {
+		t.Fatalf("public status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("kb.public_view.get.v1", 91, map[string]any{"portal_slug": portal.Slug, "article_slug": draft.Slug}); response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "private draft") {
+		t.Fatalf("draft public status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("kb.portal.get.v1", 91, map[string]any{"slug": portal.Slug}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "help.example.test") {
+		t.Fatalf("portal status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call("kb.account_deletion_status.get.v1", 91, map[string]any{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"article_count":2`) || !strings.Contains(response.Body.String(), `"ready":false`) {
+		t.Fatalf("deletion status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, queryType := range []string{"kb.content.get.v1", "kb.portal.get.v1"} {
+		key := "id"
+		id := otherArticle.ID
+		if queryType == "kb.portal.get.v1" {
+			id = otherPortal.ID
+		}
+		if response := call(queryType, 91, map[string]any{key: id}); response.Code != http.StatusNotFound {
+			t.Fatalf("cross-account %s status=%d body=%s", queryType, response.Code, response.Body.String())
+		}
+	}
+	for _, foreign := range []any{&domain.User{}, &domain.Account{}, &domain.MediaAsset{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("KB runtime contains foreign table %T", foreign)
+		}
+	}
+}

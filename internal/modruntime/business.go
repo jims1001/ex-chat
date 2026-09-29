@@ -276,6 +276,33 @@ type qualityReviewView struct {
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
+type portalView struct {
+	ID           uint      `json:"id"`
+	AccountID    uint      `json:"account_id"`
+	Name         string    `json:"name"`
+	Slug         string    `json:"slug"`
+	CustomDomain string    `json:"custom_domain"`
+	Color        string    `json:"color"`
+	HeaderText   string    `json:"header_text"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type articleView struct {
+	ID         uint      `json:"id"`
+	PortalID   uint      `json:"portal_id"`
+	CategoryID uint      `json:"category_id"`
+	AccountID  uint      `json:"account_id"`
+	AuthorID   uint      `json:"author_id"`
+	Title      string    `json:"title"`
+	Slug       string    `json:"slug"`
+	Content    string    `json:"content"`
+	Status     string    `json:"status"`
+	Views      int64     `json:"views"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 func (r *Runtime) RegisterBusinessContracts() error {
 	if r.Contracts == nil || r.DB == nil {
 		return errors.New("module runtime is incomplete")
@@ -2960,6 +2987,115 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return map[string]any{"account_id": query.AccountID, "task_id": task.ID, "total_score": task.TotalScore, "result": task.Result, "has_fatal_error": task.HasFatalError, "items": scores}, nil
 		})
+	case "KB":
+		loadPortal := func(accountID, portalID uint) (*domain.Portal, error) {
+			var portal domain.Portal
+			result := r.DB.Where("account_id = ? AND id = ?", accountID, portalID).First(&portal)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "portal was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "portal store is unavailable"}
+			}
+			return &portal, nil
+		}
+		loadArticle := func(accountID, articleID uint) (*domain.Article, error) {
+			var article domain.Article
+			result := r.DB.Where("account_id = ? AND id = ?", accountID, articleID).First(&article)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "article was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "article store is unavailable"}
+			}
+			return &article, nil
+		}
+		if err := r.Contracts.RegisterQuery("kb.content.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "article id is required"}
+			}
+			article, err := loadArticle(query.AccountID, id)
+			if err != nil {
+				return nil, err
+			}
+			return articleFromModel(article), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("kb.version.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "article_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "article_id is required"}
+			}
+			article, err := loadArticle(query.AccountID, id)
+			if err != nil {
+				return nil, err
+			}
+			hash := sha256.Sum256([]byte(article.Title + "\x00" + article.Content + "\x00" + article.Status))
+			return map[string]any{"account_id": article.AccountID, "article_id": article.ID, "status": article.Status, "content_version": hex.EncodeToString(hash[:]), "updated_at": article.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("kb.public_view.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			portalSlug, _ := query.Filter["portal_slug"].(string)
+			articleSlug, _ := query.Filter["article_slug"].(string)
+			portalSlug, articleSlug = strings.TrimSpace(portalSlug), strings.TrimSpace(articleSlug)
+			if portalSlug == "" || articleSlug == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "portal_slug and article_slug are required"}
+			}
+			var portal domain.Portal
+			if result := r.DB.Where("account_id = ? AND slug = ?", query.AccountID, portalSlug).First(&portal); errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "public article was not found"}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "portal store is unavailable"}
+			}
+			var article domain.Article
+			if result := r.DB.Where("account_id = ? AND portal_id = ? AND slug = ? AND status = ?", query.AccountID, portal.ID, articleSlug, "published").First(&article); errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "public article was not found"}
+			} else if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "article store is unavailable"}
+			}
+			return map[string]any{"portal": portalFromModel(&portal), "article": articleFromModel(&article)}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("kb.portal.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			if id, err := uintFilter(query.Filter, "id"); err == nil {
+				portal, loadErr := loadPortal(query.AccountID, id)
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				return portalFromModel(portal), nil
+			}
+			slug, _ := query.Filter["slug"].(string)
+			slug = strings.TrimSpace(slug)
+			if slug == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "portal id or slug is required"}
+			}
+			var portal domain.Portal
+			result := r.DB.Where("account_id = ? AND slug = ?", query.AccountID, slug).First(&portal)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "portal was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "portal store is unavailable"}
+			}
+			return portalFromModel(&portal), nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterQuery("kb.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			counts := map[string]int64{}
+			for name, model := range map[string]any{"portal_count": &domain.Portal{}, "category_count": &domain.Category{}, "article_count": &domain.Article{}} {
+				var count int64
+				if err := r.DB.Model(model).Where("account_id = ?", query.AccountID).Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "knowledge deletion status is unavailable"}
+				}
+				counts[name] = count
+			}
+			return map[string]any{"account_id": query.AccountID, "portal_count": counts["portal_count"], "category_count": counts["category_count"], "article_count": counts["article_count"], "ready": counts["portal_count"]+counts["category_count"]+counts["article_count"] == 0}, nil
+		})
 	case "BIL":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
@@ -3491,6 +3627,14 @@ func ticketFromModel(ticket *domain.Ticket) ticketView {
 
 func qualityReviewFromModel(task *domain.QATask) *qualityReviewView {
 	return &qualityReviewView{ID: task.ID, AccountID: task.AccountID, TaskNumber: task.TaskNumber, TargetType: task.TargetType, TargetID: task.TargetID, TargetRef: task.TargetRef, ScorecardID: task.ScorecardID, ScorecardName: task.ScorecardName, InspectorID: task.InspectorID, AgentID: task.AgentID, SamplingRuleID: task.SamplingRuleID, DueAt: task.DueAt, CompletedAt: task.CompletedAt, Status: task.Status, TotalScore: task.TotalScore, Result: task.Result, HasFatalError: task.HasFatalError, Feedback: task.Feedback, RectificationPlan: task.RectificationPlan, RectifiedAt: task.RectifiedAt, SecondInspectorID: task.SecondInspectorID, SecondReviewStatus: task.SecondReviewStatus, SecondReviewNotes: task.SecondReviewNotes, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+}
+
+func portalFromModel(portal *domain.Portal) *portalView {
+	return &portalView{ID: portal.ID, AccountID: portal.AccountID, Name: portal.Name, Slug: portal.Slug, CustomDomain: portal.CustomDomain, Color: portal.Color, HeaderText: portal.HeaderText, CreatedAt: portal.CreatedAt, UpdatedAt: portal.UpdatedAt}
+}
+
+func articleFromModel(article *domain.Article) *articleView {
+	return &articleView{ID: article.ID, PortalID: article.PortalID, CategoryID: article.CategoryID, AccountID: article.AccountID, AuthorID: article.AuthorID, Title: article.Title, Slug: article.Slug, Content: article.Content, Status: article.Status, Views: article.Views, CreatedAt: article.CreatedAt, UpdatedAt: article.UpdatedAt}
 }
 
 func mediaCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {

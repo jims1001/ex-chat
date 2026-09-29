@@ -669,7 +669,7 @@
         "recovery": "索引和发布版本同步"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "runtime-query-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },
