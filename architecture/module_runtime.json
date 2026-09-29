@@ -363,7 +363,7 @@
         "recovery": "状态和事件版本检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "command-surface-implemented",
+      "acceptanceStatus": "declared-contract-surface-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -384,11 +384,14 @@
       "implementedIndependentEvents": [
         "con.conversation.created.v1",
         "con.conversation.changed.v1",
-        "con.conversation_status.changed.v1"
+        "con.conversation_status.changed.v1",
+        "con.conversation.deleted.v1"
       ],
       "implementedConsumedEvents": [
         "cus.contact.merged.v1"
-      ]
+      ],
+      "declaredContractSurfaceVerified": true,
+      "outboxAtomicWithCommands": true
     },
     {
       "module": "MSG",

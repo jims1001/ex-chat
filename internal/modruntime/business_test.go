@@ -1266,6 +1266,61 @@ func TestCONParticipantManagementAndAccountAnonymizeStayOwnerScoped(t *testing.T
 	}
 }
 
+func TestCONConversationDeleteRemovesOnlyOwnerFactsAndPublishesEvent(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	other := domain.Conversation{AccountID: 92, InboxID: 22, ContactID: 32, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.ConversationParticipant{ConversationID: conversation.ID, UserID: 7}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.ConversationLabel{ConversationID: conversation.ID, LabelID: 8}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "conversation-delete-1", CommandType: "con.conversation.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversation.ID), 10)}, Input: map[string]any{"operation": "delete"}, IdempotencyKey: "conversation-delete-key", CorrelationID: "conversation-delete-correlation", CausationID: "conversation-delete-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "con.account_deletion_status.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/con.conversation.update.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for index := 0; index < 2; index++ {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"deleted"`) {
+			t.Fatalf("delete=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var owned, untouched, participants, labels, events int64
+	_ = db.Model(&domain.Conversation{}).Where("account_id = ?", 91).Count(&owned).Error
+	_ = db.Model(&domain.Conversation{}).Where("account_id = ?", 92).Count(&untouched).Error
+	_ = db.Model(&domain.ConversationParticipant{}).Where("conversation_id = ?", conversation.ID).Count(&participants).Error
+	_ = db.Model(&domain.ConversationLabel{}).Where("conversation_id = ?", conversation.ID).Count(&labels).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%con.conversation.deleted.v1%").Count(&events).Error
+	if owned != 0 || untouched != 1 || participants != 0 || labels != 0 || events != 1 {
+		t.Fatalf("owned=%d untouched=%d participants=%d labels=%d events=%d", owned, untouched, participants, labels, events)
+	}
+	cross := command
+	cross.CommandID, cross.IdempotencyKey, cross.CorrelationID = "conversation-delete-2", "conversation-delete-cross", "conversation-delete-cross-correlation"
+	cross.Target.ID = strconv.FormatUint(uint64(other.ID), 10)
+	if response := call(cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross delete=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}
@@ -2329,6 +2384,29 @@ func TestMEDIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	for _, foreign := range []any{&domain.Account{}, &domain.Attachment{}, &domain.Conversation{}, &domain.Message{}} {
 		if db.Migrator().HasTable(foreign) {
 			t.Fatalf("MED runtime contains foreign table %T", foreign)
+		}
+	}
+}
+
+func TestCONIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
+	db := newModuleTestDB(t, "CON")
+	cfg := businessConfig("CON")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://127.0.0.1:1", Token: "ten"}, "CHN": {URL: "http://127.0.0.1:2", Token: "chn"}, "CUS": {URL: "http://127.0.0.1:3", Token: "cus"}}
+	registry := NewContractRegistry("CON")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	// module_contracts.json declares seven commands and four queries for CON.
+	if registry.Count() != 11 {
+		t.Fatalf("CON registered contracts=%d want=11", registry.Count())
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("CON runtime readiness: %v", err)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Inbox{}, &domain.Contact{}, &domain.User{}, &domain.Team{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreign) {
+			t.Fatalf("CON runtime contains foreign table %T", foreign)
 		}
 	}
 }

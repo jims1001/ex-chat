@@ -1166,6 +1166,29 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if failure != nil {
 				return nil, failure
 			}
+			operation, _ := command.Input["operation"].(string)
+			if strings.EqualFold(strings.TrimSpace(operation), "delete") {
+				tx := Transaction(ctx, r.DB)
+				var conversation domain.Conversation
+				if err := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).First(&conversation).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+				} else if err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+				}
+				if err := tx.Where("conversation_id = ?", conversationID).Delete(&domain.ConversationLabel{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "conversation labels could not be deleted"}
+				}
+				if err := tx.Where("conversation_id = ?", conversationID).Delete(&domain.ConversationParticipant{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "conversation participants could not be deleted"}
+				}
+				if result := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).Delete(&domain.Conversation{}); result.Error != nil || result.RowsAffected != 1 {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "conversation could not be deleted"}
+				}
+				if err := r.appendBusinessEvent(ctx, command, "con.conversation.deleted.v1", "Conversation", command.Target.ID, []string{"deleted"}, map[string]any{"conversation_id": conversationID, "display_id": conversation.DisplayID, "operation": "deleted"}); err != nil {
+					return nil, err
+				}
+				return map[string]any{"conversation_id": conversationID, "status": "deleted"}, nil
+			}
 			updates := map[string]any{}
 			changed := make([]string, 0, 2)
 			if value, ok := command.Input["muted"]; ok {
