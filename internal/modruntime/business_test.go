@@ -1825,6 +1825,68 @@ func TestTKTTicketCreateValidatesOwnersAndCommitsAtomically(t *testing.T) {
 	}
 }
 
+func TestTKTStatusChangeAndReopenEnforceWorkflowVersionAndOwner(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: err == nil && query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["TKT"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "TKT")
+	now := time.Now().UTC()
+	ticket := domain.Ticket{AccountID: 91, TicketNumber: "TKT-91-STATUS", Title: "Status", Status: "open", Priority: "high", SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&ticket).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("TKT")
+	cfg.Dependencies["TEN"] = DependencyConfig{URL: "http://" + tenAddress, Token: tenCfg.AuthToken}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("TKT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "ticket", ID: strconv.FormatUint(uint64(ticket.ID), 10), ExpectedVersion: 1}, CorrelationID: "ticket-status-correlation", CausationID: "ticket-status-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.ticket.get.v1"}}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	change := base
+	change.CommandID, change.CommandType, change.IdempotencyKey, change.Input = "ticket-resolve-1", "tkt.status.change.v1", "ticket-resolve-key", map[string]any{"status": "resolved", "reason": "fixed"}
+	for range 2 {
+		response := call(change)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"resolved"`) || !strings.Contains(response.Body.String(), `"version":2`) {
+			t.Fatalf("resolve=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	reopen := base
+	reopen.Target.ExpectedVersion = 2
+	reopen.CommandID, reopen.CommandType, reopen.IdempotencyKey, reopen.Input = "ticket-reopen-1", "tkt.ticket.reopen.v1", "ticket-reopen-key", map[string]any{"reason": "customer replied"}
+	response := call(reopen)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"open"`) || !strings.Contains(response.Body.String(), `"version":3`) {
+		t.Fatalf("reopen=%d body=%s", response.Code, response.Body.String())
+	}
+	stale := reopen
+	stale.CommandID, stale.IdempotencyKey, stale.Target.ExpectedVersion = "ticket-stale", "ticket-stale-key", 1
+	if response := call(stale); response.Code != http.StatusConflict {
+		t.Fatalf("stale=%d body=%s", response.Code, response.Body.String())
+	}
+	var histories, activities, receipts, events int64
+	_ = db.Model(&domain.TicketStatusHistory{}).Count(&histories).Error
+	_ = db.Model(&domain.TicketActivity{}).Count(&activities).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if histories != 2 || activities != 2 || receipts != 2 || events != 2 {
+		t.Fatalf("histories=%d activities=%d receipts=%d events=%d", histories, activities, receipts, events)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

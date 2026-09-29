@@ -2342,6 +2342,90 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		transitionTicket := func(ctx context.Context, command foundation.CommandEnvelope, reopen bool) (any, error) {
+			ticketID, failure := ticketCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			status, _ := command.Input["status"].(string)
+			status = strings.ToLower(strings.TrimSpace(status))
+			if reopen {
+				status = "open"
+			}
+			if status != "open" && status != "pending" && status != "resolved" && status != "closed" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "status is invalid"}
+			}
+			configured, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN validation is unavailable"}
+			}
+			actorID, err := strconv.ParseUint(command.Actor.ID, 10, 64)
+			if err != nil || actorID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "numeric actor is required"}
+			}
+			if err := newModuleClient("TKT", configured, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, uint(actorID)); err != nil {
+				return nil, err
+			}
+			tx := Transaction(ctx, r.DB)
+			ticket, err := loadTicket(tx, command.AccountID, ticketID)
+			if err != nil {
+				return nil, err
+			}
+			allowed := map[string]map[string]bool{"open": {"pending": true, "resolved": true, "closed": true}, "pending": {"open": true, "resolved": true, "closed": true}, "resolved": {"open": true, "closed": true}, "closed": {"open": true}}
+			if reopen && ticket.Status != "resolved" && ticket.Status != "closed" {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "only resolved or closed tickets can be reopened"}
+			}
+			if ticket.Status == status || !allowed[ticket.Status][status] {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket status transition is not allowed"}
+			}
+			fromStatus := ticket.Status
+			expectedVersion := ticket.Version
+			if command.Target.ExpectedVersion > 0 && uint64(ticket.Version) != command.Target.ExpectedVersion {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket version changed"}
+			}
+			now := time.Now().UTC()
+			reason, _ := command.Input["reason"].(string)
+			updates := map[string]any{"status": status, "status_reason": reason, "version": gorm.Expr("version + 1"), "updated_at": now}
+			if status == "resolved" {
+				updates["resolved_at"] = now
+			} else if status == "closed" {
+				updates["closed_at"] = now
+			} else if status == "open" {
+				updates["resolved_at"], updates["closed_at"] = nil, nil
+			}
+			result := tx.Model(&domain.Ticket{}).Where("account_id = ? AND id = ? AND version = ?", command.AccountID, ticketID, expectedVersion).Updates(updates)
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket status could not be changed"}
+			}
+			if result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket version changed"}
+			}
+			userID := uint(actorID)
+			if err := tx.Create(&domain.TicketStatusHistory{AccountID: command.AccountID, TicketID: ticketID, FromStatus: fromStatus, ToStatus: status, Reason: reason, UserID: &userID, CreatedAt: now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket status history could not be created"}
+			}
+			details, _ := json.Marshal(map[string]any{"from_status": fromStatus, "to_status": status})
+			if err := tx.Create(&domain.TicketActivity{AccountID: command.AccountID, TicketID: ticketID, UserID: &userID, Action: "status_changed", Details: string(details), CreatedAt: now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket activity could not be created"}
+			}
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, ticketID).First(ticket).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "ticket store is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "tkt.ticket_status.changed.v1", "Ticket", command.Target.ID, []string{"status"}, map[string]any{"ticket_id": ticketID, "from_status": fromStatus, "to_status": status, "version": ticket.Version}); err != nil {
+				return nil, err
+			}
+			return ticketFromModel(ticket), nil
+		}
+		if err := r.Contracts.RegisterCommand("tkt.status.change.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			return transitionTicket(ctx, command, false)
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("tkt.ticket.reopen.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			return transitionTicket(ctx, command, true)
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("tkt.ticket.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			ticketID, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -3036,6 +3120,17 @@ func messageCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFa
 	parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
 	if err != nil || parsed == 0 {
 		return 0, &ContractFailure{Type: "validation_failed", Message: "message target is invalid"}
+	}
+	return uint(parsed), nil
+}
+
+func ticketCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {
+	if command.Target.Type != "ticket" {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "ticket target is required"}
+	}
+	parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+	if err != nil || parsed == 0 {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "ticket target is invalid"}
 	}
 	return uint(parsed), nil
 }
