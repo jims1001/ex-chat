@@ -3010,6 +3010,104 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return &article, nil
 		}
+		if err := r.Contracts.RegisterCommand("kb.article.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			portalID, err := uintFilter(command.Input, "portal_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "portal_id is required"}
+			}
+			categoryID, err := uintFilter(command.Input, "category_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "category_id is required"}
+			}
+			portal, err := loadPortal(command.AccountID, portalID)
+			if err != nil {
+				return nil, err
+			}
+			var category domain.Category
+			result := r.DB.Where("account_id = ? AND portal_id = ? AND id = ?", command.AccountID, portal.ID, categoryID).First(&category)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "category was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "category store is unavailable"}
+			}
+			author, parseErr := strconv.ParseUint(command.Actor.ID, 10, 64)
+			if parseErr != nil || author == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "numeric author actor is required"}
+			}
+			tenConfig, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN validation is unavailable"}
+			}
+			if err := newModuleClient("KB", tenConfig, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, uint(author)); err != nil {
+				return nil, err
+			}
+			title, _ := command.Input["title"].(string)
+			slug, _ := command.Input["slug"].(string)
+			content, _ := command.Input["content"].(string)
+			title, slug = strings.TrimSpace(title), strings.ToLower(strings.TrimSpace(slug))
+			if title == "" || len(title) > 255 || slug == "" || len(slug) > 255 || content == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "title, slug and content are required"}
+			}
+			var duplicate int64
+			if err := r.DB.Model(&domain.Article{}).Where("account_id = ? AND portal_id = ? AND slug = ?", command.AccountID, portal.ID, slug).Count(&duplicate).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "article store is unavailable"}
+			}
+			if duplicate > 0 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "article slug already exists"}
+			}
+			now := time.Now().UTC()
+			article := domain.Article{AccountID: command.AccountID, PortalID: portal.ID, CategoryID: category.ID, AuthorID: uint(author), Title: title, Slug: slug, Content: content, Status: "draft", CreatedAt: now, UpdatedAt: now}
+			if err := Transaction(ctx, r.DB).Create(&article).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "article could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "kb.knowledge.changed.v1", "Article", strconv.FormatUint(uint64(article.ID), 10), []string{"created"}, map[string]any{"article_id": article.ID, "portal_id": article.PortalID, "category_id": article.CategoryID, "status": article.Status}); err != nil {
+				return nil, err
+			}
+			return articleFromModel(&article), nil
+		}); err != nil {
+			return err
+		}
+		changeArticleStatus := func(ctx context.Context, command foundation.CommandEnvelope, status, eventType string) (any, error) {
+			if command.Target.Type != "article" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "article target is required"}
+			}
+			parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsed == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "article target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			article, err := loadArticle(command.AccountID, uint(parsed))
+			if err != nil {
+				return nil, err
+			}
+			if article.Status == status {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "article already has requested status"}
+			}
+			if status == "published" && article.Status != "draft" && article.Status != "archived" {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "article cannot be published"}
+			}
+			now := time.Now().UTC()
+			result := tx.Model(&domain.Article{}).Where("account_id = ? AND id = ? AND status = ?", command.AccountID, article.ID, article.Status).Updates(map[string]any{"status": status, "updated_at": now})
+			if result.Error != nil || result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "article status changed concurrently"}
+			}
+			article.Status, article.UpdatedAt = status, now
+			if err := r.appendBusinessEvent(ctx, command, eventType, "Article", command.Target.ID, []string{"status"}, map[string]any{"article_id": article.ID, "portal_id": article.PortalID, "status": article.Status}); err != nil {
+				return nil, err
+			}
+			return articleFromModel(article), nil
+		}
+		if err := r.Contracts.RegisterCommand("kb.content.publish.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			return changeArticleStatus(ctx, command, "published", "kb.knowledge.published.v1")
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("kb.content.archive.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			return changeArticleStatus(ctx, command, "archived", "kb.knowledge.archived.v1")
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("kb.content.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			id, err := uintFilter(query.Filter, "id")
 			if err != nil {
