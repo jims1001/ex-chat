@@ -1887,6 +1887,93 @@ func TestTKTStatusChangeAndReopenEnforceWorkflowVersionAndOwner(t *testing.T) {
 	}
 }
 
+func TestTKTCommentAndAccountAnonymizeStayOwnerScoped(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, err := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: err == nil && query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["TKT"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+	db := newModuleTestDB(t, "TKT")
+	now := time.Now().UTC()
+	userID, contactID, conversationID := uint(7), uint(21), uint(31)
+	owned := domain.Ticket{AccountID: 91, TicketNumber: "TKT-91-ANON", Title: "Private title", Description: "Private description", Status: "open", Priority: "high", AssignedGroup: "Secret group", AssigneeID: &userID, ContactID: &contactID, ConversationID: &conversationID, CreatorID: &userID, CustomAttributes: `{"secret":true}`, WaitingReason: "private wait", StatusReason: "private reason", SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	other := domain.Ticket{AccountID: 92, TicketNumber: "TKT-92-ANON", Title: "Other private", Description: "Keep me", Status: "open", Priority: "high", SLAStatus: "normal", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketStatusHistory{AccountID: 91, TicketID: owned.ID, FromStatus: "", ToStatus: "open", Reason: "private", WaitingReason: "private", UserID: &userID, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketAttachment{AccountID: 91, TicketID: owned.ID, FileName: "secret.pdf", FileType: "application/pdf", DataURL: "med://private", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.TicketWatcher{AccountID: 91, TicketID: owned.ID, UserID: userID, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("TKT")
+	cfg.Dependencies["TEN"] = DependencyConfig{URL: "http://" + tenAddress, Token: tenCfg.AuthToken}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("TKT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(path string, command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	comment := foundation.CommandEnvelope{CommandID: "ticket-comment-1", CommandType: "tkt.comment.add.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "ticket", ID: strconv.FormatUint(uint64(owned.ID), 10)}, Input: map[string]any{"content": "Private comment", "is_private": true}, IdempotencyKey: "ticket-comment-key", CorrelationID: "ticket-comment-correlation", CausationID: "ticket-comment-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.history.list.v1"}}
+	for range 2 {
+		response := call("/contracts/commands/tkt.comment.add.v1", comment)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"is_private":true`) || strings.Contains(response.Body.String(), "Private comment") {
+			t.Fatalf("comment=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	anonymize := foundation.CommandEnvelope{CommandID: "ticket-anonymize-1", CommandType: "tkt.account_tickets.anonymize.v1", AccountID: 91, Actor: comment.Actor, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{}, IdempotencyKey: "ticket-anonymize-key", CorrelationID: "ticket-anonymize-correlation", CausationID: "account-delete", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "tkt.account_deletion_status.get.v1"}}
+	response := call("/contracts/commands/tkt.account_tickets.anonymize.v1", anonymize)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"anonymized":true`) {
+		t.Fatalf("anonymize=%d body=%s", response.Code, response.Body.String())
+	}
+	var restoredOwned, restoredOther domain.Ticket
+	if err := db.First(&restoredOwned, owned.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&restoredOther, other.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if restoredOwned.Title != "Anonymized ticket" || restoredOwned.Description != "" || restoredOwned.ContactID != nil || restoredOwned.AssigneeID != nil || restoredOwned.CreatorID != nil || restoredOther.Title != "Other private" || restoredOther.Description != "Keep me" {
+		t.Fatalf("owned=%+v other=%+v", restoredOwned, restoredOther)
+	}
+	var comments []domain.TicketComment
+	if err := db.Where("account_id = ?", 91).Find(&comments).Error; err != nil || len(comments) != 1 || comments[0].Content != "[redacted]" || comments[0].UserID != nil {
+		t.Fatalf("comments=%+v err=%v", comments, err)
+	}
+	query := foundation.QueryEnvelope{QueryType: "tkt.account_deletion_status.get.v1", AccountID: 91, Actor: comment.Actor, Filter: map[string]any{}, Sort: []string{"id"}, Page: "1", Fields: []string{"ready"}, Consistency: "strong", RequestedAt: now}
+	queryResponse := performContractRequest(runtime.Handler(), "/contracts/queries/tkt.account_deletion_status.get.v1", query, func(request *http.Request) {
+		request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+		request.Header.Set(headerCaller, "API")
+	})
+	if queryResponse.Code != http.StatusOK || !strings.Contains(queryResponse.Body.String(), `"pii_count":0`) || !strings.Contains(queryResponse.Body.String(), `"ready":true`) {
+		t.Fatalf("deletion status=%d body=%s", queryResponse.Code, queryResponse.Body.String())
+	}
+	var commentsCount, events int64
+	_ = db.Model(&domain.TicketComment{}).Where("account_id = ?", 91).Count(&commentsCount).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND object_type = ?", "event_outbox", "Ticket").Count(&events).Error
+	if commentsCount != 1 || events != 1 {
+		t.Fatalf("comments=%d events=%d", commentsCount, events)
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

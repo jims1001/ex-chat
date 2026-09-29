@@ -2426,6 +2426,78 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("tkt.comment.add.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			ticketID, failure := ticketCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			content, _ := command.Input["content"].(string)
+			content = strings.TrimSpace(content)
+			if content == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "comment content is required"}
+			}
+			actorID, err := strconv.ParseUint(command.Actor.ID, 10, 64)
+			if err != nil || actorID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "numeric actor is required"}
+			}
+			configured, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN validation is unavailable"}
+			}
+			if err := newModuleClient("TKT", configured, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, uint(actorID)); err != nil {
+				return nil, err
+			}
+			tx := Transaction(ctx, r.DB)
+			if _, err := loadTicket(tx, command.AccountID, ticketID); err != nil {
+				return nil, err
+			}
+			isPrivate := true
+			if value, exists := command.Input["is_private"].(bool); exists {
+				isPrivate = value
+			}
+			userID := uint(actorID)
+			now := time.Now().UTC()
+			comment := domain.TicketComment{AccountID: command.AccountID, TicketID: ticketID, UserID: &userID, Content: content, IsPrivate: isPrivate, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&comment).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket comment could not be created"}
+			}
+			if err := tx.Create(&domain.TicketActivity{AccountID: command.AccountID, TicketID: ticketID, UserID: &userID, Action: "commented", Details: `{}`, CreatedAt: now}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket activity could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "tkt.ticket.commented.v1", "Ticket", command.Target.ID, []string{"commented"}, map[string]any{"ticket_id": ticketID, "comment_id": comment.ID, "is_private": comment.IsPrivate}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "ticket_id": ticketID, "comment_id": comment.ID, "is_private": comment.IsPrivate, "created_at": comment.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("tkt.account_tickets.anonymize.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			if err := tx.Model(&domain.Ticket{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"title": "Anonymized ticket", "description": "", "assigned_group": "", "assignee_id": nil, "contact_id": nil, "conversation_id": nil, "creator_id": nil, "custom_attributes": "", "waiting_reason": "", "status_reason": "", "updated_at": time.Now().UTC()}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "tickets could not be anonymized"}
+			}
+			if err := tx.Model(&domain.TicketComment{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"user_id": nil, "contact_id": nil, "content": "[redacted]", "updated_at": time.Now().UTC()}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket comments could not be anonymized"}
+			}
+			if err := tx.Model(&domain.TicketActivity{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"user_id": nil, "details": `{}`}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket activities could not be anonymized"}
+			}
+			if err := tx.Model(&domain.TicketStatusHistory{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"user_id": nil, "reason": "", "waiting_reason": ""}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket histories could not be anonymized"}
+			}
+			if err := tx.Model(&domain.TicketAttachment{}).Where("account_id = ?", command.AccountID).Updates(map[string]any{"file_name": "redacted", "file_type": "", "data_url": ""}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket attachments could not be anonymized"}
+			}
+			if err := tx.Where("account_id = ?", command.AccountID).Delete(&domain.TicketWatcher{}).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "ticket watchers could not be removed"}
+			}
+			return map[string]any{"account_id": command.AccountID, "anonymized": true}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("tkt.ticket.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			ticketID, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -2489,8 +2561,23 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				}
 				counts[name] = count
 			}
-			ready := counts["ticket_count"] == 0 && counts["comment_count"] == 0 && counts["activity_count"] == 0 && counts["history_count"] == 0 && counts["attachment_count"] == 0 && counts["watcher_count"] == 0
-			return map[string]any{"account_id": query.AccountID, "ticket_count": counts["ticket_count"], "comment_count": counts["comment_count"], "activity_count": counts["activity_count"], "history_count": counts["history_count"], "attachment_count": counts["attachment_count"], "watcher_count": counts["watcher_count"], "ready": ready}, nil
+			piiCounts := map[string]int64{}
+			for name, statement := range map[string]*gorm.DB{
+				"ticket_pii_count":     r.DB.Model(&domain.Ticket{}).Where("account_id = ? AND (title <> ? OR description <> '' OR assigned_group <> '' OR assignee_id IS NOT NULL OR contact_id IS NOT NULL OR conversation_id IS NOT NULL OR creator_id IS NOT NULL OR custom_attributes <> '' OR waiting_reason <> '' OR status_reason <> '')", query.AccountID, "Anonymized ticket"),
+				"comment_pii_count":    r.DB.Model(&domain.TicketComment{}).Where("account_id = ? AND (user_id IS NOT NULL OR contact_id IS NOT NULL OR content <> ?)", query.AccountID, "[redacted]"),
+				"activity_pii_count":   r.DB.Model(&domain.TicketActivity{}).Where("account_id = ? AND (user_id IS NOT NULL OR details <> ?)", query.AccountID, `{}`),
+				"history_pii_count":    r.DB.Model(&domain.TicketStatusHistory{}).Where("account_id = ? AND (user_id IS NOT NULL OR reason <> '' OR waiting_reason <> '')", query.AccountID),
+				"attachment_pii_count": r.DB.Model(&domain.TicketAttachment{}).Where("account_id = ? AND (file_name <> ? OR file_type <> '' OR data_url <> '')", query.AccountID, "redacted"),
+				"watcher_pii_count":    r.DB.Model(&domain.TicketWatcher{}).Where("account_id = ?", query.AccountID),
+			} {
+				var count int64
+				if err := statement.Count(&count).Error; err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "ticket deletion status is unavailable"}
+				}
+				piiCounts[name] = count
+			}
+			piiCount := piiCounts["ticket_pii_count"] + piiCounts["comment_pii_count"] + piiCounts["activity_pii_count"] + piiCounts["history_pii_count"] + piiCounts["attachment_pii_count"] + piiCounts["watcher_pii_count"]
+			return map[string]any{"account_id": query.AccountID, "ticket_count": counts["ticket_count"], "comment_count": counts["comment_count"], "activity_count": counts["activity_count"], "history_count": counts["history_count"], "attachment_count": counts["attachment_count"], "watcher_count": counts["watcher_count"], "pii_count": piiCount, "ready": piiCount == 0}, nil
 		}); err != nil {
 			return err
 		}

@@ -552,7 +552,7 @@
         "recovery": "关联事件补读"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "status-and-reopen-implemented",
+      "acceptanceStatus": "commands-and-events-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -567,11 +567,14 @@
       "implementedIndependentCommands": [
         "tkt.ticket.create.v1",
         "tkt.status.change.v1",
-        "tkt.ticket.reopen.v1"
+        "tkt.comment.add.v1",
+        "tkt.ticket.reopen.v1",
+        "tkt.account_tickets.anonymize.v1"
       ],
       "implementedIndependentEvents": [
         "tkt.ticket.created.v1",
-        "tkt.ticket_status.changed.v1"
+        "tkt.ticket_status.changed.v1",
+        "tkt.ticket.commented.v1"
       ]
     },
     {
