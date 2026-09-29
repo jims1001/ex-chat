@@ -5490,3 +5490,80 @@ func TestBILInvoiceIssueAndDeclaredSurface(t *testing.T) {
 		t.Fatalf("BIL readiness: %v", err)
 	}
 }
+
+func TestBILCheckoutAllowsOneWriteAcrossPostgresInstances(t *testing.T) {
+	db := postgresModuleDB(t, "BIL")
+	cfg := businessConfig("BIL")
+	command := foundation.CommandEnvelope{CommandID: "capacity-bil", CommandType: "bil.checkout.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"order_id": "CAPACITY-BIL", "amount_yuan": 88.0}, IdempotencyKey: "capacity-bil-91", CorrelationID: "capacity-bil-correlation", CausationID: "capacity-bil-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "bil.order.get.v1"}}
+	const instances = 8
+	results, start := make(chan *httptest.ResponseRecorder, instances), make(chan struct{})
+	var wait sync.WaitGroup
+	for range instances {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("BIL")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func(handler http.Handler) {
+			defer wait.Done()
+			<-start
+			results <- performContractRequest(handler, "/contracts/commands/bil.checkout.create.v1", command, func(request *http.Request) {
+				request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+				request.Header.Set(headerCaller, "API")
+				request.Header.Set(headerCorrelationID, command.CorrelationID)
+			})
+		}(runtime.Handler())
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	for response := range results {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "CAPACITY-BIL") {
+			t.Fatalf("concurrent BIL status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var orders, receipts, events int64
+	_ = db.Model(&domain.Order{}).Where("account_id = ? AND order_id = ?", 91, "CAPACITY-BIL").Count(&orders).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if orders != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("orders=%d receipts=%d events=%d", orders, receipts, events)
+	}
+}
+
+func TestBILMixedVersionUpgradeRollbackPreservesOrderFact(t *testing.T) {
+	db := newModuleTestDB(t, "BIL")
+	makeRuntime := func(version string, accepted map[string]bool) Runtime {
+		cfg := businessConfig("BIL")
+		cfg.ContractVersion, cfg.AcceptedVersions = version, accepted
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("BIL")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	command := foundation.CommandEnvelope{CommandID: "upgrade-bil", CommandType: "bil.checkout.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"order_id": "ROLLBACK-BIL", "amount_yuan": 99.0}, IdempotencyKey: "upgrade-bil-91", CorrelationID: "upgrade-bil-correlation", CausationID: "upgrade-bil-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "bil.order.get.v1"}}
+	call := func(runtime Runtime, version, path string, payload any) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+runtime.Config.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerContractVersion, version)
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	v2 := makeRuntime("v2", map[string]bool{"v1": true, "v2": true})
+	if response := call(v2, "v2", "/contracts/commands/bil.checkout.create.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v2=%d body=%s", response.Code, response.Body.String())
+	}
+	v1 := makeRuntime("v1", map[string]bool{"v1": true})
+	if response := call(v1, "v1", "/contracts/commands/bil.checkout.create.v1", command); response.Code != http.StatusOK {
+		t.Fatalf("v1 replay=%d body=%s", response.Code, response.Body.String())
+	}
+	query := foundation.QueryEnvelope{QueryType: "bil.order.get.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"order_id": "ROLLBACK-BIL"}, Sort: []string{"id"}, Page: "1", Fields: []string{"id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+	if response := call(v1, "v1", "/contracts/queries/bil.order.get.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "ROLLBACK-BIL") {
+		t.Fatalf("v1 read=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(v1, "v2", "/contracts/queries/bil.order.get.v1", query); response.Code != http.StatusBadRequest {
+		t.Fatalf("rollback accepted v2=%d", response.Code)
+	}
+}

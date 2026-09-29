@@ -715,6 +715,64 @@ func TestKBSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestBILSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "BIL")
+	now := time.Now().UTC()
+	plan := domain.SubscriptionPlan{Name: "Snapshot Pro", Slug: "snapshot-pro", PriceCents: 9900, AgentLimit: 10, AITokenLimit: 1000, Features: `["billing"]`, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	subscription := domain.AccountSubscription{AccountID: 91, PlanID: plan.ID, Status: "active", BillingCurrency: "AUD", CurrentPeriodStart: now, CurrentPeriodEnd: now.Add(30 * 24 * time.Hour), CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	order := domain.Order{AccountID: 91, OrderID: "SNAPSHOT-BIL", AmountYuan: 99, OrderStatus: "paid", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&order).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.AccountBilling{AccountID: 91, ActionType: "deduction", Amount: 99, Currency: "AUD", Description: "order:" + strconv.FormatUint(uint64(order.ID), 10), CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := foundation.EventEnvelope{EventID: "snapshot-bil-event", EventType: "bil.order.changed.v1", EventVersion: "v1", SourceModule: "BIL", AccountID: 91, AggregateType: "Order", AggregateID: strconv.FormatUint(uint64(order.ID), 10), AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "snapshot-bil", CausationID: "snapshot", ChangedFields: []string{"created"}, Payload: map[string]any{"order_id": order.ID, "status": order.OrderStatus}, DataClassification: "internal"}
+	if err := NewEventOutbox(source, "BIL").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "bil.snapshot.json")
+	if err := CreateSnapshot(source, "BIL", "bil-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "BIL")
+	targetCfg := businessConfig("BIL")
+	targetCfg.RecoveryGeneration = "bil-gen-1"
+	targetRuntime := Runtime{Config: targetCfg, DB: target}
+	if err := targetRuntime.Readiness(); err == nil {
+		t.Fatal("BIL target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "BIL", "bil-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := targetRuntime.Readiness(); err != nil {
+		t.Fatalf("BIL target not ready after restore: %v", err)
+	}
+	for name, model := range map[string]any{"plans": &domain.SubscriptionPlan{}, "subscriptions": &domain.AccountSubscription{}, "orders": &domain.Order{}, "billings": &domain.AccountBilling{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		if count != 1 {
+			t.Fatalf("%s count=%d", name, count)
+		}
+	}
+	var events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if events != 1 {
+		t.Fatalf("events=%d", events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.Contact{}, &domain.Conversation{}, &domain.User{}, &domain.Team{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("BIL restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

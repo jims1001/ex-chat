@@ -34,7 +34,7 @@
 | TKT | 5 Command/4 Query/3 Event 与合并消费完整接入 | 事件自动投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 六类所有者快照恢复与门禁通过 |
 | QLT | 4 Command/3 Query/3 Event 完整接入 | 自动事件投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 通过 | 八类所有者快照恢复与门禁通过 |
 | KB | 6 Command/5 Query 已接入并完成账号边界验证 | 5 类事件均有生产路径且自动投递通过 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | Portal/Category/Article 与日志恢复、readiness 门禁通过 |
-| BIL | 5 Command/3 Query 已接入并完成账号边界验证 | 5 类生产事件均有原子写入路径，合并事件消费已接入 | 事件去重通过 | 待验收 | 待验收 |
+| BIL | 5 Command/3 Query 已接入并完成账号边界验证 | 5 类生产事件均有原子写入和自动投递路径，合并事件消费已接入 | PostgreSQL 8 实例单写通过 | v2→v1 重放和读取通过 | 四类所有者数据与日志恢复、readiness 门禁通过 |
 | EXT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | NTF | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
 | AUT | 待完整验收 | 待验收 | 待验收 | 待验收 | 待验收 |
@@ -234,3 +234,6 @@
 
 - 已完成并验证：BIL 发票按本账号订单签发，发票编号在账号内防重；5 Command/3 Query/5 Event 冻结声明面均有实际路径（E-ARCH-08-v162）。
 - 下一项：BIL PostgreSQL 多实例、版本回退、事件投递和备份恢复验收。
+
+- 已完成并验证：BIL PostgreSQL 8 实例 checkout 保持单写，v2→v1 回退保留订单事实，订单事件自动投递，四类所有者数据与日志快照恢复及 readiness 门禁通过（E-ARCH-08-v163）。
+- BIL 行关闭；下一项：EXT 独立运行公开合同。

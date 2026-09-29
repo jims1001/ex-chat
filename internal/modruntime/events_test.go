@@ -610,3 +610,51 @@ func TestKBKnowledgeEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) 
 		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
 	}
 }
+
+func TestBILOrderEventWorkerAutomaticallyDeliversPendingOutbox(t *testing.T) {
+	consumerRegistry := NewContractRegistry("AUD")
+	delivered := make(chan foundation.EventEnvelope, 1)
+	if err := consumerRegistry.RegisterEvent("bil.order.changed.v1", func(_ context.Context, event foundation.EventEnvelope) error { delivered <- event; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := businessConfig("AUD")
+	consumerCfg.AllowedCallers["BIL"] = true
+	server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: consumerCfg, DB: newModuleTestDB(t, "AUD"), Contracts: consumerRegistry}.Handler())
+	defer server.Shutdown(context.Background())
+	sourceDB := newModuleTestDB(t, "BIL")
+	now := time.Now().UTC()
+	event := foundation.EventEnvelope{EventID: "automatic-bil-order-1", EventType: "bil.order.changed.v1", EventVersion: "v1", SourceModule: "BIL", AccountID: 91, AggregateType: "Order", AggregateID: "101", AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "automatic-bil-correlation", CausationID: "bil-checkout-command", ChangedFields: []string{"created"}, Payload: map[string]any{"order_id": 101, "status": "pending"}, DataClassification: "internal"}
+	if err := NewEventOutbox(sourceDB, "BIL").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	sourceCfg := businessConfig("BIL")
+	sourceCfg.EventPollInterval = 10 * time.Millisecond
+	sourceCfg.EventTargets = map[string]EventFanoutTarget{"AUD": {Dependency: DependencyConfig{URL: "http://" + address, Token: consumerCfg.AuthToken}, EventTypes: map[string]bool{event.EventType: true}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failures := make(chan error, 1)
+	go (Runtime{Config: sourceCfg, DB: sourceDB}).RunEventFanout(ctx, func(err error) { failures <- err })
+	select {
+	case received := <-delivered:
+		if received.SourceModule != "BIL" || received.Payload["status"] != "pending" {
+			t.Fatalf("unexpected event=%+v", received)
+		}
+	case err := <-failures:
+		t.Fatalf("fanout=%v", err)
+	case <-time.After(time.Second):
+		t.Fatal("automatic BIL fanout did not deliver")
+	}
+	deadline := time.Now().Add(time.Second)
+	var outbox, receipts int64
+	for time.Now().Before(deadline) {
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ? AND status = ?", "event_outbox", "delivered").Count(&outbox).Error
+		_ = sourceDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_delivery").Count(&receipts).Error
+		if outbox == 1 && receipts == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if outbox != 1 || receipts != 1 {
+		t.Fatalf("outbox=%d receipts=%d", outbox, receipts)
+	}
+}

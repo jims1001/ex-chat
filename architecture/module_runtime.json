@@ -695,8 +695,8 @@
         "whenStopped": "新购买暂停；现有权益按策略保持",
         "recovery": "支付回调补读和对账"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-contract-surface-verified",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
