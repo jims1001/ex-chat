@@ -2813,6 +2813,101 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("qlt.appeal.review.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "appeal" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "appeal target is required"}
+			}
+			parsedID, parseErr := strconv.ParseUint(command.Target.ID, 10, 64)
+			if parseErr != nil || parsedID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "appeal target is invalid"}
+			}
+			reviewer, parseErr := strconv.ParseUint(command.Actor.ID, 10, 64)
+			if parseErr != nil || reviewer == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "numeric reviewer actor is required"}
+			}
+			tenConfig, ok := r.Config.Dependencies["TEN"]
+			if !ok {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "TEN validation is unavailable"}
+			}
+			if err := newModuleClient("QLT", tenConfig, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, uint(reviewer)); err != nil {
+				return nil, err
+			}
+			tx := Transaction(ctx, r.DB)
+			var appeal domain.QAAppeal
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, uint(parsedID)).First(&appeal)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "quality appeal was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "quality appeal store is unavailable"}
+			}
+			if appeal.Status == "upheld" || appeal.Status == "adjusted" || appeal.Status == "rejected" {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "quality appeal is already closed"}
+			}
+			task, err := loadReview(command.AccountID, appeal.TaskID)
+			if err != nil {
+				return nil, err
+			}
+			if task.InspectorID != nil && *task.InspectorID == uint(reviewer) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "original inspector cannot review the appeal"}
+			}
+			action, _ := command.Input["action"].(string)
+			action = strings.ToLower(strings.TrimSpace(action))
+			if action != "adjusted" && action != "upheld" && action != "rejected" && action != "need_evidence" && action != "under_review" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "appeal review action is invalid"}
+			}
+			adjustedScore, scoreErr := optionalUint(command.Input["adjusted_score"])
+			if action == "adjusted" && (scoreErr != nil || adjustedScore == nil || *adjustedScore > 100) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "adjusted_score between 0 and 100 is required"}
+			}
+			comments, _ := command.Input["comments"].(string)
+			comments = strings.TrimSpace(comments)
+			if len(comments) > 4000 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "comments is too long"}
+			}
+			now := time.Now().UTC()
+			reviewerID := uint(reviewer)
+			appeal.ReviewerID, appeal.ReviewComments, appeal.ReviewedAt, appeal.UpdatedAt = &reviewerID, comments, &now, now
+			appeal.Status = action
+			appeal.EvidenceFrozen = action != "need_evidence"
+			if action == "adjusted" {
+				score := int(*adjustedScore)
+				appeal.AdjustedScore = &score
+				appeal.RevokeFatal, _ = command.Input["revoke_fatal"].(bool)
+				task.TotalScore = score
+				if appeal.RevokeFatal || score >= 85 {
+					task.HasFatalError = false
+				}
+			}
+			if action == "upheld" || action == "rejected" {
+				task.TotalScore, task.HasFatalError = appeal.OriginalScore, appeal.OriginalFatal
+			}
+			if action == "adjusted" || action == "upheld" || action == "rejected" {
+				if task.HasFatalError {
+					task.Result, task.Status = "致命错误", "rectifying"
+				} else if task.TotalScore >= 95 {
+					task.Result, task.Status = "优秀", "completed"
+				} else if task.TotalScore >= 85 {
+					task.Result, task.Status = "合格", "completed"
+				} else {
+					task.Result, task.Status = "需改进", "rectifying"
+				}
+			}
+			task.UpdatedAt = now
+			if err := tx.Save(task).Error; err != nil || tx.Save(&appeal).Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "quality appeal could not be reviewed"}
+			}
+			activity := domain.QAAppealActivity{AccountID: command.AccountID, AppealID: appeal.ID, ActorID: reviewerID, Action: appeal.Status, Description: comments, CreatedAt: now}
+			if err := tx.Create(&activity).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "quality appeal activity could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "qlt.appeal.changed.v1", "QAAppeal", command.Target.ID, []string{"status", "reviewer_id"}, map[string]any{"appeal_id": appeal.ID, "task_id": appeal.TaskID, "status": appeal.Status, "adjusted_score": appeal.AdjustedScore, "revoke_fatal": appeal.RevokeFatal}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": appeal.ID, "account_id": appeal.AccountID, "task_id": appeal.TaskID, "appeal_number": appeal.AppealNumber, "status": appeal.Status, "reviewer_id": appeal.ReviewerID, "adjusted_score": appeal.AdjustedScore, "revoke_fatal": appeal.RevokeFatal, "reviewed_at": appeal.ReviewedAt, "task": qualityReviewFromModel(task)}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("qlt.csat.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			var survey domain.CSATSurvey
 			statement := r.DB.Where("account_id = ?", query.AccountID)

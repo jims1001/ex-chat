@@ -618,7 +618,7 @@
         "recovery": "补收允许窗口内结果"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-review-create-boundary-verified",
+      "acceptanceStatus": "runtime-command-surface-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

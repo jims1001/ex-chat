@@ -4637,3 +4637,89 @@ func TestQLTReviewCreateValidatesScorecardTargetAndInspectorOwners(t *testing.T)
 		t.Fatalf("task_count=%d event_count=%d", taskCount, eventCount)
 	}
 }
+
+func TestQLTAppealReviewEnforcesOwnerAvoidanceAndAtomicDecision(t *testing.T) {
+	now := time.Now().UTC()
+	tenDB := newModuleTestDB(t, "TEN")
+	for _, userID := range []uint{7, 8} {
+		if err := tenDB.Create(&domain.AccountUser{AccountID: 91, UserID: userID, Role: domain.RoleAdministrator, Availability: domain.AvailabilityOnline}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["QLT"] = true
+	tenCfg.Dependencies["IAM"] = DependencyConfig{URL: "http://127.0.0.1:1", Token: "unused"}
+	tenRuntime := Runtime{Config: tenCfg, DB: tenDB, Contracts: NewContractRegistry("TEN")}
+	if err := tenRuntime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	tenServer := httptest.NewServer(tenRuntime.Handler())
+	defer tenServer.Close()
+
+	db := newModuleTestDB(t, "QLT")
+	inspectorID := uint(7)
+	task := domain.QATask{AccountID: 91, TaskNumber: "QA-APPEAL-91", TargetType: "conversation", TargetID: 1, ScorecardID: 1, InspectorID: &inspectorID, Status: "appealing", TotalScore: 70, Result: "需改进", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	appeal := domain.QAAppeal{AccountID: 91, TaskID: task.ID, AppealNumber: "AP-91-001", AppellantID: 17, OriginalScore: 70, Reason: "review", Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&appeal).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherAppeal := domain.QAAppeal{AccountID: 92, TaskID: task.ID, AppealNumber: "AP-92-001", AppellantID: 18, OriginalScore: 10, Reason: "private", Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&otherAppeal).Error; err != nil {
+		t.Fatal(err)
+	}
+	avoidanceAppeal := domain.QAAppeal{AccountID: 91, TaskID: task.ID, AppealNumber: "AP-91-002", AppellantID: 17, OriginalScore: 70, Reason: "avoidance", Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&avoidanceAppeal).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("QLT")
+	cfg.Dependencies["TEN"] = DependencyConfig{URL: tenServer.URL, Token: tenCfg.AuthToken}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("QLT")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/qlt.appeal.review.v1", command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{CommandType: "qlt.appeal.review.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "8", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "appeal", ID: strconv.FormatUint(uint64(appeal.ID), 10)}, Input: map[string]any{"action": "adjusted", "adjusted_score": 92, "comments": "approved", "revoke_fatal": true}, CausationID: "appeal", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "qlt.review.get.v1"}}
+	base.CommandID, base.IdempotencyKey, base.CorrelationID = "qlt-appeal-review", "qlt-appeal-review-91", "qlt-appeal-correlation"
+	for index := 0; index < 2; index++ {
+		response := call(base)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"adjusted"`) || strings.Contains(response.Body.String(), "approved") {
+			t.Fatalf("appeal review status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var updatedTask domain.QATask
+	var updatedAppeal domain.QAAppeal
+	_ = db.First(&updatedTask, task.ID).Error
+	_ = db.First(&updatedAppeal, appeal.ID).Error
+	var activityCount, eventCount int64
+	_ = db.Model(&domain.QAAppealActivity{}).Where("account_id = ? AND appeal_id = ?", 91, appeal.ID).Count(&activityCount).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%qlt.appeal.changed.v1%").Count(&eventCount).Error
+	if updatedTask.TotalScore != 92 || updatedTask.Status != "completed" || updatedAppeal.Status != "adjusted" || !updatedAppeal.EvidenceFrozen || activityCount != 1 || eventCount != 1 {
+		t.Fatalf("task=%+v appeal=%+v activities=%d events=%d", updatedTask, updatedAppeal, activityCount, eventCount)
+	}
+	avoid := base
+	avoid.CommandID, avoid.IdempotencyKey, avoid.Actor.ID = "qlt-appeal-avoid", "qlt-appeal-avoid", "7"
+	avoid.Target.ID = strconv.FormatUint(uint64(avoidanceAppeal.ID), 10)
+	if response := call(avoid); response.Code != http.StatusBadRequest {
+		t.Fatalf("avoidance status=%d body=%s", response.Code, response.Body.String())
+	}
+	foreign := base
+	foreign.CommandID, foreign.IdempotencyKey = "qlt-appeal-foreign", "qlt-appeal-foreign"
+	foreign.Target.ID = strconv.FormatUint(uint64(otherAppeal.ID), 10)
+	if response := call(foreign); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account appeal status=%d body=%s", response.Code, response.Body.String())
+	}
+	closed := base
+	closed.CommandID, closed.IdempotencyKey = "qlt-appeal-closed", "qlt-appeal-closed"
+	if response := call(closed); response.Code != http.StatusConflict {
+		t.Fatalf("closed appeal status=%d body=%s", response.Code, response.Body.String())
+	}
+}
