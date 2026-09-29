@@ -4060,6 +4060,132 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		notificationView := func(item *domain.Notification) map[string]any {
 			return map[string]any{"id": item.ID, "account_id": item.AccountID, "user_id": item.UserID, "notification_type": item.NotificationType, "primary_actor_type": item.PrimaryActorType, "primary_actor_id": item.PrimaryActorID, "secondary_actor_type": item.SecondaryActorType, "secondary_actor_id": item.SecondaryActorID, "read_at": item.ReadAt, "snoozed_until": item.SnoozedUntil, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt}
 		}
+		dependency, hasTEN := r.Config.Dependencies["TEN"]
+		var tenClient *moduleClient
+		if hasTEN {
+			tenClient = newModuleClient("NTF", dependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+		}
+		requireNotificationMember := func(ctx context.Context, command foundation.CommandEnvelope, userID uint) error {
+			if tenClient == nil {
+				return &ContractFailure{Type: "dependency_unavailable", Message: "TEN dependency is unavailable"}
+			}
+			return tenClient.requireMember(ctx, command.AccountID, command.Actor, userID)
+		}
+		validNotificationType := func(value string) bool {
+			switch value {
+			case domain.NotificationTypeConversationAssignment, domain.NotificationTypeConversationMention, domain.NotificationTypeConversationCreation, domain.NotificationTypeSLABreach, domain.NotificationTypeSystemAlert:
+				return true
+			default:
+				return false
+			}
+		}
+		if err := r.Contracts.RegisterCommand("ntf.notification.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification create target must match account"}
+			}
+			userID, err := uintFilter(command.Input, "user_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification user_id is required"}
+			}
+			notificationType, _ := command.Input["notification_type"].(string)
+			notificationType = strings.TrimSpace(notificationType)
+			if !validNotificationType(notificationType) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification_type is invalid"}
+			}
+			if err := requireNotificationMember(ctx, command, userID); err != nil {
+				return nil, err
+			}
+			primaryActorID, _ := uintFilter(command.Input, "primary_actor_id")
+			secondaryActorID, _ := uintFilter(command.Input, "secondary_actor_id")
+			primaryActorType, _ := command.Input["primary_actor_type"].(string)
+			secondaryActorType, _ := command.Input["secondary_actor_type"].(string)
+			now := time.Now().UTC()
+			item := &domain.Notification{AccountID: command.AccountID, UserID: userID, NotificationType: notificationType, PrimaryActorType: strings.TrimSpace(primaryActorType), PrimaryActorID: primaryActorID, SecondaryActorType: strings.TrimSpace(secondaryActorType), SecondaryActorID: secondaryActorID, CreatedAt: now, UpdatedAt: now}
+			if err := Transaction(ctx, r.DB).Create(item).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "notification could not be created"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ntf.notification.created.v1", "Notification", strconv.FormatUint(uint64(item.ID), 10), []string{"created"}, map[string]any{"notification_id": item.ID, "user_id": item.UserID, "notification_type": item.NotificationType}); err != nil {
+				return nil, err
+			}
+			return notificationView(item), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ntf.notification.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "notification" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification target is required"}
+			}
+			notificationID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || notificationID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var item domain.Notification
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, notificationID).First(&item)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "notification was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification store is unavailable"}
+			}
+			if err := requireNotificationMember(ctx, command, item.UserID); err != nil {
+				return nil, err
+			}
+			updates := map[string]any{"updated_at": time.Now().UTC()}
+			if clear, _ := command.Input["clear_snooze"].(bool); clear {
+				updates["snoozed_until"] = nil
+			} else {
+				raw, ok := command.Input["snoozed_until"].(string)
+				until, parseErr := time.Parse(time.RFC3339, raw)
+				if !ok || parseErr != nil || !until.After(time.Now().UTC()) {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "future snoozed_until or clear_snooze is required"}
+				}
+				updates["snoozed_until"] = until.UTC()
+			}
+			if err := tx.Model(&domain.Notification{}).Where("account_id = ? AND id = ? AND user_id = ?", command.AccountID, item.ID, item.UserID).Updates(updates).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "notification could not be updated"}
+			}
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, item.ID).First(&item).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification store is unavailable"}
+			}
+			return notificationView(&item), nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ntf.notification.read.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "notification" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification target is required"}
+			}
+			notificationID, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || notificationID == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var item domain.Notification
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, notificationID).First(&item)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "notification was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification store is unavailable"}
+			}
+			if err := requireNotificationMember(ctx, command, item.UserID); err != nil {
+				return nil, err
+			}
+			if item.ReadAt == nil {
+				now := time.Now().UTC()
+				if err := tx.Model(&domain.Notification{}).Where("account_id = ? AND id = ? AND user_id = ? AND read_at IS NULL", command.AccountID, item.ID, item.UserID).Updates(map[string]any{"read_at": now, "updated_at": now}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "notification could not be marked read"}
+				}
+				item.ReadAt, item.UpdatedAt = &now, now
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ntf.notification.read.v1", "Notification", command.Target.ID, []string{"read_at"}, map[string]any{"notification_id": item.ID, "user_id": item.UserID, "read_at": item.ReadAt}); err != nil {
+				return nil, err
+			}
+			return notificationView(&item), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ntf.notifications.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			userID, err := uintFilter(query.Filter, "user_id")
 			if err != nil {

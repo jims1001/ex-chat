@@ -767,7 +767,7 @@
         "recovery": "投递保留窗口内补偿"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "runtime-query-boundary-verified",
+      "acceptanceStatus": "runtime-notification-command-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

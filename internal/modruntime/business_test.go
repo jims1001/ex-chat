@@ -6015,3 +6015,109 @@ func TestNTFQueriesStayAccountUserScopedAndHideDeliverySecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestNTFNotificationCommandsValidateTENOwnershipAndStayAtomic(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, _ := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["NTF"] = true
+	tenServer, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: tenRegistry}.Handler())
+	t.Cleanup(func() { _ = tenServer.Shutdown(context.Background()) })
+
+	db := newModuleTestDB(t, "NTF")
+	now := time.Now().UTC()
+	foreign := domain.Notification{AccountID: 92, UserID: 7, NotificationType: domain.NotificationTypeSystemAlert, CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("NTF")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + address, Token: tenCfg.AuthToken}}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("NTF")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{CommandID: "ntf-create", CommandType: "ntf.notification.create.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "account", ID: "91"}, Input: map[string]any{"user_id": 7, "notification_type": domain.NotificationTypeConversationMention, "primary_actor_type": "Conversation", "primary_actor_id": 123}, IdempotencyKey: "ntf-create-91", CorrelationID: "ntf-create-correlation", CausationID: "ntf-create-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ntf.notifications.list.v1"}}
+	var createdID uint
+	for range 2 {
+		response := call(base)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), domain.NotificationTypeConversationMention) {
+			t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+		}
+		var envelope struct {
+			Data struct {
+				ID uint `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if createdID == 0 {
+			createdID = envelope.Data.ID
+		} else if createdID != envelope.Data.ID {
+			t.Fatalf("create replay changed id: %d != %d", createdID, envelope.Data.ID)
+		}
+	}
+	update := base
+	update.CommandID, update.CommandType, update.IdempotencyKey, update.CorrelationID = "ntf-update", "ntf.notification.update.v1", "ntf-update-91", "ntf-update-correlation"
+	update.Target = foundation.ContractTarget{Type: "notification", ID: strconv.FormatUint(uint64(createdID), 10)}
+	update.Input = map[string]any{"snoozed_until": now.Add(time.Hour).Format(time.RFC3339)}
+	for range 2 {
+		response := call(update)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "snoozed_until") {
+			t.Fatalf("update=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	read := update
+	read.CommandID, read.CommandType, read.IdempotencyKey, read.CorrelationID = "ntf-read", "ntf.notification.read.v1", "ntf-read-91", "ntf-read-correlation"
+	read.Input = map[string]any{}
+	for range 2 {
+		response := call(read)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "read_at") {
+			t.Fatalf("read=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	badUser := base
+	badUser.CommandID, badUser.IdempotencyKey, badUser.CorrelationID = "ntf-bad-user", "ntf-bad-user-91", "ntf-bad-user-correlation"
+	badUser.Input = map[string]any{"user_id": 99, "notification_type": domain.NotificationTypeSystemAlert}
+	if response := call(badUser); response.Code != http.StatusNotFound {
+		t.Fatalf("bad user=%d body=%s", response.Code, response.Body.String())
+	}
+	foreignRead := read
+	foreignRead.CommandID, foreignRead.IdempotencyKey, foreignRead.CorrelationID = "ntf-foreign", "ntf-foreign-91", "ntf-foreign-correlation"
+	foreignRead.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	if response := call(foreignRead); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign=%d body=%s", response.Code, response.Body.String())
+	}
+	var own, other, receipts, events int64
+	_ = db.Model(&domain.Notification{}).Where("account_id = ?", 91).Count(&own).Error
+	_ = db.Model(&domain.Notification{}).Where("account_id = ?", 92).Count(&other).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if own != 1 || other != 1 || receipts != 3 || events != 2 {
+		t.Fatalf("own=%d other=%d receipts=%d events=%d", own, other, receipts, events)
+	}
+	var item domain.Notification
+	if err := db.Where("account_id = ? AND id = ?", 91, createdID).First(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	if item.ReadAt == nil || item.SnoozedUntil == nil {
+		t.Fatalf("notification state read_at=%v snoozed_until=%v", item.ReadAt, item.SnoozedUntil)
+	}
+	for _, foreignModel := range []any{&domain.Account{}, &domain.User{}, &domain.Conversation{}, &domain.Message{}} {
+		if db.Migrator().HasTable(foreignModel) {
+			t.Fatalf("NTF runtime contains foreign table %T", foreignModel)
+		}
+	}
+}
