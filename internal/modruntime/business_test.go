@@ -6192,3 +6192,99 @@ func TestNTFPreferenceAndDeviceCommandsValidateMemberAndHideToken(t *testing.T) 
 		t.Fatalf("stored token/name mismatch: %#v", stored)
 	}
 }
+
+func TestNTFDeliveryDispatchAndSubscriptionPurgeStayOwnerScoped(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		userID, _ := uintFilter(query.Filter, "user_id")
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["NTF"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, DB: newModuleTestDB(t, "TEN"), Contracts: tenRegistry}.Handler())
+	t.Cleanup(func() { _ = tenServer.Shutdown(context.Background()) })
+	var gatewayCalls atomic.Int64
+	gatewayServer, gatewayAddress := startHTTPServer(t, "127.0.0.1:0", http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		gatewayCalls.Add(1)
+		response.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(func() { _ = gatewayServer.Shutdown(context.Background()) })
+	db := newModuleTestDB(t, "NTF")
+	now := time.Now().UTC()
+	owned := domain.NotificationSubscription{AccountID: 91, UserID: 7, SubscriptionType: "browser", PushToken: "http://" + gatewayAddress, DeviceName: "Web", CreatedAt: now, UpdatedAt: now}
+	foreign := domain.NotificationSubscription{AccountID: 92, UserID: 7, SubscriptionType: "fcm", PushToken: "foreign-secret-token", DeviceName: "Foreign", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&owned).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("NTF")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}}
+	registry := NewContractRegistry("NTF")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: registry}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	if registry.Count() != 11 {
+		t.Fatalf("NTF registered contracts=%d want=11", registry.Count())
+	}
+	for _, capability := range []string{"ntf.notification.create.v1", "ntf.notification.update.v1", "ntf.notification.read.v1", "ntf.preference.save.v1", "ntf.device.register.v1", "ntf.delivery.dispatch.v1", "ntf.account_subscriptions.purge.v1"} {
+		if registry.commands[capability] == nil {
+			t.Fatalf("missing NTF command %s", capability)
+		}
+	}
+	call := func(command foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/"+command.CommandType, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+	}
+	dispatch := foundation.CommandEnvelope{CommandID: "ntf-dispatch", CommandType: "ntf.delivery.dispatch.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "subscription", ID: strconv.FormatUint(uint64(owned.ID), 10)}, Input: map[string]any{"title": "Private title", "body": "Private delivery body"}, IdempotencyKey: "ntf-dispatch-91", CorrelationID: "ntf-dispatch-correlation", CausationID: "ntf-dispatch-cause", RequestedAt: now, TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "ntf.delivery.get.v1"}}
+	for range 2 {
+		response := call(dispatch)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"delivered"`) || strings.Contains(response.Body.String(), owned.PushToken) || strings.Contains(response.Body.String(), "Private") {
+			t.Fatalf("dispatch=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if gatewayCalls.Load() != 1 {
+		t.Fatalf("gateway calls=%d", gatewayCalls.Load())
+	}
+	foreignDispatch := dispatch
+	foreignDispatch.CommandID, foreignDispatch.IdempotencyKey, foreignDispatch.CorrelationID = "ntf-foreign-dispatch", "ntf-foreign-dispatch-91", "ntf-foreign-dispatch-correlation"
+	foreignDispatch.Target.ID = strconv.FormatUint(uint64(foreign.ID), 10)
+	if response := call(foreignDispatch); response.Code != http.StatusNotFound {
+		t.Fatalf("foreign dispatch=%d body=%s", response.Code, response.Body.String())
+	}
+	purge := dispatch
+	purge.CommandID, purge.CommandType, purge.IdempotencyKey, purge.CorrelationID = "ntf-purge", "ntf.account_subscriptions.purge.v1", "ntf-purge-91", "ntf-purge-correlation"
+	purge.Target = foundation.ContractTarget{Type: "account", ID: "91"}
+	purge.Input = map[string]any{}
+	for range 2 {
+		response := call(purge)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"purged_subscriptions":1`) {
+			t.Fatalf("purge=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var ownedSubscriptions, foreignSubscriptions, deliveries, receipts, events int64
+	_ = db.Model(&domain.NotificationSubscription{}).Where("account_id = ?", 91).Count(&ownedSubscriptions).Error
+	_ = db.Model(&domain.NotificationSubscription{}).Where("account_id = ?", 92).Count(&foreignSubscriptions).Error
+	_ = db.Model(&domain.PushDeliveryLog{}).Where("account_id = ?", 91).Count(&deliveries).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if ownedSubscriptions != 0 || foreignSubscriptions != 1 || deliveries != 1 || receipts != 2 || events != 2 {
+		t.Fatalf("owned=%d foreign=%d deliveries=%d receipts=%d events=%d", ownedSubscriptions, foreignSubscriptions, deliveries, receipts, events)
+	}
+	var journals []domain.LocalChangeJournal
+	if err := db.Where("action IN ?", []string{"command_receipt", "event_outbox"}).Find(&journals).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, journal := range journals {
+		if strings.Contains(journal.AfterState, owned.PushToken) || strings.Contains(journal.AfterState, "Private title") || strings.Contains(journal.AfterState, "Private delivery body") {
+			t.Fatalf("delivery secret leaked into journal: %s", journal.AfterState)
+		}
+	}
+}

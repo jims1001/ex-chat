@@ -4315,6 +4315,85 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("ntf.delivery.dispatch.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "subscription" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification subscription target is required"}
+			}
+			subscriptionValue, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || subscriptionValue == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "notification subscription target is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var subscription domain.NotificationSubscription
+			result := tx.Where("account_id = ? AND id = ?", command.AccountID, subscriptionValue).First(&subscription)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "notification subscription was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "notification subscription store is unavailable"}
+			}
+			if err := requireNotificationMember(ctx, command, subscription.UserID); err != nil {
+				return nil, err
+			}
+			title, _ := command.Input["title"].(string)
+			bodyText, _ := command.Input["body"].(string)
+			title, bodyText = strings.TrimSpace(title), strings.TrimSpace(bodyText)
+			if title == "" || len(title) > 255 || bodyText == "" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "delivery title and body are required"}
+			}
+			payload, _ := json.Marshal(map[string]any{"notification": map[string]string{"title": title, "body": bodyText}, "data": map[string]any{"account_id": command.AccountID, "user_id": subscription.UserID}})
+			status, httpStatus, errorDetail := "failed", 503, "push gateway endpoint not configured"
+			if strings.HasPrefix(subscription.PushToken, "http://") || strings.HasPrefix(subscription.PushToken, "https://") {
+				request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, subscription.PushToken, bytes.NewReader(payload))
+				if requestErr != nil {
+					httpStatus, errorDetail = 0, requestErr.Error()
+				} else {
+					request.Header.Set("Content-Type", "application/json")
+					response, sendErr := (&http.Client{Timeout: r.Config.MaxTimeout}).Do(request)
+					if sendErr != nil {
+						httpStatus, errorDetail = 0, sendErr.Error()
+					} else {
+						httpStatus = response.StatusCode
+						_ = response.Body.Close()
+						if response.StatusCode >= 200 && response.StatusCode < 300 {
+							status, errorDetail = "delivered", ""
+						} else {
+							errorDetail = fmt.Sprintf("HTTP %d from push gateway", response.StatusCode)
+						}
+					}
+				}
+			}
+			platform := subscription.SubscriptionType
+			if platform == "browser" {
+				platform = "webpush"
+			}
+			delivery := &domain.PushDeliveryLog{AccountID: command.AccountID, UserID: subscription.UserID, DeviceToken: subscription.PushToken, Platform: platform, Title: title, Body: bodyText, Status: status, HTTPStatusCode: httpStatus, ErrorDetail: errorDetail, CreatedAt: time.Now().UTC()}
+			if err := tx.Create(delivery).Error; err != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "push delivery result could not be recorded"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ntf.delivery.changed.v1", "PushDeliveryLog", strconv.FormatUint(uint64(delivery.ID), 10), []string{"status"}, map[string]any{"delivery_id": delivery.ID, "user_id": delivery.UserID, "platform": delivery.Platform, "status": delivery.Status, "http_status_code": delivery.HTTPStatusCode}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": delivery.ID, "account_id": delivery.AccountID, "user_id": delivery.UserID, "platform": delivery.Platform, "status": delivery.Status, "http_status_code": delivery.HTTPStatusCode, "created_at": delivery.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("ntf.account_subscriptions.purge.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "subscription purge target must match account"}
+			}
+			tx := Transaction(ctx, r.DB)
+			result := tx.Where("account_id = ?", command.AccountID).Delete(&domain.NotificationSubscription{})
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "notification subscriptions could not be purged"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "ntf.subscription.invalidated.v1", "AccountSubscriptions", command.Target.ID, []string{"invalidated"}, map[string]any{"account_id": command.AccountID, "subscription_count": result.RowsAffected}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "purged_subscriptions": result.RowsAffected}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("ntf.notifications.list.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			userID, err := uintFilter(query.Filter, "user_id")
 			if err != nil {
