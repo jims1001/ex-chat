@@ -426,7 +426,7 @@
         "recovery": "Provider 回执补读和幂等恢复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-create-command",
+      "acceptanceStatus": "partial-update-delete-command",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
@@ -440,10 +440,13 @@
         "msg.account_deletion_status.get.v1"
       ],
       "implementedIndependentCommands": [
-        "msg.message.create.v1"
+        "msg.message.create.v1",
+        "msg.message.update.v1"
       ],
       "implementedIndependentEvents": [
-        "msg.message.created.v1"
+        "msg.message.created.v1",
+        "msg.message.changed.v1",
+        "msg.message.deleted.v1"
       ]
     },
     {

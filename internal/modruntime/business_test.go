@@ -1011,6 +1011,79 @@ func TestMSGMessageCreateValidatesConversationSenderAndReplay(t *testing.T) {
 	}
 }
 
+func TestMSGMessageUpdateEditsDeletesAndKeepsOwnerBoundary(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	messages := []domain.Message{{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "before", Translations: `{"zh":"私密"}`, ContentAttributes: `{"token":"private"}`, Status: "sent"}, {AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "delete-me", Status: "sent"}, {AccountID: 92, ConversationID: 22, SenderType: domain.SenderTypeUser, SenderID: 8, MessageType: domain.MessageTypeOutgoing, ContentType: "text", Content: "foreign", Status: "sent"}}
+	if err := db.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.Attachment{AccountID: 91, MessageID: messages[1].ID, FileType: "text/plain", DataURL: "med://asset/1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("MSG")
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), "/contracts/commands/msg.message.update.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{CommandType: "msg.message.update.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.message.get.v1"}}
+	edit := base
+	edit.CommandID, edit.IdempotencyKey, edit.CorrelationID, edit.CausationID = "message-edit-1", "message-edit-key", "message-edit-correlation", "message-edit-cause"
+	edit.Target = foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(messages[0].ID), 10)}
+	edit.Input = map[string]any{"operation": "edit", "content": "after"}
+	for index := 0; index < 2; index++ {
+		response := call(edit)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"content":"after"`) {
+			t.Fatalf("edit=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	remove := base
+	remove.CommandID, remove.IdempotencyKey, remove.CorrelationID, remove.CausationID = "message-delete-1", "message-delete-key", "message-delete-correlation", "message-delete-cause"
+	remove.Target = foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(messages[1].ID), 10)}
+	remove.Input = map[string]any{"operation": "delete"}
+	for index := 0; index < 2; index++ {
+		response := call(remove)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"deleted":true`) || strings.Contains(response.Body.String(), "delete-me") {
+			t.Fatalf("delete=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var edited, deleted, untouched domain.Message
+	_ = db.First(&edited, messages[0].ID).Error
+	_ = db.First(&deleted, messages[1].ID).Error
+	_ = db.First(&untouched, messages[2].ID).Error
+	if edited.Content != "after" || edited.EditedAt == nil || edited.Translations == "" || edited.ContentAttributes == "" {
+		t.Fatalf("edited=%+v", edited)
+	}
+	if !deleted.Deleted || deleted.DeletedAt == nil || deleted.Content != "" || deleted.Translations != "" || deleted.ContentAttributes != "" {
+		t.Fatalf("deleted=%+v", deleted)
+	}
+	if untouched.Content != "foreign" || untouched.Deleted {
+		t.Fatalf("untouched=%+v", untouched)
+	}
+	var attachments, changedEvents, deletedEvents int64
+	_ = db.Model(&domain.Attachment{}).Where("message_id = ?", messages[1].ID).Count(&attachments).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%msg.message.changed.v1%").Count(&changedEvents).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%msg.message.deleted.v1%").Count(&deletedEvents).Error
+	if attachments != 0 || changedEvents != 1 || deletedEvents != 1 {
+		t.Fatalf("attachments=%d changed=%d deleted=%d", attachments, changedEvents, deletedEvents)
+	}
+	cross := edit
+	cross.CommandID, cross.IdempotencyKey, cross.CorrelationID = "message-edit-2", "message-edit-cross", "message-edit-cross-correlation"
+	cross.Target.ID = strconv.FormatUint(uint64(messages[2].ID), 10)
+	if response := call(cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()

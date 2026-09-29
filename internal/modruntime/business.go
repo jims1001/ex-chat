@@ -1587,6 +1587,59 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("msg.message.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if command.Target.Type != "message" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message target is required"}
+			}
+			parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+			if err != nil || parsed == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message target is invalid"}
+			}
+			messageID := uint(parsed)
+			operation, _ := command.Input["operation"].(string)
+			operation = strings.ToLower(strings.TrimSpace(operation))
+			if operation != "edit" && operation != "delete" {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "message update operation is invalid"}
+			}
+			tx := Transaction(ctx, r.DB)
+			var message domain.Message
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
+			} else if err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
+			}
+			if message.Deleted {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "deleted message cannot be changed"}
+			}
+			now := time.Now().UTC()
+			eventType, changed := "msg.message.changed.v1", []string{"content", "edited_at"}
+			if operation == "edit" {
+				content, _ := command.Input["content"].(string)
+				content = strings.TrimSpace(content)
+				if content == "" || len(content) > 100000 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "message content is invalid"}
+				}
+				if err := tx.Model(&domain.Message{}).Where("account_id = ? AND id = ? AND deleted = ?", command.AccountID, messageID, false).Updates(map[string]any{"content": content, "edited_at": now, "updated_at": now}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "message could not be edited"}
+				}
+				message.Content, message.EditedAt, message.UpdatedAt = content, &now, now
+			} else {
+				if err := tx.Where("account_id = ? AND message_id = ?", command.AccountID, messageID).Delete(&domain.Attachment{}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "message attachments could not be deleted"}
+				}
+				if err := tx.Model(&domain.Message{}).Where("account_id = ? AND id = ? AND deleted = ?", command.AccountID, messageID, false).Updates(map[string]any{"deleted": true, "deleted_at": now, "content": "", "translations": "", "content_attributes": "", "updated_at": now}).Error; err != nil {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "message could not be deleted"}
+				}
+				message.Deleted, message.DeletedAt, message.Content, message.UpdatedAt = true, &now, "", now
+				eventType, changed = "msg.message.deleted.v1", []string{"deleted"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, eventType, "Message", command.Target.ID, changed, map[string]any{"message_id": message.ID, "conversation_id": message.ConversationID, "operation": operation, "deleted": message.Deleted}); err != nil {
+				return nil, err
+			}
+			return messageFromModel(message), nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("msg.message.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			messageID, err := uintFilter(query.Filter, "id")
 			if err != nil {
