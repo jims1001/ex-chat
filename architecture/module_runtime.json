@@ -733,8 +733,8 @@
         "whenStopped": "插件和 Webhook 暂停，核心业务继续",
         "recovery": "事件保留窗口和授权检查"
       },
-      "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "independentRuntimeImplemented": true,
+      "acceptanceStatus": "runtime-capacity-upgrade-recovery-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

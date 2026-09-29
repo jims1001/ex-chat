@@ -773,6 +773,74 @@ func TestBILSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
 	}
 }
 
+func TestEXTSnapshotRestoresOwnerFactsJournalAndReadiness(t *testing.T) {
+	source := newModuleTestDB(t, "EXT")
+	now := time.Now().UTC()
+	app := domain.PlatformApp{Name: "Snapshot App", Token: "snapshot-token", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&app).Error; err != nil {
+		t.Fatal(err)
+	}
+	installation := domain.IntegrationInstallation{AccountID: 91, AppID: strconv.FormatUint(uint64(app.ID), 10), Status: "installed", Settings: `{"secret":true}`, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&installation).Error; err != nil {
+		t.Fatal(err)
+	}
+	bot := domain.AgentBot{AccountID: 91, Name: "Snapshot Bot", OutgoingURL: "https://bot.example.test", BotType: "webhook", AccessToken: "private", CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&bot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.AgentBotInbox{AccountID: 91, AgentBotID: bot.ID, InboxID: 11, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.DashboardApp{AccountID: 91, Title: "Snapshot Dashboard", Content: `[{"type":"frame","url":"https://app.example.test"}]`, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	webhook := domain.Webhook{AccountID: 91, URL: "https://hook.example.test", Secret: "private", Subscriptions: `["message.created"]`, CreatedAt: now, UpdatedAt: now}
+	if err := source.Create(&webhook).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Create(&domain.WebhookDelivery{AccountID: 91, WebhookID: webhook.ID, Event: "message.created", URL: webhook.URL, Payload: `{"private":true}`, ResponseCode: 200, ResponseBody: "private", Attempts: 1, Status: "delivered", CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	event := foundation.EventEnvelope{EventID: "snapshot-ext-event", EventType: "ext.plugin.installed.v1", EventVersion: "v1", SourceModule: "EXT", AccountID: 91, AggregateType: "IntegrationInstallation", AggregateID: strconv.FormatUint(uint64(installation.ID), 10), AggregateVersion: 1, OccurredAt: now, PublishedAt: now, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, CorrelationID: "snapshot-ext", CausationID: "snapshot", ChangedFields: []string{"status"}, Payload: map[string]any{"installation_id": installation.ID, "status": "installed"}, DataClassification: "internal"}
+	if err := NewEventOutbox(source, "EXT").Append(nil, event); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "ext.snapshot.json")
+	if err := CreateSnapshot(source, "EXT", "ext-gen-1", path); err != nil {
+		t.Fatal(err)
+	}
+	target := newModuleTestDB(t, "EXT")
+	cfg := businessConfig("EXT")
+	cfg.RecoveryGeneration = "ext-gen-1"
+	runtime := Runtime{Config: cfg, DB: target}
+	if err := runtime.Readiness(); err == nil {
+		t.Fatal("EXT target was ready before restore")
+	}
+	if err := RestoreSnapshot(context.Background(), target, "EXT", "ext-gen-1", path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Readiness(); err != nil {
+		t.Fatalf("EXT target not ready: %v", err)
+	}
+	for name, model := range map[string]any{"apps": &domain.PlatformApp{}, "installations": &domain.IntegrationInstallation{}, "bots": &domain.AgentBot{}, "bindings": &domain.AgentBotInbox{}, "dashboards": &domain.DashboardApp{}, "webhooks": &domain.Webhook{}, "deliveries": &domain.WebhookDelivery{}} {
+		var count int64
+		_ = target.Model(model).Count(&count).Error
+		if count != 1 {
+			t.Fatalf("%s count=%d", name, count)
+		}
+	}
+	var events int64
+	_ = target.Model(&domain.LocalChangeJournal{}).Where("action = ?", "event_outbox").Count(&events).Error
+	if events != 1 {
+		t.Fatalf("events=%d", events)
+	}
+	for _, foreign := range []any{&domain.Account{}, &domain.User{}, &domain.Inbox{}, &domain.Conversation{}, &domain.Message{}} {
+		if target.Migrator().HasTable(foreign) {
+			t.Fatalf("EXT restore created foreign table %T", foreign)
+		}
+	}
+}
+
 func sha256Bytes(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
