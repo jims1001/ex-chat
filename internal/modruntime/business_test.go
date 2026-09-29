@@ -998,6 +998,115 @@ func TestCONConversationCreateValidatesOwnersAndCommitsAtomically(t *testing.T) 
 	}
 }
 
+func TestCONConversationUpdateAndAssignmentValidateRemoteOwners(t *testing.T) {
+	tenRegistry := NewContractRegistry("TEN")
+	if err := tenRegistry.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		if _, exists := query.Filter["team_id"]; exists {
+			teamID, err := uintFilter(query.Filter, "team_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "team is invalid"}
+			}
+			return teamView{AccountID: query.AccountID, TeamID: teamID, Allowed: query.AccountID == 91 && teamID == 8}, nil
+		}
+		userID, err := uintFilter(query.Filter, "user_id")
+		if err != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "user is invalid"}
+		}
+		return membershipCheckView{AccountID: query.AccountID, UserID: userID, Allowed: query.AccountID == 91 && userID == 7}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tenCfg := businessConfig("TEN")
+	tenCfg.AllowedCallers["CON"] = true
+	tenServer, tenAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: tenCfg, Contracts: tenRegistry}.Handler())
+	defer tenServer.Shutdown(context.Background())
+
+	chnRegistry := NewContractRegistry("CHN")
+	if err := chnRegistry.RegisterQuery("chn.inbox.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		inboxID, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || inboxID != 12 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+		}
+		return inboxView{ID: 12, AccountID: 91, Name: "Moved"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	chnCfg := businessConfig("CHN")
+	chnCfg.AllowedCallers["CON"] = true
+	chnServer, chnAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: chnCfg, Contracts: chnRegistry}.Handler())
+	defer chnServer.Shutdown(context.Background())
+
+	db := newModuleTestDB(t, "CON")
+	conversation := domain.Conversation{AccountID: 91, InboxID: 11, ContactID: 21, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	other := domain.Conversation{AccountID: 92, InboxID: 22, ContactID: 32, DisplayID: 1, Status: domain.ConversationStatusOpen, Priority: domain.PriorityMedium, ObjectVersion: 1, LastActivityAt: time.Now().UTC()}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	cfg := businessConfig("CON")
+	cfg.Dependencies = map[string]DependencyConfig{"TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CHN": {URL: "http://" + chnAddress, Token: chnCfg.AuthToken}}
+	newRuntime := func() Runtime {
+		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("CON")}
+		if err := runtime.RegisterBusinessContracts(); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	call := func(path string, payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(newRuntime().Handler(), path, payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversation.ID), 10)}, RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"}}
+	update := base
+	update.CommandID, update.CommandType, update.IdempotencyKey, update.CorrelationID, update.CausationID = "conversation-update-1", "con.conversation.update.v1", "conversation-update-key", "conversation-update-correlation", "conversation-update-cause"
+	update.Input = map[string]any{"inbox_id": 12, "muted": true}
+	for index := 0; index < 2; index++ {
+		response := call("/contracts/commands/con.conversation.update.v1", update)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"inbox_id":12`) || !strings.Contains(response.Body.String(), `"muted":true`) {
+			t.Fatalf("update=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	assignment := base
+	assignment.CommandID, assignment.CommandType, assignment.IdempotencyKey, assignment.CorrelationID, assignment.CausationID = "assignment-change-1", "con.assignment.change.v1", "assignment-change-key", "assignment-change-correlation", "assignment-change-cause"
+	assignment.Input = map[string]any{"assignee_id": 7, "team_id": 8}
+	for index := 0; index < 2; index++ {
+		response := call("/contracts/commands/con.assignment.change.v1", assignment)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"assignee_id":7`) || !strings.Contains(response.Body.String(), `"team_id":8`) {
+			t.Fatalf("assignment=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	var stored domain.Conversation
+	if err := db.First(&stored, conversation.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.InboxID != 12 || !stored.Muted || stored.AssigneeID == nil || *stored.AssigneeID != 7 || stored.TeamID == nil || *stored.TeamID != 8 || stored.ObjectVersion != 3 {
+		t.Fatalf("stored=%+v", stored)
+	}
+	var events, receipts int64
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ? AND after_state LIKE ?", "event_outbox", "%con.conversation.changed.v1%").Count(&events).Error
+	_ = db.Model(&domain.LocalChangeJournal{}).Where("action = ?", "command_receipt").Count(&receipts).Error
+	if events != 2 || receipts != 2 {
+		t.Fatalf("events=%d receipts=%d", events, receipts)
+	}
+	denied := assignment
+	denied.CommandID, denied.IdempotencyKey, denied.CorrelationID = "assignment-change-2", "assignment-change-denied", "assignment-change-denied-correlation"
+	denied.Input = map[string]any{"assignee_id": 9}
+	if response := call("/contracts/commands/con.assignment.change.v1", denied); response.Code != http.StatusNotFound {
+		t.Fatalf("denied assignment=%d body=%s", response.Code, response.Body.String())
+	}
+	cross := update
+	cross.CommandID, cross.IdempotencyKey, cross.CorrelationID = "conversation-update-2", "conversation-update-cross", "conversation-update-cross-correlation"
+	cross.Target.ID = strconv.FormatUint(uint64(other.ID), 10)
+	if response := call("/contracts/commands/con.conversation.update.v1", cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross-account update=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONConsumesContactMergeEventWithinOwnerDatabase(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	conversations := []domain.Conversation{{AccountID: 91, InboxID: 10, ContactID: 202, DisplayID: 1}, {AccountID: 91, InboxID: 11, ContactID: 202, DisplayID: 2}, {AccountID: 92, InboxID: 12, ContactID: 202, DisplayID: 1}}

@@ -363,7 +363,7 @@
         "recovery": "状态和事件版本检查"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-create-command",
+      "acceptanceStatus": "partial-update-assignment-commands",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -373,10 +373,13 @@
         "con.account_deletion_status.get.v1"
       ],
       "implementedIndependentCommands": [
-        "con.conversation.create.v1"
+        "con.conversation.create.v1",
+        "con.conversation.update.v1",
+        "con.assignment.change.v1"
       ],
       "implementedIndependentEvents": [
-        "con.conversation.created.v1"
+        "con.conversation.created.v1",
+        "con.conversation.changed.v1"
       ],
       "implementedConsumedEvents": [
         "cus.contact.merged.v1"

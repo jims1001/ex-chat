@@ -98,6 +98,12 @@ type membershipCheckView struct {
 	Allowed   bool `json:"allowed"`
 }
 
+type teamView struct {
+	AccountID uint `json:"account_id"`
+	TeamID    uint `json:"team_id"`
+	Allowed   bool `json:"allowed"`
+}
+
 type capabilityCheckView struct {
 	AccountID  uint   `json:"account_id"`
 	Capability string `json:"capability"`
@@ -239,6 +245,17 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return err
 		}
 		if err := r.Contracts.RegisterQuery("ten.permissions.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			if _, exists := query.Filter["team_id"]; exists {
+				teamID, err := uintFilter(query.Filter, "team_id")
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "permission team_id is invalid"}
+				}
+				team, err := repository.NewTeamRepository(r.DB).FindSummaryByID(query.AccountID, teamID)
+				if err != nil {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "team store is unavailable"}
+				}
+				return teamView{AccountID: query.AccountID, TeamID: teamID, Allowed: team != nil}, nil
+			}
 			userID, err := uintFilter(query.Filter, "user_id")
 			if err != nil {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "permission user_id is required"}
@@ -1144,6 +1161,128 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Contracts.RegisterCommand("con.conversation.update.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			updates := map[string]any{}
+			changed := make([]string, 0, 2)
+			if value, ok := command.Input["muted"]; ok {
+				muted, valid := value.(bool)
+				if !valid {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "muted must be boolean"}
+				}
+				updates["muted"], changed = muted, append(changed, "muted")
+			}
+			if _, ok := command.Input["inbox_id"]; ok {
+				inboxID, err := uintFilter(command.Input, "inbox_id")
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "inbox_id is invalid"}
+				}
+				dependency, exists := r.Config.Dependencies["CHN"]
+				if !exists {
+					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "inbox validation is unavailable"}
+				}
+				query := foundation.QueryEnvelope{QueryType: "chn.inbox.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": inboxID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+				var inbox inboxView
+				if err := newModuleClient("CON", dependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &inbox); err != nil {
+					return nil, err
+				}
+				if inbox.AccountID != command.AccountID {
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "inbox was not found"}
+				}
+				updates["inbox_id"], changed = inboxID, append(changed, "inbox_id")
+			}
+			if len(updates) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation update is empty"}
+			}
+			updates["object_version"] = gorm.Expr("object_version + 1")
+			updates["last_activity_at"], updates["updated_at"] = time.Now().UTC(), time.Now().UTC()
+			tx := Transaction(ctx, r.DB)
+			result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).Updates(updates)
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation could not be updated"}
+			}
+			if result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			var conversation domain.Conversation
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).First(&conversation).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation.changed.v1", "Conversation", command.Target.ID, changed, map[string]any{"conversation_id": conversation.ID, "object_version": conversation.ObjectVersion, "changed_fields": changed}); err != nil {
+				return nil, err
+			}
+			return conversationFromModel(tx, &conversation)
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterCommand("con.assignment.change.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			updates := map[string]any{}
+			changed := make([]string, 0, 2)
+			dependency, exists := r.Config.Dependencies["TEN"]
+			if !exists {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "assignment validation is unavailable"}
+			}
+			client := newModuleClient("CON", dependency, r.Config.ContractVersion, r.Config.MaxTimeout)
+			if value, ok := command.Input["assignee_id"]; ok {
+				assigneeID, err := optionalUint(value)
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "assignee_id is invalid"}
+				}
+				if assigneeID != nil {
+					if err := client.requireMember(ctx, command.AccountID, command.Actor, *assigneeID); err != nil {
+						return nil, err
+					}
+				}
+				updates["assignee_id"], changed = assigneeID, append(changed, "assignee_id")
+			}
+			if value, ok := command.Input["team_id"]; ok {
+				teamID, err := optionalUint(value)
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "team_id is invalid"}
+				}
+				if teamID != nil {
+					query := foundation.QueryEnvelope{QueryType: "ten.permissions.check.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"team_id": *teamID}, Sort: []string{"team_id"}, Page: "1", Fields: []string{"account_id", "team_id", "allowed"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
+					var team teamView
+					if err := client.query(ctx, query, &team); err != nil {
+						return nil, err
+					}
+					if team.AccountID != command.AccountID || team.TeamID != *teamID || !team.Allowed {
+						return nil, &ContractFailure{Type: "resource_not_found", Message: "team was not found"}
+					}
+				}
+				updates["team_id"], changed = teamID, append(changed, "team_id")
+			}
+			if len(updates) == 0 {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "assignment change is empty"}
+			}
+			updates["object_version"] = gorm.Expr("object_version + 1")
+			updates["last_activity_at"], updates["updated_at"] = time.Now().UTC(), time.Now().UTC()
+			tx := Transaction(ctx, r.DB)
+			result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).Updates(updates)
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "assignment could not be changed"}
+			}
+			if result.RowsAffected != 1 {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+			}
+			var conversation domain.Conversation
+			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).First(&conversation).Error; err != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation.changed.v1", "Conversation", command.Target.ID, changed, map[string]any{"conversation_id": conversation.ID, "object_version": conversation.ObjectVersion, "changed_fields": changed}); err != nil {
+				return nil, err
+			}
+			return conversationFromModel(tx, &conversation)
+		}); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, err := uintFilter(event.Payload, "base_contact_id")
 			if err != nil {
@@ -1773,6 +1912,50 @@ func uintFilter(filter map[string]any, key string) (uint, error) {
 	default:
 		return 0, errors.New("filter is invalid")
 	}
+}
+
+func conversationCommandTarget(command foundation.CommandEnvelope) (uint, *ContractFailure) {
+	if command.Target.Type != "conversation" {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "conversation target is required"}
+	}
+	parsed, err := strconv.ParseUint(command.Target.ID, 10, 64)
+	if err != nil || parsed == 0 {
+		return 0, &ContractFailure{Type: "validation_failed", Message: "conversation target is invalid"}
+	}
+	return uint(parsed), nil
+}
+
+func optionalUint(value any) (*uint, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var parsed uint
+	switch typed := value.(type) {
+	case float64:
+		if typed < 0 || typed != float64(uint(typed)) {
+			return nil, errors.New("value is invalid")
+		}
+		parsed = uint(typed)
+	case uint:
+		parsed = typed
+	case int:
+		if typed < 0 {
+			return nil, errors.New("value is invalid")
+		}
+		parsed = uint(typed)
+	case string:
+		value, err := strconv.ParseUint(typed, 10, 64)
+		if err != nil {
+			return nil, errors.New("value is invalid")
+		}
+		parsed = uint(value)
+	default:
+		return nil, errors.New("value is invalid")
+	}
+	if parsed == 0 {
+		return nil, nil
+	}
+	return &parsed, nil
 }
 
 func uintSliceFilter(filter map[string]any, key string) ([]uint, bool) {
