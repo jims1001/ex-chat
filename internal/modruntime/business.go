@@ -1976,6 +1976,37 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return &conversation, nil
 		}
+		if err := r.Contracts.RegisterCommand("rte.queue.enter.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			query := foundation.QueryEnvelope{AccountID: command.AccountID, Actor: command.Actor, RequestedAt: command.RequestedAt}
+			conversation, err := loadConversation(ctx, query, conversationID)
+			if err != nil {
+				return nil, err
+			}
+			if conversation.Status != domain.ConversationStatusOpen && conversation.Status != domain.ConversationStatusPending {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation cannot enter the queue in its current status"}
+			}
+			downstream := foundation.CommandEnvelope{
+				CommandID: command.CommandID + ":con-assignment", CommandType: "con.assignment.change.v1", AccountID: command.AccountID,
+				Actor: command.Actor, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversationID), 10)},
+				Input: map[string]any{"assignee_id": nil, "team_id": nil}, IdempotencyKey: command.IdempotencyKey + ":con-assignment",
+				CorrelationID: command.CorrelationID, CausationID: command.CommandID, RequestedAt: command.RequestedAt,
+				TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: command.TimeoutPolicy.TimeoutMS, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"},
+			}
+			var updated conversationView
+			if err := conClient.command(ctx, downstream, &updated); err != nil {
+				return nil, err
+			}
+			if err := r.appendBusinessEvent(ctx, command, "rte.queue.changed.v1", "RoutingQueue", command.Target.ID, []string{"assignee_id", "team_id", "queued"}, map[string]any{"conversation_id": conversationID, "inbox_id": updated.InboxID, "queued": true}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "conversation_id": conversationID, "inbox_id": updated.InboxID, "status": updated.Status, "queued": true}, nil
+		}); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("rte.assignment.get.v1", func(ctx context.Context, query foundation.QueryEnvelope) (any, error) {
 			conversationID, err := uintFilter(query.Filter, "conversation_id")
 			if err != nil {
@@ -2811,6 +2842,40 @@ func (c *moduleClient) query(ctx context.Context, envelope foundation.QueryEnvel
 	request.Header.Set(headerCaller, c.caller)
 	request.Header.Set(headerContractVersion, c.version)
 	request.Header.Set(headerCorrelationID, correlationID)
+	response, err := c.client.Do(request)
+	if err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency is unavailable"}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var failure foundation.ContractError
+		if json.NewDecoder(response.Body).Decode(&failure) == nil && failure.Validate() == nil {
+			return &ContractFailure{Type: failure.Type, Message: failure.Message, RetryAfterMS: failure.RetryAfterMS, Details: failure.Details}
+		}
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency returned an invalid response"}
+	}
+	var payload struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || len(payload.Data) == 0 {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency returned invalid data"}
+	}
+	if err := json.Unmarshal(payload.Data, output); err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency returned incompatible data"}
+	}
+	return nil
+}
+
+func (c *moduleClient) command(ctx context.Context, envelope foundation.CommandEnvelope, output any) error {
+	body, _ := json.Marshal(envelope)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/contracts/commands/"+envelope.CommandType, bytes.NewReader(body))
+	if err != nil {
+		return &ContractFailure{Type: "dependency_unavailable", Message: "dependency request could not be created"}
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set(headerCaller, c.caller)
+	request.Header.Set(headerContractVersion, c.version)
+	request.Header.Set(headerCorrelationID, envelope.CorrelationID)
 	response, err := c.client.Do(request)
 	if err != nil {
 		return &ContractFailure{Type: "dependency_unavailable", Message: "module dependency is unavailable"}

@@ -1490,6 +1490,79 @@ func TestRTEQueriesComposeOwnerContractsAndLocalCapacity(t *testing.T) {
 	}
 }
 
+func TestRTEQueueEnterUsesCONCommandBoundaryAndIsIdempotent(t *testing.T) {
+	assigneeID := uint(7)
+	commandCalls := 0
+	conRegistry := NewContractRegistry("CON")
+	if err := conRegistry.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || id != 101 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+		}
+		return conversationView{ID: 101, AccountID: 91, InboxID: 11, AssigneeID: &assigneeID, Status: domain.ConversationStatusOpen}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conRegistry.RegisterCommand("con.assignment.change.v1", func(_ context.Context, command foundation.CommandEnvelope) (any, error) {
+		if command.AccountID != 91 || command.Target.ID != "101" || command.Input["assignee_id"] != nil || command.Input["team_id"] != nil {
+			return nil, &ContractFailure{Type: "validation_failed", Message: "invalid assignment change"}
+		}
+		commandCalls++
+		return conversationView{ID: 101, AccountID: 91, InboxID: 11, Status: domain.ConversationStatusOpen}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["RTE"] = true
+	conServer, conAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: conCfg, DB: newModuleTestDB(t, "CON"), Contracts: conRegistry}.Handler())
+	defer conServer.Shutdown(context.Background())
+
+	dependency := func(module string) (Config, string, func()) {
+		cfg := businessConfig(module)
+		cfg.AllowedCallers["RTE"] = true
+		server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: cfg, DB: newModuleTestDB(t, module), Contracts: NewContractRegistry(module)}.Handler())
+		return cfg, address, func() { _ = server.Shutdown(context.Background()) }
+	}
+	tenCfg, tenAddress, closeTEN := dependency("TEN")
+	defer closeTEN()
+	chnCfg, chnAddress, closeCHN := dependency("CHN")
+	defer closeCHN()
+
+	db := newModuleTestDB(t, "RTE")
+	cfg := businessConfig("RTE")
+	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}, "TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CHN": {URL: "http://" + chnAddress, Token: chnCfg.AuthToken}}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("RTE")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	command := foundation.CommandEnvelope{CommandID: "queue-enter-1", CommandType: "rte.queue.enter.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: "101"}, Input: map[string]any{}, IdempotencyKey: "queue-enter-key", CorrelationID: "queue-enter-correlation", CausationID: "queue-enter-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "rte.queue.get.v1"}}
+	call := func(payload foundation.CommandEnvelope) *httptest.ResponseRecorder {
+		return performContractRequest(runtime.Handler(), "/contracts/commands/rte.queue.enter.v1", payload, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, payload.CorrelationID)
+		})
+	}
+	for range 2 {
+		response := call(command)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"queued":true`) {
+			t.Fatalf("queue enter=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if commandCalls != 1 {
+		t.Fatalf("downstream command calls=%d want=1", commandCalls)
+	}
+	var events int64
+	if err := db.Model(&domain.LocalChangeJournal{}).Where("source_module = ? AND action = ? AND object_type = ?", "RTE", "event_outbox", "RoutingQueue").Count(&events).Error; err != nil || events != 1 {
+		t.Fatalf("queue events=%d err=%v", events, err)
+	}
+	cross := command
+	cross.CommandID, cross.IdempotencyKey, cross.AccountID = "queue-enter-cross", "queue-enter-cross-key", 92
+	if response := call(cross); response.Code != http.StatusNotFound {
+		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCONStatusHistoryAndDeletionStatusStayAccountScoped(t *testing.T) {
 	db := newModuleTestDB(t, "CON")
 	now := time.Now().UTC()
