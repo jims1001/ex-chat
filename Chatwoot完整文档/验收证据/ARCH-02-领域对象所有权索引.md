@@ -120,12 +120,13 @@
 | 114 | UploadSession | models.go | MED | 权威 | 短期一次性上传确认会话 |
 | 115 | SecurityScan | models.go | MED | 日志 | 媒体安全扫描结果 |
 | 116 | AccessGrant | models.go | MED | 权威 | 私有媒体访问授权 |
+| 117 | AutomationRuleVersion | models.go | AUT | 权威 | 自动化规则冻结版本 |
 
 ## 完整性校验
 
 - 源码基线：`rg '^type [A-Za-z0-9_]+ struct' internal/domain`。
-- 源码对象数：116。
-- 索引对象数：116；其中 115 个静态归属 26 个模块，1 个为明确排除的 L0 共享机制。
+- 源码对象数：117。
+- 索引对象数：117；其中 116 个静态归属 26 个模块，1 个为明确排除的 L0 共享机制。
 - 重复对象：0。
 - 缺失对象：0。
 - 多重静态所有者：0；`LocalChangeJournal` 不计入静态所有者分母，其记录按 `source_module` 动态归属。

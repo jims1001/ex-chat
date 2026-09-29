@@ -795,7 +795,8 @@
       ],
       "storedModels": [
         "AutomationRule",
-        "AutomationRuleExecution"
+        "AutomationRuleExecution",
+        "AutomationRuleVersion"
       ],
       "localJournal": "LocalChangeJournal",
       "failurePolicy": {
@@ -803,7 +804,7 @@
         "recovery": "从事件游标继续且不重复"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "runtime-query-boundary-verified",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true
     },

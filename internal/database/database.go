@@ -87,6 +87,7 @@ func allModels() []any {
 		&domain.CustomAttributeDefinition{},
 		&domain.ContactNote{},
 		&domain.AutomationRule{},
+		&domain.AutomationRuleVersion{},
 		&domain.Portal{},
 		&domain.Category{},
 		&domain.Article{},

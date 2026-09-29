@@ -536,6 +536,18 @@ type AutomationRule struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// AutomationRuleVersion is an immutable snapshot used by an automation execution.
+type AutomationRuleVersion struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	AccountID  uint      `gorm:"uniqueIndex:idx_automation_rule_version;not null" json:"account_id"`
+	RuleID     uint      `gorm:"uniqueIndex:idx_automation_rule_version;not null" json:"rule_id"`
+	Version    uint      `gorm:"uniqueIndex:idx_automation_rule_version;not null" json:"version"`
+	EventName  string    `gorm:"size:100;not null" json:"event_name"`
+	Conditions string    `gorm:"type:text" json:"conditions"`
+	Actions    string    `gorm:"type:text" json:"actions"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // AutomationRuleExecution records an audit and execution history of an automation rule run
 type AutomationRuleExecution struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`

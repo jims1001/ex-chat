@@ -24,6 +24,7 @@ var modelOwners = map[string]string{
 	"AuditExport":               "AUD",
 	"AuditLog":                  "AUD",
 	"AutomationRule":            "AUT",
+	"AutomationRuleVersion":     "AUT",
 	"AutomationRuleExecution":   "AUT",
 	"BrandedEmailLayout":        "ENT",
 	"CSATSurvey":                "QLT",

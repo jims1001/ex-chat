@@ -4457,6 +4457,72 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			total := counts["notification_count"] + counts["setting_count"] + counts["subscription_count"] + counts["delivery_count"]
 			return map[string]any{"account_id": query.AccountID, "notification_count": counts["notification_count"], "setting_count": counts["setting_count"], "subscription_count": counts["subscription_count"], "delivery_count": counts["delivery_count"], "ready": total == 0}, nil
 		})
+	case "AUT":
+		definitionJSON := func(raw string) json.RawMessage {
+			if !json.Valid([]byte(raw)) {
+				return json.RawMessage("[]")
+			}
+			return json.RawMessage(raw)
+		}
+		if err := r.Contracts.RegisterQuery("aut.rule.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule id is required"}
+			}
+			var rule domain.AutomationRule
+			result := r.DB.Where("account_id = ? AND id = ?", query.AccountID, id).First(&rule)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "rule was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation rule store is unavailable"}
+			}
+			return map[string]any{"id": rule.ID, "account_id": rule.AccountID, "name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": definitionJSON(rule.Conditions), "actions": definitionJSON(rule.Actions), "active": rule.Active, "created_at": rule.CreatedAt, "updated_at": rule.UpdatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Contracts.RegisterQuery("aut.rule_version.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			ruleID, err := uintFilter(query.Filter, "rule_id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "rule_id is required"}
+			}
+			ownerQuery := r.DB.Where("account_id = ? AND rule_id = ?", query.AccountID, ruleID)
+			if _, provided := query.Filter["version"]; provided {
+				version, err := uintFilter(query.Filter, "version")
+				if err != nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "version is invalid"}
+				}
+				ownerQuery = ownerQuery.Where("version = ?", version)
+			} else {
+				ownerQuery = ownerQuery.Order("version DESC")
+			}
+			var version domain.AutomationRuleVersion
+			result := ownerQuery.First(&version)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "rule version was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation rule version store is unavailable"}
+			}
+			return map[string]any{"id": version.ID, "account_id": version.AccountID, "rule_id": version.RuleID, "version": version.Version, "event_name": version.EventName, "conditions": definitionJSON(version.Conditions), "actions": definitionJSON(version.Actions), "created_at": version.CreatedAt}, nil
+		}); err != nil {
+			return err
+		}
+		return r.Contracts.RegisterQuery("aut.execution.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+			id, err := uintFilter(query.Filter, "id")
+			if err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: "execution id is required"}
+			}
+			var execution domain.AutomationRuleExecution
+			result := r.DB.Where("account_id = ? AND id = ?", query.AccountID, id).First(&execution)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				return nil, &ContractFailure{Type: "resource_not_found", Message: "execution was not found"}
+			}
+			if result.Error != nil {
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation execution store is unavailable"}
+			}
+			return map[string]any{"id": execution.ID, "account_id": execution.AccountID, "rule_id": execution.RuleID, "conversation_id": execution.ConversationID, "message_id": execution.MessageID, "event_name": execution.EventName, "status": execution.Status, "duration_ms": execution.DurationMs, "triggered_at": execution.TriggeredAt, "created_at": execution.CreatedAt}, nil
+		})
 	case "OPS":
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
