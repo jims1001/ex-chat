@@ -1976,6 +1976,66 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			return &conversation, nil
 		}
+		changeAssignment := func(ctx context.Context, command foundation.CommandEnvelope, operation string) (any, error) {
+			conversationID, failure := conversationCommandTarget(command)
+			if failure != nil {
+				return nil, failure
+			}
+			query := foundation.QueryEnvelope{AccountID: command.AccountID, Actor: command.Actor, RequestedAt: command.RequestedAt}
+			if _, err := loadConversation(ctx, query, conversationID); err != nil {
+				return nil, err
+			}
+			assignment := map[string]any{}
+			switch operation {
+			case "claim":
+				value, exists := command.Input["assignee_id"]
+				if !exists {
+					value = command.Actor.ID
+				}
+				assigneeID, err := optionalUint(value)
+				if err != nil || assigneeID == nil {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "assignee_id is required"}
+				}
+				assignment["assignee_id"], assignment["team_id"] = *assigneeID, nil
+			case "transfer":
+				for _, field := range []string{"assignee_id", "team_id"} {
+					if value, exists := command.Input[field]; exists {
+						parsed, err := optionalUint(value)
+						if err != nil {
+							return nil, &ContractFailure{Type: "validation_failed", Message: field + " is invalid"}
+						}
+						assignment[field] = parsed
+					}
+				}
+				if len(assignment) == 0 {
+					return nil, &ContractFailure{Type: "validation_failed", Message: "assignment transfer is empty"}
+				}
+			case "release":
+				assignment["assignee_id"], assignment["team_id"] = nil, nil
+			}
+			downstream := foundation.CommandEnvelope{
+				CommandID: command.CommandID + ":con-assignment", CommandType: "con.assignment.change.v1", AccountID: command.AccountID,
+				Actor: command.Actor, Target: foundation.ContractTarget{Type: "conversation", ID: strconv.FormatUint(uint64(conversationID), 10)},
+				Input: assignment, IdempotencyKey: command.IdempotencyKey + ":con-assignment", CorrelationID: command.CorrelationID,
+				CausationID: command.CommandID, RequestedAt: command.RequestedAt,
+				TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: command.TimeoutPolicy.TimeoutMS, OnTimeout: "query", StatusQuery: "con.conversation.get.v1"},
+			}
+			var updated conversationView
+			if err := conClient.command(ctx, downstream, &updated); err != nil {
+				return nil, err
+			}
+			if err := r.appendBusinessEvent(ctx, command, "rte.assignment.changed.v1", "RoutingAssignment", command.Target.ID, []string{"assignee_id", "team_id"}, map[string]any{"conversation_id": conversationID, "inbox_id": updated.InboxID, "assignee_id": updated.AssigneeID, "team_id": updated.TeamID, "operation": operation}); err != nil {
+				return nil, err
+			}
+			return map[string]any{"account_id": command.AccountID, "conversation_id": conversationID, "inbox_id": updated.InboxID, "assignee_id": updated.AssigneeID, "team_id": updated.TeamID, "operation": operation}, nil
+		}
+		for capability, operation := range map[string]string{"rte.assignment.claim.v1": "claim", "rte.assignment.transfer.v1": "transfer", "rte.assignment.release.v1": "release"} {
+			if err := r.Contracts.RegisterCommand(capability, func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+				return changeAssignment(ctx, command, operation)
+			}); err != nil {
+				return err
+			}
+		}
 		if err := r.Contracts.RegisterCommand("rte.queue.enter.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
 			conversationID, failure := conversationCommandTarget(command)
 			if failure != nil {

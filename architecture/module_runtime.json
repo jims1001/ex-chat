@@ -492,7 +492,7 @@
         "recovery": "重算队列和容量"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "queue-enter-implemented",
+      "acceptanceStatus": "assignment-commands-implemented",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
@@ -502,7 +502,10 @@
         "rte.capacity.get.v1"
       ],
       "implementedIndependentCommands": [
-        "rte.queue.enter.v1"
+        "rte.queue.enter.v1",
+        "rte.assignment.claim.v1",
+        "rte.assignment.transfer.v1",
+        "rte.assignment.release.v1"
       ]
     },
     {

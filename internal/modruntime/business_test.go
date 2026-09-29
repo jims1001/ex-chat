@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1560,6 +1561,90 @@ func TestRTEQueueEnterUsesCONCommandBoundaryAndIsIdempotent(t *testing.T) {
 	cross.CommandID, cross.IdempotencyKey, cross.AccountID = "queue-enter-cross", "queue-enter-cross-key", 92
 	if response := call(cross); response.Code != http.StatusNotFound {
 		t.Fatalf("cross=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestRTEAssignmentCommandsUseCONOwnerAndPublishMinimalEvents(t *testing.T) {
+	conRegistry := NewContractRegistry("CON")
+	if err := conRegistry.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
+		id, err := uintFilter(query.Filter, "id")
+		if err != nil || query.AccountID != 91 || id != 101 {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+		}
+		return conversationView{ID: 101, AccountID: 91, InboxID: 11, Status: domain.ConversationStatusOpen}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conRegistry.RegisterCommand("con.assignment.change.v1", func(_ context.Context, command foundation.CommandEnvelope) (any, error) {
+		if command.AccountID != 91 || command.Target.ID != "101" {
+			return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+		}
+		view := conversationView{ID: 101, AccountID: 91, InboxID: 11, Status: domain.ConversationStatusOpen}
+		if value, exists := command.Input["assignee_id"]; exists && value != nil {
+			id, err := optionalUint(value)
+			if err != nil {
+				return nil, err
+			}
+			view.AssigneeID = id
+		}
+		if value, exists := command.Input["team_id"]; exists && value != nil {
+			id, err := optionalUint(value)
+			if err != nil {
+				return nil, err
+			}
+			view.TeamID = id
+		}
+		return view, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conCfg := businessConfig("CON")
+	conCfg.AllowedCallers["RTE"] = true
+	conServer, conAddress := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: conCfg, DB: newModuleTestDB(t, "CON"), Contracts: conRegistry}.Handler())
+	defer conServer.Shutdown(context.Background())
+	dependency := func(module string) (Config, string, func()) {
+		cfg := businessConfig(module)
+		cfg.AllowedCallers["RTE"] = true
+		server, address := startHTTPServer(t, "127.0.0.1:0", Runtime{Config: cfg, DB: newModuleTestDB(t, module), Contracts: NewContractRegistry(module)}.Handler())
+		return cfg, address, func() { _ = server.Shutdown(context.Background()) }
+	}
+	tenCfg, tenAddress, closeTEN := dependency("TEN")
+	defer closeTEN()
+	chnCfg, chnAddress, closeCHN := dependency("CHN")
+	defer closeCHN()
+	db := newModuleTestDB(t, "RTE")
+	cfg := businessConfig("RTE")
+	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}, "TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}, "CHN": {URL: "http://" + chnAddress, Token: chnCfg.AuthToken}}
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("RTE")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	base := foundation.CommandEnvelope{AccountID: 91, Actor: foundation.ContractActor{Type: "User", ID: "7", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "conversation", ID: "101"}, CorrelationID: "assignment-correlation", CausationID: "assignment-cause", RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "rte.assignment.get.v1"}}
+	tests := []struct {
+		capability string
+		input      map[string]any
+		contains   string
+	}{
+		{"rte.assignment.claim.v1", map[string]any{}, `"assignee_id":7`},
+		{"rte.assignment.transfer.v1", map[string]any{"assignee_id": 8, "team_id": 4}, `"team_id":4`},
+		{"rte.assignment.release.v1", map[string]any{}, `"operation":"release"`},
+	}
+	for index, test := range tests {
+		command := base
+		command.CommandID = fmt.Sprintf("assignment-%d", index)
+		command.CommandType, command.Input, command.IdempotencyKey = test.capability, test.input, fmt.Sprintf("assignment-key-%d", index)
+		response := performContractRequest(runtime.Handler(), "/contracts/commands/"+test.capability, command, func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+			request.Header.Set(headerCaller, "API")
+			request.Header.Set(headerCorrelationID, command.CorrelationID)
+		})
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), test.contains) {
+			t.Fatalf("%s=%d body=%s", test.capability, response.Code, response.Body.String())
+		}
+	}
+	var events int64
+	if err := db.Model(&domain.LocalChangeJournal{}).Where("source_module = ? AND action = ? AND object_type = ?", "RTE", "event_outbox", "RoutingAssignment").Count(&events).Error; err != nil || events != 3 {
+		t.Fatalf("assignment events=%d err=%v", events, err)
 	}
 }
 
