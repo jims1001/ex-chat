@@ -13,6 +13,7 @@ const (
 
 // EmailLog records all outgoing email dispatches (transcripts, confirmation emails, notification digests, etc.)
 type EmailLog struct {
+	ManagedQueue   string     `gorm:"size:32;not null;default:'';index" json:"managed_queue,omitempty"`
 	ID             uint       `gorm:"primaryKey" json:"id"`
 	AccountID      uint       `gorm:"index;not null" json:"account_id"`
 	ConversationID *uint      `gorm:"index" json:"conversation_id,omitempty"`

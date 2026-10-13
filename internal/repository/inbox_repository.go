@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 func generateToken(length int) string {
@@ -64,6 +67,20 @@ func (r *InboxRepository) Create(inbox *domain.Inbox) error {
 	return r.db.Omit("Members", "AssignmentPolicy").Create(inbox).Error
 }
 
+// FindInboxSMTP is CHN's credential-bearing local owner port. It does not
+// enrich foreign-owner data and never returns provider failures to MSG.
+func (r *InboxRepository) FindInboxSMTP(ctx context.Context, accountID, inboxID uint) (*domain.Inbox, error) {
+	var inbox domain.Inbox
+	db := r.db.WithContext(ctx).Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
+	if err := db.Select("id", "account_id", "created_at", "provider_config").Where("account_id = ? AND id = ?", accountID, inboxID).First(&inbox).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, errors.New("inbox SMTP route is unavailable")
+	}
+	return &inbox, nil
+}
+
 func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 	var inbox domain.Inbox
 	err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&inbox).Error
@@ -81,8 +98,10 @@ func (r *InboxRepository) FindByID(accountID, id uint) (*domain.Inbox, error) {
 }
 
 func (r *InboxRepository) Exists(accountID, id uint) (bool, error) {
+	// Do not log caller identifiers or raw dependency errors from Call reads.
+	db := r.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 	var count int64
-	err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
+	err := db.Model(&domain.Inbox{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
 	return count == 1, err
 }
 
@@ -152,6 +171,11 @@ func (r *InboxRepository) AccountDeletionStatus(accountID uint) (AccountChannelD
 	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ? AND (provider_config <> '' OR webhook_url <> '' OR hmac_token <> '' OR hmac_mandatory = ? OR website_token NOT LIKE ?)", accountID, true, "revoked-%").Count(&status.CredentialCount).Error; err != nil {
 		return status, err
 	}
+	var providerCredentials int64
+	if err := r.db.Model(&domain.ChannelConnection{}).Where("account_id = ? AND secret_ciphertext <> ?", accountID, "").Count(&providerCredentials).Error; err != nil {
+		return status, err
+	}
+	status.CredentialCount += providerCredentials
 	owned := r.db.Model(&domain.Inbox{}).Select("id").Where("account_id = ?", accountID)
 	if err := r.db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", owned).Count(&status.MemberCount).Error; err != nil {
 		return status, err
@@ -204,7 +228,12 @@ func (r *InboxRepository) Update(inbox *domain.Inbox) error {
 }
 
 func (r *InboxRepository) Delete(accountID, id uint) error {
-	return r.db.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Inbox{}).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&domain.ChannelConnection{}).Where("account_id = ? AND inbox_id = ?", accountID, id).Updates(map[string]any{"secret_ciphertext": "", "recipient_id": "", "provider_account_id": "", "revoked_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+		return tx.Where("account_id = ? AND id = ?", accountID, id).Delete(&domain.Inbox{}).Error
+	})
 }
 
 func (r *InboxRepository) AddMember(inboxID, userID uint) error {
@@ -220,9 +249,11 @@ func (r *InboxRepository) RemoveMember(inboxID, userID uint) error {
 }
 
 func (r *InboxRepository) ListMemberIDs(accountID, inboxID uint) ([]uint, error) {
+	// Do not log caller identifiers or raw dependency errors from Call reads.
+	db := r.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 	ids := make([]uint, 0)
-	ownedInbox := r.db.Model(&domain.Inbox{}).Select("id").Where("account_id = ? AND id = ?", accountID, inboxID)
-	err := r.db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", ownedInbox).Order("user_id ASC").Pluck("user_id", &ids).Error
+	ownedInbox := db.Model(&domain.Inbox{}).Select("id").Where("account_id = ? AND id = ?", accountID, inboxID)
+	err := db.Model(&domain.InboxMember{}).Where("inbox_id IN (?)", ownedInbox).Order("user_id ASC").Pluck("user_id", &ids).Error
 	return ids, err
 }
 
@@ -349,6 +380,9 @@ func (r *InboxRepository) UpdateChannelHealth(accountID, inboxID uint, status st
 // RevokeAccountChannels removes every channel credential and agent binding for
 // one account while retaining inbox records needed by historical references.
 func (r *InboxRepository) RevokeAccountChannels(accountID uint) (int64, error) {
+	if err := r.db.Model(&domain.ChannelConnection{}).Where("account_id = ?", accountID).Updates(map[string]any{"secret_ciphertext": "", "recipient_id": "", "provider_account_id": "", "revoked_at": time.Now().UTC()}).Error; err != nil {
+		return 0, err
+	}
 	var ids []uint
 	if err := r.db.Model(&domain.Inbox{}).Where("account_id = ?", accountID).Order("id ASC").Pluck("id", &ids).Error; err != nil {
 		return 0, err
@@ -376,7 +410,9 @@ func (r *InboxRepository) GetCSATTemplate(accountID, inboxID uint) (map[string]a
 
 	res := make(map[string]any)
 	if inbox.CSATConfig != "" {
-		_ = json.Unmarshal([]byte(inbox.CSATConfig), &res)
+		if err := json.Unmarshal([]byte(inbox.CSATConfig), &res); err != nil {
+			return nil, err
+		}
 	}
 	if len(res) == 0 {
 		res = map[string]any{
@@ -395,9 +431,16 @@ func (r *InboxRepository) SaveCSATTemplate(accountID, inboxID uint, template map
 	if err != nil {
 		return err
 	}
-	return r.db.Model(&domain.Inbox{}).
+	result := r.db.Model(&domain.Inbox{}).
 		Where("account_id = ? AND id = ?", accountID, inboxID).
-		Update("csat_config", string(bytes)).Error
+		Update("csat_config", string(bytes))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *InboxRepository) RegisterWebhook(accountID, inboxID uint, webhookURL string) error {
@@ -450,10 +493,6 @@ func (r *InboxRepository) ListMessageTemplates(accountID, inboxID uint, nameFilt
 		return nil, err
 	}
 
-	if len(templates) == 0 && nameFilter == "" && statusFilter == "" {
-		// Sync or initialize default templates for inbox
-		return r.SyncMessageTemplates(accountID, inboxID)
-	}
 	return templates, nil
 }
 
@@ -474,16 +513,42 @@ func (r *InboxRepository) GetMessageTemplate(accountID, inboxID, templateID uint
 	return &t, nil
 }
 
-// CreateMessageTemplate stores a new message template in database
-func (r *InboxRepository) CreateMessageTemplate(template *domain.InboxMessageTemplate) error {
-	if template.AccountID == 0 || template.InboxID == 0 {
-		return errors.New("account_id and inbox_id are required")
+// lockTemplateInbox checks the current tenant/inbox pair in the same transaction
+// as the write. CHN needs only its own inbox table, not another owner's store.
+func lockTemplateInbox(db *gorm.DB, accountID, inboxID uint) (*domain.Inbox, error) {
+	if accountID == 0 || inboxID == 0 {
+		return nil, gorm.ErrRecordNotFound
 	}
-	if strings.TrimSpace(template.Name) == "" {
+	var inbox domain.Inbox
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND id = ?", accountID, inboxID).First(&inbox).Error; err != nil {
+		return nil, err
+	}
+	return &inbox, nil
+}
+
+// CreateMessageTemplate upserts supplied local data using the existing name key.
+// A stored status is a local assertion, not evidence of provider approval.
+func (r *InboxRepository) CreateMessageTemplate(template *domain.InboxMessageTemplate) error {
+	if template == nil || strings.TrimSpace(template.Name) == "" {
 		return errors.New("template name is required")
 	}
-	if template.Status == "" {
-		template.Status = "APPROVED"
+	var saved domain.InboxMessageTemplate
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockTemplateInbox(tx, template.AccountID, template.InboxID); err != nil {
+			return err
+		}
+		saved = *template
+		return upsertLocalMessageTemplate(tx, &saved, false)
+	})
+	if err == nil {
+		*template = saved
+	}
+	return err
+}
+
+func upsertLocalMessageTemplate(db *gorm.DB, template *domain.InboxMessageTemplate, preserveStatus bool) error {
+	if strings.TrimSpace(template.Name) == "" {
+		return errors.New("template name is required")
 	}
 	if template.Category == "" {
 		template.Category = "UTILITY"
@@ -495,13 +560,12 @@ func (r *InboxRepository) CreateMessageTemplate(template *domain.InboxMessageTem
 		template.Components = `[{"type":"BODY","text":"Hello {{1}}, this is an automated message."}]`
 	}
 	now := time.Now().UTC()
-	template.CreatedAt = now
-	template.UpdatedAt = now
-
-	// Check if already exists with same name in this inbox
 	var existing domain.InboxMessageTemplate
-	if err := r.db.Where("account_id = ? AND inbox_id = ? AND name = ?", template.AccountID, template.InboxID, template.Name).First(&existing).Error; err == nil {
-		existing.Status = template.Status
+	err := db.Where("account_id = ? AND inbox_id = ? AND name = ?", template.AccountID, template.InboxID, template.Name).First(&existing).Error
+	if err == nil {
+		if !preserveStatus {
+			existing.Status = template.Status
+		}
 		existing.Category = template.Category
 		existing.Language = template.Language
 		existing.Components = template.Components
@@ -512,36 +576,45 @@ func (r *InboxRepository) CreateMessageTemplate(template *domain.InboxMessageTem
 			existing.ProviderTemplateID = template.ProviderTemplateID
 		}
 		existing.UpdatedAt = now
+		if err := db.Omit(clause.Associations).Save(&existing).Error; err != nil {
+			return err
+		}
 		*template = existing
-		return r.db.Save(&existing).Error
+		return nil
 	}
-
-	return r.db.Create(template).Error
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	template.CreatedAt, template.UpdatedAt = now, now
+	return db.Omit(clause.Associations).Create(template).Error
 }
 
-// DeleteMessageTemplate removes a message template from database
+// DeleteMessageTemplate removes a local row only after validating its inbox owner.
 func (r *InboxRepository) DeleteMessageTemplate(accountID, inboxID, templateID uint) error {
-	return r.db.Where("account_id = ? AND inbox_id = ? AND id = ?", accountID, inboxID, templateID).Delete(&domain.InboxMessageTemplate{}).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockTemplateInbox(tx, accountID, inboxID); err != nil {
+			return err
+		}
+		return tx.Where("account_id = ? AND inbox_id = ? AND id = ?", accountID, inboxID, templateID).Delete(&domain.InboxMessageTemplate{}).Error
+	})
 }
 
-// SyncMessageTemplates synchronizes message templates with provider_config or initializes persistent defaults
+// SyncMessageTemplates retains the legacy method/route name. It only imports
+// local ProviderConfig.templates; it does not contact or verify a provider.
+// All template content and legacy-named import metadata commit together.
 func (r *InboxRepository) SyncMessageTemplates(accountID, inboxID uint) ([]domain.InboxMessageTemplate, error) {
-	inbox, err := r.FindByID(accountID, inboxID)
-	if err != nil || inbox == nil {
-		return nil, errors.New("inbox not found")
-	}
-
-	now := time.Now().UTC()
-	var templatesToUpsert []domain.InboxMessageTemplate
-
-	// 1. Check if inbox.ProviderConfig defines custom templates or errors
-	if inbox.ProviderConfig != "" {
+	var result []domain.InboxMessageTemplate
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		inbox, err := lockTemplateInbox(tx, accountID, inboxID)
+		if err != nil {
+			return err
+		}
 		var cfg struct {
 			Error     string `json:"error"`
 			SyncError string `json:"sync_error"`
 			Templates []struct {
 				Name               string          `json:"name"`
-				Status             string          `json:"status"`
+				Status             json.RawMessage `json:"status"`
 				Category           string          `json:"category"`
 				Language           string          `json:"language"`
 				Components         json.RawMessage `json:"components"`
@@ -549,90 +622,47 @@ func (r *InboxRepository) SyncMessageTemplates(accountID, inboxID uint) ([]domai
 				ProviderTemplateID string          `json:"provider_template_id"`
 			} `json:"templates"`
 		}
-		if err := json.Unmarshal([]byte(inbox.ProviderConfig), &cfg); err == nil {
-			syncErr := cfg.Error
-			if syncErr == "" {
-				syncErr = cfg.SyncError
+		if strings.TrimSpace(inbox.ProviderConfig) != "" {
+			raw := strings.TrimSpace(inbox.ProviderConfig)
+			if !strings.HasPrefix(raw, "{") || json.Unmarshal([]byte(raw), &cfg) != nil {
+				return errors.New("template import configuration must be a valid JSON object")
 			}
-
-			if len(cfg.Templates) > 0 {
-				for _, t := range cfg.Templates {
-					compStr := string(t.Components)
-					if compStr == "" || compStr == "null" {
-						compStr = `[{"type":"BODY","text":"Hello, this is a custom provider template."}]`
-					}
-					status := t.Status
-					if status == "" {
-						status = "APPROVED"
-					}
-					category := t.Category
-					if category == "" {
-						category = "UTILITY"
-					}
-					lang := t.Language
-					if lang == "" {
-						lang = "en_US"
-					}
-					syncStatus := "synced"
-					rejReason := t.RejectedReason
-					if syncErr != "" {
-						syncStatus = "sync_failed"
-						if rejReason == "" {
-							rejReason = syncErr
-						}
-					}
-					templatesToUpsert = append(templatesToUpsert, domain.InboxMessageTemplate{
-						AccountID:          accountID,
-						InboxID:            inboxID,
-						Name:               t.Name,
-						Status:             status,
-						Category:           category,
-						Language:           lang,
-						Components:         compStr,
-						RejectedReason:     rejReason,
-						ProviderTemplateID: t.ProviderTemplateID,
-						LastSyncAt:         &now,
-						SyncStatus:         syncStatus,
-						CreatedAt:          now,
-						UpdatedAt:          now,
-					})
-				}
-			} else if syncErr != "" {
-				// Mark existing templates with sync failure reason
-				r.db.Model(&domain.InboxMessageTemplate{}).
-					Where("account_id = ? AND inbox_id = ?", accountID, inboxID).
-					Updates(map[string]interface{}{
-						"sync_status":     "sync_failed",
-						"rejected_reason": syncErr,
-						"last_sync_at":    &now,
-						"updated_at":      now,
-					})
+			if cfg.Error != "" || cfg.SyncError != "" {
+				return errors.New("template import configuration reports an error")
 			}
 		}
-	}
-
-	// 2. Upsert any templates parsed from ProviderConfig
-	for i := range templatesToUpsert {
-		_ = r.CreateMessageTemplate(&templatesToUpsert[i])
-	}
-
-	// 3. If no new templates from ProviderConfig, update existing templates' sync status
-	if len(templatesToUpsert) == 0 {
-		r.db.Model(&domain.InboxMessageTemplate{}).
-			Where("account_id = ? AND inbox_id = ?", accountID, inboxID).
-			Updates(map[string]interface{}{
-				"last_sync_at": &now,
-				"sync_status":  "synced",
-				"updated_at":   now,
-			})
-	}
-
-	// 4. Return all persisted templates for this inbox
-	var allTemplates []domain.InboxMessageTemplate
-	if err := r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Order("created_at ASC").Find(&allTemplates).Error; err != nil {
+		now := time.Now().UTC()
+		for _, input := range cfg.Templates {
+			var status string
+			if len(input.Status) > 0 {
+				if err := json.Unmarshal(input.Status, &status); err != nil {
+					return errors.New("template status must be a string or null")
+				}
+				if strings.TrimSpace(status) == "" {
+					status = ""
+				}
+			}
+			components := string(input.Components)
+			if components == "" || components == "null" {
+				components = `[{"type":"BODY","text":"Hello, this is a custom provider template."}]`
+			}
+			template := domain.InboxMessageTemplate{
+				AccountID: accountID, InboxID: inboxID, Name: input.Name, Status: status,
+				Category: input.Category, Language: input.Language, Components: components,
+				RejectedReason: input.RejectedReason, ProviderTemplateID: input.ProviderTemplateID,
+				LastSyncAt: &now, SyncStatus: "imported",
+			}
+			if err := upsertLocalMessageTemplate(tx, &template, len(input.Status) == 0); err != nil {
+				return err
+			}
+		}
+		// No template definitions means no writes, including no metadata refresh.
+		return tx.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Order("created_at ASC").Find(&result).Error
+	})
+	if err != nil {
 		return nil, err
 	}
-	return allTemplates, nil
+	return result, nil
 }
 
 // ChannelHealthResult holds the evaluated health indicators and diagnostics of an inbox channel
@@ -655,6 +685,24 @@ func (r *InboxRepository) CheckChannelHealth(accountID, inboxID uint) (*ChannelH
 	}
 
 	now := time.Now().UTC()
+	var channelConnections []domain.ChannelConnection
+	if err := r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).Limit(2).Find(&channelConnections).Error; err != nil {
+		return nil, err
+	}
+	if len(channelConnections) > 1 {
+		return nil, gorm.ErrInvalidData
+	}
+	if len(channelConnections) == 1 {
+		connection := channelConnections[0]
+		configured := connection.RevokedAt == nil && connection.SecretCiphertext != "" && connection.RecipientID != ""
+		status := "configured_not_probed"
+		if !configured {
+			status = "revoked"
+		}
+		// Persistence is not evidence of current provider availability, quality
+		// rating or quota. Do not manufacture GREEN/TIER_10K health claims.
+		return &ChannelHealthResult{Status: status, ChannelType: inbox.ChannelType, QualityRating: "UNKNOWN", MessagingLimit: "UNKNOWN", Verified: false, CheckedAt: now, Checks: map[string]any{"provider": map[string]any{"status": status, "credentials_stored": configured, "live_probe": false}}, Issues: []string{"Live provider health, token expiry and delivery limits have not been checked"}}, nil
+	}
 	checks := make(map[string]any)
 	var issues []string
 

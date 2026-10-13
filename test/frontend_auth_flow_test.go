@@ -17,6 +17,7 @@ import (
 
 func TestFrontendAuthFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("FRONTEND_URL", "https://chat.example.test")
 
 	cfg := &config.Config{
 		Environment:        "test",

@@ -427,21 +427,8 @@ func TestCSVExportAndHelpCenterSecurity(t *testing.T) {
 		_ = json.Unmarshal(wRole.Body.Bytes(), &roleResp)
 		roleID := roleResp.Data.ID
 
-		// Add a new agent with this custom role
-		agentBody, _ := json.Marshal(map[string]interface{}{
-			"name":           "Restricted Agent",
-			"email":          "restricted.agent@example.com",
-			"role":           "agent",
-			"custom_role_id": roleID,
-		})
-		wAgent := httptest.NewRecorder()
-		reqAgent, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", account1ID), bytes.NewBuffer(agentBody))
-		reqAgent.Header.Set("Content-Type", "application/json")
-		reqAgent.Header.Set("Authorization", "Bearer "+token1)
-		engine.ServeHTTP(wAgent, reqAgent)
-		if wAgent.Code != http.StatusOK && wAgent.Code != http.StatusCreated {
-			t.Fatalf("add agent failed: %d, body: %s", wAgent.Code, wAgent.Body.String())
-		}
+		// Provision a verified restricted member for the help-center RBAC checks.
+		createAccountMemberFixture(t, db, account1ID, "Restricted Agent", "restricted.agent@example.com", "Password123!", domain.RoleAgent, &roleID)
 
 		// Login as the restricted agent
 		loginBody, _ := json.Marshal(map[string]string{

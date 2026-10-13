@@ -228,3 +228,41 @@ Access Log 记录查询人、范围、用途、字段等级、时间、结果和
 - [ ] 查看受限日志本身会生成 Access Log；
 - [ ] 分页、索引延迟和冷数据解档行为明确；
 - [ ] 查询入口不能修改历史记录。
+
+## 13. 当前 REST 实现边界：禁止伪造导出与验证成功
+
+本节描述当前合并 REST 服务的实际行为；前述异步导出、完整性算法与集中账本仍为目标合同。独立 AUD 当前没有中央采集业务分支或导出、验证执行器，本次修正不代表 AUD、LOG-04、LOG-05 或 LOG-07 完成。
+
+### 13.1 创建端点
+
+现有认证、当前 Account 成员身份与 `audit_manage` 权限保持不变。通过授权后：
+
+| 端点 | 当前响应 | 客户端变化 |
+|---|---|---|
+| POST `/api/v1/accounts/{account_id}/audit_exports` | HTTP 501；`{"success":false,"error":"Audit export generation is not implemented"}` | 原 HTTP 202 与 `data.export_id` 不再返回；不能开始轮询或显示导出成功 |
+| POST `/api/v1/accounts/{account_id}/audit_integrity/verifications` | HTTP 501；`{"success":false,"error":"Audit integrity verification is not implemented"}` | 原 HTTP 201、`data.verification_id`、`verified:true` 不再返回；不能显示验证通过 |
+
+错误文案为固定值，不回显请求或存储错误；空、非法或带伪造结果字段的请求也不能触发执行或结果持久化。两个 POST 不生成任务、ID、记录数、有效期、下载 URL、验证证明，也不写入 AuditExport、IntegrityVerification、AccessLog、AuditLog 或 LocalChangeJournal。没有可执行的后台任务，因此不会用 pending/processing 替代虚假 completed。
+
+### 13.2 保留历史读取并明确其语义
+
+历史记录可能由旧版的硬编码成功路径生成；现有表没有可信执行来源字段，不能据 `status`、`verified`、`record_count`、`details`、`expires_at` 或 `download_url` 认定执行完成。保留当前 Account 范围、记录 ID、存储值及既有 data 结构，响应附加以下顶层 `meta`：
+
+| 字段 | 固定值 | 含义 |
+|---|---|---|
+| `record_semantics` | `"historical_unverified_claim"` | data 中的结果字段仅为未验证历史声明 |
+| `execution_available` | `false` | 当前没有对应导出或完整性验证执行能力 |
+| `execution_proven` | `false` | 此响应没有证明历史任务实际执行过；也不推断任务实际失败 |
+| `artifact_available` | `false` | 仅导出详情提供；历史 download_url 不代表可下载产物 |
+
+导出详情与验证详情继续返回 HTTP 200、`success:true` 和原 `data`；此处 success 只表示历史记录读取成功。`data.status:"completed"` 或 `data.verified:true` 即使存在，也受上述元数据明确限定。客户端必须显示“未验证历史声明”，禁止把这些存储字段用作实时成功徽标、完整性证明或下载按钮。当前没有审计导出下载路由。
+
+验证列表继续返回 HTTP 200、`data`、`payload` 和 `meta.total`，同样附加前三个 meta 字段。空列表稳定返回 `data:[]`、`payload:[]`、`meta.total:0`；重复 GET 只查询存储，不创建默认验证、更新时间或任何审计表记录。列表不返回 `success` 字段，延续原有 envelope。历史表内容和 schema 不迁移、不重写。
+
+详情中不存在或属于其他 Account 的记录继续返回既有 404 固定错误。存储错误继续沿用既有详情 404、列表 500 行为，不透出底层错误。匿名、无权限或非当前 Account 成员请求仍先由原认证与授权中间件拒绝。
+
+### 13.3 验证范围
+
+SQLite 与真实 PostgreSQL 回归覆盖原 POST 伪成功、空 GET 造数、历史矛盾成功字段、固定错误、管理员与自定义审计角色、普通 Agent 与跨租户拒绝，以及五张审计表的零写尝试和逐行不变。原审计与 QA 生命周期测试改为验证不可执行响应、历史读取限定和空列表，不再以虚构验证结果作为 QA 完成证据。上述检查只证明本节边界修正，不证明密码学验证、中心采集、实际导出、提供商集成或负载验收。
+
+范围限制：本次仅修复上述 REST 执行与读取路径。未被这些 POST 调用的旧内部 repository 创建辅助方法及其默认值保持原状，不能据此声称所有内部持久化入口、真实执行引擎或审计权限体系已修复。

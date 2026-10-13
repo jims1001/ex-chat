@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type MacroNotificationHandler struct {
@@ -425,36 +428,20 @@ func (h *MacroNotificationHandler) MarkAllNotificationsRead(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
 	if err := h.notificationRepo.MarkAllRead(c.Request.Context(), uint(accID), userID); err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
+		notificationMutationError(c, err)
 		return
 	}
 	response.Success(c, gin.H{"status": "ok"})
 }
 
 func (h *MacroNotificationHandler) MarkNotificationRead(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-
-	if err := h.notificationRepo.MarkRead(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
-		response.Error(c, http.StatusNotFound, "Notification not found")
-		return
-	}
-	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
-	response.Success(c, notif)
+	read := true
+	h.updateNotificationState(c, repository.NotificationStateChange{Read: &read})
 }
 
 func (h *MacroNotificationHandler) MarkNotificationUnread(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-
-	if err := h.notificationRepo.MarkUnread(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
-		response.Error(c, http.StatusNotFound, "Notification not found")
-		return
-	}
-	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
-	response.Success(c, notif)
+	read := false
+	h.updateNotificationState(c, repository.NotificationStateChange{Read: &read})
 }
 
 type SnoozeNotificationRequest struct {
@@ -463,12 +450,10 @@ type SnoozeNotificationRequest struct {
 }
 
 func (h *MacroNotificationHandler) SnoozeNotification(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-
 	var req SnoozeNotificationRequest
-	_ = c.ShouldBindJSON(&req)
+	if !bindNotificationMutation(c, &req, true) {
+		return
+	}
 
 	targetTime := time.Now().UTC()
 	if req.SnoozedUntil != nil && req.SnoozedUntil.After(targetTime) {
@@ -486,25 +471,11 @@ func (h *MacroNotificationHandler) SnoozeNotification(c *gin.Context) {
 		}
 	}
 
-	if err := h.notificationRepo.Snooze(c.Request.Context(), uint(accID), userID, uint(notifID), &targetTime); err != nil {
-		response.Error(c, http.StatusNotFound, "Notification not found")
-		return
-	}
-	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
-	response.Success(c, notif)
+	h.updateNotificationState(c, repository.NotificationStateChange{SnoozedUntil: &targetTime, SetSnoozedUntil: true})
 }
 
 func (h *MacroNotificationHandler) UnsnoozeNotification(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-
-	if err := h.notificationRepo.Unsnooze(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
-		response.Error(c, http.StatusNotFound, "Notification not found")
-		return
-	}
-	notif, _ := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
-	response.Success(c, notif)
+	h.updateNotificationState(c, repository.NotificationStateChange{SetSnoozedUntil: true})
 }
 
 type UpdateNotificationRequest struct {
@@ -514,36 +485,59 @@ type UpdateNotificationRequest struct {
 }
 
 func (h *MacroNotificationHandler) UpdateNotification(c *gin.Context) {
+	var req UpdateNotificationRequest
+	if !bindNotificationMutation(c, &req, false) {
+		return
+	}
+
+	read := req.Read
+	if read == nil && req.ReadAt != nil {
+		// Keep the legacy precedence and meaning: read_at marks read now.
+		value := true
+		read = &value
+	}
+	h.updateNotificationState(c, repository.NotificationStateChange{
+		Read: read, SnoozedUntil: req.SnoozedUntil, SetSnoozedUntil: req.SnoozedUntil != nil,
+	})
+}
+
+func (h *MacroNotificationHandler) updateNotificationState(c *gin.Context, change repository.NotificationStateChange) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	userID := c.GetUint("user_id")
 	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-
-	var req UpdateNotificationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, "Invalid request payload")
-		return
-	}
-
-	if req.Read != nil {
-		if *req.Read {
-			_ = h.notificationRepo.MarkRead(c.Request.Context(), uint(accID), userID, uint(notifID))
-		} else {
-			_ = h.notificationRepo.MarkUnread(c.Request.Context(), uint(accID), userID, uint(notifID))
-		}
-	} else if req.ReadAt != nil {
-		_ = h.notificationRepo.MarkRead(c.Request.Context(), uint(accID), userID, uint(notifID))
-	}
-
-	if req.SnoozedUntil != nil {
-		_ = h.notificationRepo.Snooze(c.Request.Context(), uint(accID), userID, uint(notifID), req.SnoozedUntil)
-	}
-
-	notif, err := h.notificationRepo.FindByID(c.Request.Context(), uint(accID), userID, uint(notifID))
+	notif, err := h.notificationRepo.UpdateState(c.Request.Context(), uint(accID), userID, uint(notifID), change)
 	if err != nil {
-		response.Error(c, http.StatusNotFound, "Notification not found")
+		notificationMutationError(c, err)
 		return
 	}
 	response.Success(c, notif)
+}
+
+func notificationMutationError(c *gin.Context, err error) {
+	var readbackError *repository.NotificationStateReadbackError
+	if !errors.As(err, &readbackError) && errors.Is(err, gorm.ErrRecordNotFound) {
+		response.Error(c, http.StatusNotFound, "Notification not found")
+		return
+	}
+	response.Error(c, http.StatusInternalServerError, "Notification storage unavailable")
+}
+
+// Snooze and batch delete historically accept an empty body. A nonempty body
+// must decode completely before any write; trailing JSON is not an empty body.
+func bindNotificationMutation(c *gin.Context, req any, allowEmpty bool) bool {
+	decoder := json.NewDecoder(c.Request.Body)
+	err := decoder.Decode(req)
+	if allowEmpty && errors.Is(err, io.EOF) {
+		return true
+	}
+	if err == nil {
+		var extra any
+		if err = decoder.Decode(&extra); errors.Is(err, io.EOF) {
+			return true
+		}
+	}
+	response.Error(c, http.StatusBadRequest, "Invalid request payload")
+	return false
 }
 
 func (h *MacroNotificationHandler) DeleteNotification(c *gin.Context) {
@@ -552,7 +546,7 @@ func (h *MacroNotificationHandler) DeleteNotification(c *gin.Context) {
 	notifID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
 	if err := h.notificationRepo.Delete(c.Request.Context(), uint(accID), userID, uint(notifID)); err != nil {
-		response.Error(c, http.StatusNotFound, "Notification not found")
+		notificationMutationError(c, err)
 		return
 	}
 	response.Success(c, gin.H{"deleted": true, "id": notifID})
@@ -568,11 +562,13 @@ func (h *MacroNotificationHandler) BatchDeleteNotifications(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
 	var req BatchDeleteNotificationRequest
-	_ = c.ShouldBindJSON(&req)
+	if !bindNotificationMutation(c, &req, true) {
+		return
+	}
 
 	deletedCount, err := h.notificationRepo.BatchDelete(c.Request.Context(), uint(accID), userID, req.IDs, req.OnlyRead)
 	if err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
+		notificationMutationError(c, err)
 		return
 	}
 	response.Success(c, gin.H{
@@ -776,7 +772,7 @@ func (h *MacroNotificationHandler) GetCSATReport(c *gin.Context) {
 	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
 	report, err := h.csatRepo.GetMetrics(c.Request.Context(), uint(accID))
 	if err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
+		response.Error(c, http.StatusInternalServerError, "Failed to get csat report")
 		return
 	}
 	response.Success(c, report)

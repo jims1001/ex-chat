@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
@@ -79,18 +78,9 @@ func TestSuperAdminAuthEnforcement(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &tenantAdminResp)
 	tenantAdminToken := tenantAdminResp.Data.Token
 	accID := tenantAdminResp.Data.Accounts[0].ID
-	accStr := strconv.FormatUint(uint64(accID), 10)
 
-	// 2. Setup Plain Agent (Role: agent, Type: User)
-	recAgentAdd := makeReq(tenantAdminToken, http.MethodPost, "/api/v1/accounts/"+accStr+"/agents", map[string]string{
-		"name":     "Plain Agent",
-		"email":    "plain_agent@example.com",
-		"password": "Password123!",
-		"role":     "agent",
-	})
-	if recAgentAdd.Code != http.StatusCreated {
-		t.Fatalf("failed to add agent: %d", recAgentAdd.Code)
-	}
+	// 2. Provision an already-verified plain agent for the authorization checks.
+	createAccountMemberFixture(t, db, accID, "Plain Agent", "plain_agent@example.com", "Password123!", domain.RoleAgent, nil)
 
 	agentSignIn, _ := json.Marshal(map[string]string{
 		"email":    "plain_agent@example.com",
@@ -229,12 +219,17 @@ func TestSuperAdminAuthEnforcement(t *testing.T) {
 		}
 
 		var configsResp struct {
-			Data []domain.SystemConfig `json:"data"`
+			Data []struct {
+				ConfigKey  string `json:"config_key"`
+				Value      string `json:"value"`
+				Redacted   bool   `json:"redacted"`
+				Configured bool   `json:"configured"`
+			} `json:"data"`
 		}
 		_ = json.Unmarshal(recGet.Body.Bytes(), &configsResp)
 		found := false
 		for _, cfgItem := range configsResp.Data {
-			if cfgItem.ConfigKey == "ENABLE_GLOBAL_AI" && cfgItem.Value == "true" {
+			if cfgItem.ConfigKey == "ENABLE_GLOBAL_AI" && cfgItem.Value == "" && cfgItem.Redacted && cfgItem.Configured {
 				found = true
 				break
 			}
@@ -277,6 +272,53 @@ func TestSuperAdminAuthEnforcement(t *testing.T) {
 		})
 		if recPost.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK on POST /api/v1/super_admin/configs for whitelisted email, got %d (body: %s)", recPost.Code, recPost.Body.String())
+		}
+	})
+
+	t.Run("Redacted config DTO and freshly loaded authority", func(t *testing.T) {
+		// Admin reads expose redaction metadata without changing the stored
+		// secret or the freshly loaded authorization and demotion checks.
+		if err := db.Create(&domain.SystemConfig{ConfigKey: "SMTP_PASSWORD", Value: "private-admin-fixture"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		response := makeReq(superAdminTypeToken, http.MethodGet, "/api/v1/super_admin/configs", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("existing admin read failed: %d", response.Code)
+		}
+		var envelope struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, row := range envelope.Data {
+			if row["config_key"] == "SMTP_PASSWORD" {
+				found = true
+				if row["value"] != "" || row["redacted"] != true || row["configured"] != true || row["id"] == nil || row["updated_at"] == nil || len(row) != 6 {
+					t.Fatal("admin DTO did not redact its private configuration")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("private owner setting disappeared from the existing admin endpoint")
+		}
+		if err := db.Model(&domain.User{}).Where("id = ?", superAdminTypeUser.ID).Update("type", "User").Error; err != nil {
+			t.Fatal(err)
+		}
+		// Reuse the original signed token after demotion. Its old SuperAdmin
+		// claim must not substitute for the freshly loaded database identity.
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			response := makeReq(superAdminTypeToken, method, "/api/v1/super_admin/configs", map[string]string{
+				"config_key": "SMTP_PASSWORD", "value": "forbidden-overwrite",
+			})
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("demoted admin %s status=%d, want 403", method, response.Code)
+			}
+		}
+		var row domain.SystemConfig
+		if err := db.Where("config_key = ?", "SMTP_PASSWORD").First(&row).Error; err != nil || row.Value != "private-admin-fixture" {
+			t.Fatal("denied admin request changed private configuration")
 		}
 	})
 }

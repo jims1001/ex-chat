@@ -104,9 +104,9 @@ func TestSLA_NextResponseTime(t *testing.T) {
 	// Subsequent scan -> Next response breach MUST be recorded!
 	// -------------------------------------------------------------
 	t.Run("Scenario1_CustomerFollowUp_AgentLate_BreachRecorded", func(t *testing.T) {
-		t0 := now.Add(-60 * time.Minute) // 1 hour ago
-		tFirstReply := t0.Add(10 * time.Second) // First response took only 10s (OK)
-		tCustomerFollowUp := t0.Add(10 * time.Minute) // Customer asks again at T+10m
+		t0 := now.Add(-60 * time.Minute)                           // 1 hour ago
+		tFirstReply := t0.Add(10 * time.Second)                    // First response took only 10s (OK)
+		tCustomerFollowUp := t0.Add(10 * time.Minute)              // Customer asks again at T+10m
 		tAgentLateReply := tCustomerFollowUp.Add(40 * time.Minute) // Agent replies 40 minutes later (threshold is 60s!)
 
 		conv := domain.Conversation{
@@ -206,7 +206,7 @@ func TestSLA_NextResponseTime(t *testing.T) {
 
 		var apiResp struct {
 			Data struct {
-				SLAStatus            string `json:"sla_status"`
+				SLAStatus             string `json:"sla_status"`
 				FirstResponseBreached bool   `json:"first_response_breached"`
 				NextResponseBreached  bool   `json:"next_response_breached"`
 			} `json:"data"`
@@ -299,7 +299,11 @@ func TestSLA_NextResponseTime(t *testing.T) {
 			t.Errorf("expected sla_status 'active', got '%s'", refreshedConv.SLAStatus)
 		}
 
-		_, _, _, _, isNRT, _, _ := slaService.GetConversationSLADeadlines(refreshedConv)
+		_, _, _, _, isNRT, _, _, deadlineErr := slaService.GetConversationSLADeadlines(refreshedConv)
+
+		if deadlineErr != nil {
+			t.Fatalf("SLA deadlines failed: %v", deadlineErr)
+		}
 		if isNRT {
 			t.Errorf("expected isNRTBreached=false for on-time reply")
 		}

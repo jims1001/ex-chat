@@ -1,257 +1,234 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
+	"unicode/utf8"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-// ----------------- Custom Filters (Saved Filters) -----------------
-
+// RawMessage preserves exact JSON numbers before the legacy string DTO is built.
 type CreateCustomFilterReq struct {
-	Name       string `json:"name" binding:"required"`
-	FilterType string `json:"filter_type" binding:"required"` // conversation, contact
-	Query      any    `json:"query" binding:"required"`       // string or JSON object
+	Name       string          `json:"name"`
+	FilterType string          `json:"filter_type"`
+	Query      json.RawMessage `json:"query"`
 }
 
-type UpdateCustomFilterReq struct {
-	Name       string `json:"name"`
-	FilterType string `json:"filter_type"`
-	Query      any    `json:"query"`
-}
+type UpdateCustomFilterReq = CreateCustomFilterReq
 
-func parseQueryToString(query any) string {
-	if query == nil {
-		return ""
+// Membership is established by the existing Auth/Tenant middleware. This check
+// fails closed if a route is miswired or its authenticated context contradicts
+// the URL; input/header/query ownership fields never establish identity.
+func customFilterScope(c *gin.Context) (uint, uint, bool) {
+	userID := c.GetUint(middleware.ContextUserID)
+	rawUser, _ := c.Get(middleware.ContextUser)
+	user, ok := rawUser.(*domain.User)
+	if userID == 0 || !ok || user == nil || user.ID != userID {
+		response.Unauthorized(c, "Authenticated user required")
+		return 0, 0, false
 	}
-	switch q := query.(type) {
-	case string:
-		return strings.TrimSpace(q)
-	default:
-		bytes, err := json.Marshal(q)
-		if err != nil {
-			return ""
+	account64, err := strconv.ParseUint(c.Param("account_id"), 10, strconv.IntSize)
+	if err != nil || account64 == 0 || strconv.FormatUint(account64, 10) != c.Param("account_id") {
+		response.BadRequest(c, "Invalid account ID")
+		return 0, 0, false
+	}
+	accountID := uint(account64)
+	rawAccount, _ := c.Get(middleware.ContextAccount)
+	account, accountOK := rawAccount.(*domain.Account)
+	rawMember, _ := c.Get(middleware.ContextAccountMembership)
+	member, memberOK := rawMember.(*domain.AccountUser)
+	if c.GetUint(middleware.ContextAccountID) != accountID || !accountOK || account == nil || account.ID != accountID || !memberOK || member == nil || member.AccountID != accountID || member.UserID != userID {
+		response.Forbidden(c, "Account membership required")
+		return 0, 0, false
+	}
+	return accountID, userID, true
+}
+
+func customFilterID(c *gin.Context) (uint, bool) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, strconv.IntSize)
+	if err != nil || id == 0 || strconv.FormatUint(id, 10) != c.Param("id") {
+		response.NotFound(c, "Custom filter not found")
+		return 0, false
+	}
+	return uint(id), true
+}
+
+func decodeCustomFilter(c *gin.Context, request *CreateCustomFilterReq) bool {
+	decoder := json.NewDecoder(c.Request.Body)
+	if err := decoder.Decode(request); err != nil {
+		response.BadRequest(c, "Invalid custom filter payload")
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		response.BadRequest(c, "Invalid custom filter payload")
+		return false
+	}
+	return true
+}
+
+func parseCustomFilterQuery(raw json.RawMessage) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "", false
+	}
+	if raw[0] == '"' {
+		var query string
+		if json.Unmarshal(raw, &query) != nil {
+			return "", false
 		}
-		return string(bytes)
+		query = strings.TrimSpace(query)
+		return query, query != ""
+	}
+	if raw[0] != '{' {
+		return "", false
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) != nil {
+		return "", false
+	}
+	return compact.String(), true
+}
+
+func validCustomFilterType(kind string) bool {
+	return kind == "conversation" || kind == "contact" || kind == "report"
+}
+
+func customFilterFailure(c *gin.Context, err error, operation string, accountID, userID, id uint) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		response.NotFound(c, "Custom filter not found")
+	case errors.Is(err, repository.ErrCustomFilterVersioned):
+		response.Error(c, http.StatusConflict, "Custom filter requires the versioned SRH command")
+	default:
+		// No SQL/provider error or private name/query is safe to echo or log.
+		logger.WithComponent("custom_filter").Error("custom filter storage failed", "operation", operation, "account_id", accountID, "user_id", userID, "filter_id", id)
+		response.InternalError(c, "Custom filter storage unavailable")
 	}
 }
 
-// CreateCustomFilter creates a new saved/custom filter
 func (h *AdvancedHandler) CreateCustomFilter(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-
-	var req CreateCustomFilterReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.WithComponent("custom_filter").Warn("create custom filter failed: invalid json",
-			"account_id", accID,
-			"user_id", userID,
-			"error", err.Error(),
-		)
-		response.BadRequest(c, err.Error())
+	accountID, userID, ok := customFilterScope(c)
+	if !ok {
 		return
 	}
-
-	queryStr := parseQueryToString(req.Query)
-	if queryStr == "" {
-		logger.WithComponent("custom_filter").Warn("create custom filter failed: empty query",
-			"account_id", accID,
-			"user_id", userID,
-		)
-		response.BadRequest(c, "query is required")
+	var request CreateCustomFilterReq
+	if !decodeCustomFilter(c, &request) {
 		return
 	}
-
-	filter := domain.CustomFilter{
-		AccountID:  uint(accID),
-		UserID:     userID,
-		Name:       strings.TrimSpace(req.Name),
-		FilterType: strings.TrimSpace(req.FilterType),
-		Query:      queryStr,
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
-	}
-
-	if err := h.customFilterRepo.Create(c.Request.Context(), &filter); err != nil {
-		logger.WithComponent("custom_filter").Error("database error creating custom filter",
-			"account_id", accID,
-			"user_id", userID,
-			"error", err.Error(),
-		)
-		response.Error(c, http.StatusInternalServerError, err.Error())
+	name, kind := strings.TrimSpace(request.Name), strings.TrimSpace(request.FilterType)
+	query, valid := parseCustomFilterQuery(request.Query)
+	if name == "" || utf8.RuneCountInString(name) > 255 || !validCustomFilterType(kind) || !valid {
+		response.BadRequest(c, "Valid name, filter_type and query are required")
 		return
 	}
-
-	logger.WithComponent("custom_filter").Info("custom filter created successfully",
-		"account_id", accID,
-		"filter_id", filter.ID,
-		"user_id", userID,
-		"name", filter.Name,
-		"filter_type", filter.FilterType,
-	)
-
+	filter := domain.CustomFilter{Name: name, FilterType: kind, Query: query}
+	if err := h.customFilterRepo.CreateLegacy(c.Request.Context(), accountID, userID, &filter); err != nil {
+		customFilterFailure(c, err, "create", accountID, userID, 0)
+		return
+	}
 	response.Created(c, filter)
 }
 
-// ListCustomFilters returns saved filters for the account and user
 func (h *AdvancedHandler) ListCustomFilters(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	userID := c.GetUint("user_id")
-	filterType := strings.TrimSpace(c.Query("filter_type"))
-
-	filters, err := h.customFilterRepo.List(c.Request.Context(), uint(accID), userID, filterType)
-	if err != nil {
-		logger.WithComponent("custom_filter").Error("database error listing custom filters",
-			"account_id", accID,
-			"user_id", userID,
-			"error", err.Error(),
-		)
-		response.Error(c, http.StatusInternalServerError, err.Error())
+	accountID, userID, ok := customFilterScope(c)
+	if !ok {
 		return
 	}
-
-	logger.WithComponent("custom_filter").Info("custom filters listed",
-		"account_id", accID,
-		"user_id", userID,
-		"filter_type", filterType,
-		"count", len(filters),
-	)
-
+	filters, err := h.customFilterRepo.List(c.Request.Context(), accountID, userID, strings.TrimSpace(c.Query("filter_type")))
+	if err != nil {
+		customFilterFailure(c, err, "list", accountID, userID, 0)
+		return
+	}
 	response.Success(c, filters)
 }
 
-// GetCustomFilter returns details of a single custom filter
 func (h *AdvancedHandler) GetCustomFilter(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	userID := c.GetUint("user_id")
-
-	filter, err := h.customFilterRepo.Find(c.Request.Context(), uint(accID), uint(id))
-
-	if err != nil {
-		logger.WithComponent("custom_filter").Warn("custom filter not found or access denied",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-		)
-		response.NotFound(c, "Custom filter not found")
+	accountID, userID, ok := customFilterScope(c)
+	if !ok {
 		return
 	}
-
-	logger.WithComponent("custom_filter").Info("custom filter retrieved",
-		"account_id", accID,
-		"filter_id", filter.ID,
-		"user_id", userID,
-		"name", filter.Name,
-		"filter_type", filter.FilterType,
-	)
-
+	id, ok := customFilterID(c)
+	if !ok {
+		return
+	}
+	filter, err := h.customFilterRepo.Find(c.Request.Context(), accountID, userID, id)
+	if err != nil {
+		customFilterFailure(c, err, "get", accountID, userID, id)
+		return
+	}
 	response.Success(c, filter)
 }
 
-// UpdateCustomFilter updates an existing custom filter (name, filter_type, query)
 func (h *AdvancedHandler) UpdateCustomFilter(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	userID := c.GetUint("user_id")
-
-	filter, err := h.customFilterRepo.Find(c.Request.Context(), uint(accID), uint(id))
-	if err != nil {
-		logger.WithComponent("custom_filter").Warn("custom filter to update not found or access denied",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-		)
-		response.NotFound(c, "Custom filter not found")
+	accountID, userID, ok := customFilterScope(c)
+	if !ok {
 		return
 	}
-
-	var req UpdateCustomFilterReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.WithComponent("custom_filter").Warn("update custom filter failed: invalid json",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-			"error", err.Error(),
-		)
-		response.BadRequest(c, "Invalid request payload: "+err.Error())
+	id, ok := customFilterID(c)
+	if !ok {
 		return
 	}
-
-	if name := strings.TrimSpace(req.Name); name != "" {
-		filter.Name = name
+	var request UpdateCustomFilterReq
+	if !decodeCustomFilter(c, &request) {
+		return
 	}
-	if ft := strings.TrimSpace(req.FilterType); ft != "" {
-		filter.FilterType = ft
-	}
-	if req.Query != nil {
-		queryStr := parseQueryToString(req.Query)
-		if queryStr != "" {
-			filter.Query = queryStr
+	patch := repository.CustomFilterPatch{}
+	if name := strings.TrimSpace(request.Name); name != "" {
+		if utf8.RuneCountInString(name) > 255 {
+			response.BadRequest(c, "Invalid custom filter name")
+			return
 		}
+		patch.Name = &name
 	}
-	filter.UpdatedAt = time.Now().UTC()
-
-	if err := h.customFilterRepo.Save(c.Request.Context(), uint(accID), filter); err != nil {
-		logger.WithComponent("custom_filter").Error("database error updating custom filter",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-			"error", err.Error(),
-		)
-		response.Error(c, http.StatusInternalServerError, "Failed to update custom filter: "+err.Error())
+	if kind := strings.TrimSpace(request.FilterType); kind != "" {
+		if !validCustomFilterType(kind) {
+			response.BadRequest(c, "Invalid custom filter type")
+			return
+		}
+		patch.FilterType = &kind
+	}
+	if len(request.Query) != 0 {
+		query, valid := parseCustomFilterQuery(request.Query)
+		if !valid {
+			response.BadRequest(c, "Invalid custom filter query")
+			return
+		}
+		patch.Query = &query
+	}
+	filter, err := h.customFilterRepo.UpdateLegacy(c.Request.Context(), accountID, userID, id, patch)
+	if err != nil {
+		customFilterFailure(c, err, "update", accountID, userID, id)
 		return
 	}
-
-	logger.WithComponent("custom_filter").Info("custom filter updated successfully",
-		"account_id", accID,
-		"filter_id", filter.ID,
-		"user_id", userID,
-		"name", filter.Name,
-		"filter_type", filter.FilterType,
-	)
-
 	response.Success(c, filter)
 }
 
-// DeleteCustomFilter deletes a custom filter
 func (h *AdvancedHandler) DeleteCustomFilter(c *gin.Context) {
-	accID, _ := strconv.ParseUint(c.Param("account_id"), 10, 32)
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	userID := c.GetUint("user_id")
-
-	deleted, err := h.customFilterRepo.Delete(c.Request.Context(), uint(accID), uint(id))
-	if err != nil {
-		logger.WithComponent("custom_filter").Error("database error deleting custom filter",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-			"error", err.Error(),
-		)
-		response.Error(c, http.StatusInternalServerError, err.Error())
+	accountID, userID, ok := customFilterScope(c)
+	if !ok {
 		return
 	}
-
-	if !deleted {
-		logger.WithComponent("custom_filter").Warn("custom filter to delete not found",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-		)
-	} else {
-		logger.WithComponent("custom_filter").Info("custom filter deleted successfully",
-			"account_id", accID,
-			"filter_id", id,
-			"user_id", userID,
-		)
+	id, ok := customFilterID(c)
+	if !ok {
+		return
 	}
-
+	if _, err := h.customFilterRepo.DeleteLegacy(c.Request.Context(), accountID, userID, id); err != nil {
+		customFilterFailure(c, err, "delete", accountID, userID, id)
+		return
+	}
+	// Preserve the client contract without revealing another owner's existence.
 	response.Success(c, gin.H{"deleted": true})
 }

@@ -441,6 +441,27 @@
       "readQuery": "srh.custom_filter.get.v1",
       "writeCommand": "srh.custom_filter.manage.v1",
       "replicaEvent": "srh.custom_filter.changed.v1"
+    },
+    {
+      "symbol": "LocalStorageService",
+      "provider": "MED",
+      "readQuery": "med.asset.get.v1",
+      "writeCommand": "med.upload.create.v1",
+      "replicaEvent": "med.media.ready.v1"
+    },
+    {
+      "symbol": "CreationWorkflowCoordinator",
+      "provider": "ORC",
+      "readQuery": "orc.process.get.v1",
+      "writeCommand": "orc.process.resume.v1",
+      "replicaEvent": "orc.process.completed.v1"
+    },
+    {
+      "symbol": "ChannelOutboundService",
+      "provider": "MSG",
+      "readQuery": "msg.delivery_status.get.v1",
+      "writeCommand": "msg.message.create.v1",
+      "replicaEvent": "msg.message_status.changed.v1"
     }
   ],
   "edgeBindings": [
@@ -576,16 +597,6 @@
     },
     {
       "consumer": "AIC",
-      "provider": "CON",
-      "file": "internal/handler/copilot_thread_handler.go",
-      "symbol": "ConversationRepository",
-      "method": "FindByID",
-      "use": "read",
-      "contract": "con.conversation.get.v1",
-      "replicaEvent": "con.conversation.changed.v1"
-    },
-    {
-      "consumer": "AIC",
       "provider": "MSG",
       "file": "internal/handler/ai_custom_tool_handler.go",
       "symbol": "MessageRepository",
@@ -598,16 +609,6 @@
       "consumer": "AIC",
       "provider": "MSG",
       "file": "internal/handler/copilot_handler.go",
-      "symbol": "MessageRepository",
-      "method": "ListByConversation",
-      "use": "read",
-      "contract": "msg.message.get.v1",
-      "replicaEvent": "msg.message.created.v1"
-    },
-    {
-      "consumer": "AIC",
-      "provider": "MSG",
-      "file": "internal/handler/copilot_thread_handler.go",
       "symbol": "MessageRepository",
       "method": "ListByConversation",
       "use": "read",
@@ -785,16 +786,6 @@
       "replicaEvent": "chn.inbox.changed.v1"
     },
     {
-      "consumer": "RTM",
-      "provider": "CHN",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "InboxRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "chn.inbox.create.v1",
-      "replicaEvent": "chn.inbox.changed.v1"
-    },
-    {
       "consumer": "API",
       "provider": "CHN",
       "file": "internal/handler/conversation_handler.go",
@@ -812,16 +803,6 @@
       "method": "MoveInbox",
       "use": "write",
       "contract": "con.conversation.update.v1",
-      "replicaEvent": "con.conversation.changed.v1"
-    },
-    {
-      "consumer": "RTM",
-      "provider": "CON",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ConversationRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "con.conversation.create.v1",
       "replicaEvent": "con.conversation.changed.v1"
     },
     {
@@ -1019,16 +1000,6 @@
       "provider": "CON",
       "file": "internal/handler/public_handler.go",
       "symbol": "ConversationRepository",
-      "method": "TouchActivity",
-      "use": "write",
-      "contract": "con.conversation.update.v1",
-      "replicaEvent": "con.conversation.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "CON",
-      "file": "internal/handler/public_handler.go",
-      "symbol": "ConversationRepository",
       "method": "UpdateContactLastSeen",
       "use": "write",
       "contract": "con.conversation.update.v1",
@@ -1045,16 +1016,6 @@
       "replicaEvent": "con.conversation.changed.v1"
     },
     {
-      "consumer": "RTM",
-      "provider": "CUS",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ContactRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "cus.contact.create.v1",
-      "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
       "consumer": "ORC",
       "provider": "CUS",
       "file": "internal/handler/crm_ops_advanced_handler.go",
@@ -1069,29 +1030,9 @@
       "provider": "CUS",
       "file": "internal/handler/channel_driver_handler.go",
       "symbol": "ContactRepository",
-      "method": "FindByID",
+      "method": "FindCallReadCaller",
       "use": "read",
       "contract": "cus.contact.get.v1",
-      "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "RTM",
-      "provider": "CUS",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "ContactRepository",
-      "method": "FindByIdentifier",
-      "use": "read",
-      "contract": "cus.contact.get.v1",
-      "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "CUS",
-      "file": "internal/handler/conversation_handler.go",
-      "symbol": "ContactRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "cus.contact.create.v1",
       "replicaEvent": "cus.contact.changed.v1"
     },
     {
@@ -1103,26 +1044,6 @@
       "use": "read",
       "contract": "cus.contact.get.v1",
       "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "CUS",
-      "file": "internal/handler/conversation_handler.go",
-      "symbol": "ContactRepository",
-      "method": "FindContactBySourceID",
-      "use": "read",
-      "contract": "cus.contact.get.v1",
-      "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "CUS",
-      "file": "internal/handler/conversation_handler.go",
-      "symbol": "ContactRepository",
-      "method": "FindOrCreateContactInbox",
-      "use": "write",
-      "contract": "cus.contact.create.v1",
-      "replicaEvent": "cus.contact.created.v1"
     },
     {
       "consumer": "API",
@@ -1147,32 +1068,12 @@
     {
       "consumer": "API",
       "provider": "CUS",
-      "file": "internal/handler/public_handler.go",
-      "symbol": "ContactRepository",
-      "method": "FindOrCreateContactInbox",
-      "use": "write",
-      "contract": "cus.contact.create.v1",
-      "replicaEvent": "cus.contact.created.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "CUS",
       "file": "internal/handler/widget_handler.go",
       "symbol": "ContactRepository",
-      "method": "Create",
+      "method": "UpdatePublic",
       "use": "write",
-      "contract": "cus.contact.create.v1",
+      "contract": "cus.contact.update.v1",
       "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "CUS",
-      "file": "internal/handler/widget_handler.go",
-      "symbol": "ContactRepository",
-      "method": "FindOrCreateContactInbox",
-      "use": "write",
-      "contract": "cus.contact.create.v1",
-      "replicaEvent": "cus.contact.created.v1"
     },
     {
       "consumer": "API",
@@ -1306,16 +1207,6 @@
     },
     {
       "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelIAMRepository",
-      "method": "GenerateMFABackupCodes",
-      "use": "write",
-      "contract": "iam.session.revoke.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "API",
       "provider": "ENT",
       "file": "internal/handler/auth_enterprise_handler.go",
       "symbol": "ChannelENTRepository",
@@ -1396,16 +1287,6 @@
     },
     {
       "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelIAMRepository",
-      "method": "GetValidPasswordResetToken",
-      "use": "read",
-      "contract": "iam.identity.get.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "API",
       "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
       "symbol": "ChannelBILRepository",
@@ -1456,16 +1337,6 @@
     },
     {
       "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelIAMRepository",
-      "method": "MarkPasswordResetTokenUsed",
-      "use": "write",
-      "contract": "iam.session.revoke.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "API",
       "provider": "BIL",
       "file": "internal/handler/auth_enterprise_handler.go",
       "symbol": "ChannelBILRepository",
@@ -1503,16 +1374,6 @@
       "use": "write",
       "contract": "ent.quota.reserve.v1",
       "replicaEvent": "ent.entitlement.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "ChannelIAMRepository",
-      "method": "SaveMFAProfile",
-      "use": "write",
-      "contract": "iam.session.revoke.v1",
-      "replicaEvent": "iam.identity.changed.v1"
     },
     {
       "consumer": "API",
@@ -1557,19 +1418,9 @@
     {
       "consumer": "API",
       "provider": "IAM",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "UserRepository",
-      "method": "FindByID",
-      "use": "read",
-      "contract": "iam.identity.get.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "UserRepository",
-      "method": "Update",
+      "file": "internal/handler/auth_handler.go",
+      "symbol": "ChannelIAMRepository",
+      "method": "ConfirmUserByToken",
       "use": "write",
       "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
@@ -1579,19 +1430,9 @@
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
       "symbol": "ChannelIAMRepository",
-      "method": "ConfirmUserByToken",
-      "use": "write",
-      "contract": "iam.session.revoke.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "IAM",
-      "file": "internal/handler/auth_handler.go",
-      "symbol": "ChannelIAMRepository",
       "method": "GenerateConfirmationToken",
       "use": "write",
-      "contract": "iam.session.revoke.v1",
+      "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
     },
     {
@@ -1619,9 +1460,9 @@
       "provider": "IAM",
       "file": "internal/handler/auth_handler.go",
       "symbol": "ChannelIAMRepository",
-      "method": "SaveMFAProfile",
+      "method": "VerifyMFALogin",
       "use": "write",
-      "contract": "iam.session.revoke.v1",
+      "contract": "iam.login.v1",
       "replicaEvent": "iam.identity.changed.v1"
     },
     {
@@ -1735,16 +1576,6 @@
       "replicaEvent": "msg.email_delivery.changed.v1"
     },
     {
-      "consumer": "RTM",
-      "provider": "MSG",
-      "file": "internal/handler/channel_driver_handler.go",
-      "symbol": "MessageRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "msg.message.create.v1",
-      "replicaEvent": "msg.message.created.v1"
-    },
-    {
       "consumer": "API",
       "provider": "MSG",
       "file": "internal/handler/conversation_handler.go",
@@ -1809,16 +1640,6 @@
       "provider": "MSG",
       "file": "internal/handler/conversation_handler.go",
       "symbol": "MessageRepository",
-      "method": "RetryMessage",
-      "use": "write",
-      "contract": "msg.message.retry.v1",
-      "replicaEvent": "msg.message.created.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "MSG",
-      "file": "internal/handler/conversation_handler.go",
-      "symbol": "MessageRepository",
       "method": "UpdateContent",
       "use": "write",
       "contract": "msg.message.update.v1",
@@ -1832,16 +1653,6 @@
       "method": "UpdateTranslations",
       "use": "write",
       "contract": "msg.message.update.v1",
-      "replicaEvent": "msg.message.created.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "MSG",
-      "file": "internal/handler/public_handler.go",
-      "symbol": "MessageRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "msg.message.create.v1",
       "replicaEvent": "msg.message.created.v1"
     },
     {
@@ -1940,16 +1751,6 @@
       "file": "internal/handler/auth_enterprise_handler.go",
       "symbol": "AccountRepository",
       "method": "FindByID",
-      "use": "read",
-      "contract": "ten.account.get.v1",
-      "replicaEvent": "ten.account.changed.v1"
-    },
-    {
-      "consumer": "API",
-      "provider": "TEN",
-      "file": "internal/handler/auth_enterprise_handler.go",
-      "symbol": "AccountRepository",
-      "method": "ListAccountsForUser",
       "use": "read",
       "contract": "ten.account.get.v1",
       "replicaEvent": "ten.account.changed.v1"
@@ -2519,16 +2320,6 @@
       "provider": "NTF",
       "file": "internal/handler/ops_macro_handler.go",
       "symbol": "NotificationRepository",
-      "method": "FindByID",
-      "use": "read",
-      "contract": "ntf.notifications.list.v1",
-      "replicaEvent": "ntf.notification.created.v1"
-    },
-    {
-      "consumer": "OPS",
-      "provider": "NTF",
-      "file": "internal/handler/ops_macro_handler.go",
-      "symbol": "NotificationRepository",
       "method": "GetNotificationSetting",
       "use": "read",
       "contract": "ntf.notifications.list.v1",
@@ -2569,37 +2360,7 @@
       "provider": "NTF",
       "file": "internal/handler/ops_macro_handler.go",
       "symbol": "NotificationRepository",
-      "method": "MarkRead",
-      "use": "write",
-      "contract": "ntf.notification.update.v1",
-      "replicaEvent": "ntf.notification.created.v1"
-    },
-    {
-      "consumer": "OPS",
-      "provider": "NTF",
-      "file": "internal/handler/ops_macro_handler.go",
-      "symbol": "NotificationRepository",
-      "method": "MarkUnread",
-      "use": "write",
-      "contract": "ntf.notification.update.v1",
-      "replicaEvent": "ntf.notification.created.v1"
-    },
-    {
-      "consumer": "OPS",
-      "provider": "NTF",
-      "file": "internal/handler/ops_macro_handler.go",
-      "symbol": "NotificationRepository",
-      "method": "Snooze",
-      "use": "write",
-      "contract": "ntf.notification.update.v1",
-      "replicaEvent": "ntf.notification.created.v1"
-    },
-    {
-      "consumer": "OPS",
-      "provider": "NTF",
-      "file": "internal/handler/ops_macro_handler.go",
-      "symbol": "NotificationRepository",
-      "method": "Unsnooze",
+      "method": "UpdateState",
       "use": "write",
       "contract": "ntf.notification.update.v1",
       "replicaEvent": "ntf.notification.created.v1"
@@ -2760,6 +2521,16 @@
       "file": "internal/handler/inbox_handler.go",
       "symbol": "InboxRepository",
       "method": "FindByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
       "use": "read",
       "contract": "chn.inbox.get.v1",
       "replicaEvent": "chn.inbox.changed.v1"
@@ -3222,16 +2993,6 @@
       "method": "CreateContactInbox",
       "use": "write",
       "contract": "cus.contact.update.v1",
-      "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "ORC",
-      "provider": "CUS",
-      "file": "internal/handler/inbox_handler.go",
-      "symbol": "ContactRepository",
-      "method": "FindContactBySourceID",
-      "use": "read",
-      "contract": "cus.contact.get.v1",
       "replicaEvent": "cus.contact.changed.v1"
     },
     {
@@ -3786,16 +3547,6 @@
     },
     {
       "consumer": "QLT",
-      "provider": "CUS",
-      "file": "internal/handler/csat_handler.go",
-      "symbol": "ContactRepository",
-      "method": "VisitorTokenMatches",
-      "use": "read",
-      "contract": "cus.contact.get.v1",
-      "replicaEvent": "cus.contact.changed.v1"
-    },
-    {
-      "consumer": "QLT",
       "provider": "MSG",
       "file": "internal/handler/csat_handler.go",
       "symbol": "MessageRepository",
@@ -4169,39 +3920,9 @@
       "provider": "IAM",
       "file": "internal/handler/account_handler.go",
       "symbol": "UserRepository",
-      "method": "Create",
-      "use": "write",
-      "contract": "iam.user.manage.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "TEN",
-      "provider": "IAM",
-      "file": "internal/handler/account_handler.go",
-      "symbol": "UserRepository",
-      "method": "FindByEmail",
-      "use": "read",
-      "contract": "iam.identity.get.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "TEN",
-      "provider": "IAM",
-      "file": "internal/handler/account_handler.go",
-      "symbol": "UserRepository",
       "method": "FindByID",
       "use": "read",
       "contract": "iam.identity.get.v1",
-      "replicaEvent": "iam.identity.changed.v1"
-    },
-    {
-      "consumer": "TEN",
-      "provider": "IAM",
-      "file": "internal/handler/account_handler.go",
-      "symbol": "UserRepository",
-      "method": "Update",
-      "use": "write",
-      "contract": "iam.user.manage.v1",
       "replicaEvent": "iam.identity.changed.v1"
     },
     {
@@ -5113,6 +4834,1025 @@
       "use": "read",
       "contract": "ent.capability.check.v1",
       "replicaEvent": "ent.entitlement.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelIAMRepository",
+      "method": "ManageMFA",
+      "use": "write",
+      "contract": "iam.mfa.manage.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "file": "internal/handler/public_handler.go",
+      "symbol": "ContactRepository",
+      "method": "CreateContactInbox",
+      "use": "write",
+      "contract": "cus.contact.update.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "CUS",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "ContactRepository",
+      "method": "FindContactBySourceID",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "IAM",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "ChannelIAMRepository",
+      "method": "IsTokenRevoked",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "IAM",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "UserRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelIAMRepository",
+      "method": "ActivatePasswordResetToken",
+      "use": "write",
+      "contract": "iam.password_reset.issue.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelIAMRepository",
+      "method": "ConsumePasswordResetToken",
+      "use": "write",
+      "contract": "iam.password_reset.consume.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "EmailService",
+      "method": "CheckPasswordResetConfiguration",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "EmailService",
+      "method": "SendPasswordResetEmail",
+      "use": "write",
+      "contract": "msg.email.send.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CON",
+      "file": "internal/handler/copilot_thread_completion.go",
+      "symbol": "ConversationRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "file": "internal/handler/copilot_thread_completion.go",
+      "symbol": "MessageRepository",
+      "method": "ListRecentConversationContext",
+      "use": "read",
+      "contract": "msg.messages.list.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "CancelExecution",
+      "use": "write",
+      "contract": "aut.execution.cancel.v1",
+      "replicaEvent": "aut.automation.executed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "CreateRule",
+      "use": "write",
+      "contract": "aut.rule.create.v1",
+      "replicaEvent": "aut.rule.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "DeleteRule",
+      "use": "write",
+      "contract": "aut.rule.manage.v1",
+      "replicaEvent": "aut.rule.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "FindExecution",
+      "use": "read",
+      "contract": "aut.execution.get.v1",
+      "replicaEvent": "aut.automation.executed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "FindRule",
+      "use": "read",
+      "contract": "aut.rule.get.v1",
+      "replicaEvent": "aut.rule.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "CompatibilityExecutionViews",
+      "use": "read",
+      "contract": "aut.execution.get.v1",
+      "replicaEvent": "aut.automation.executed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "ListExecutionsPage",
+      "use": "read",
+      "contract": "aut.execution.get.v1",
+      "replicaEvent": "aut.automation.executed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "ListRules",
+      "use": "read",
+      "contract": "aut.rule.get.v1",
+      "replicaEvent": "aut.rule.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService",
+      "method": "UpdateRule",
+      "use": "write",
+      "contract": "aut.rule.manage.v1",
+      "replicaEvent": "aut.rule.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/conversation_participant_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "AddParticipants",
+      "use": "write",
+      "contract": "con.participant.manage.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/conversation_participant_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/conversation_participant_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "ListParticipants",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/conversation_participant_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "RemoveParticipants",
+      "use": "write",
+      "contract": "con.participant.manage.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "file": "internal/handler/conversation_participant_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "SyncParticipants",
+      "use": "write",
+      "contract": "con.participant.manage.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "file": "internal/handler/custom_filter_handler.go",
+      "symbol": "CustomFilterRepository",
+      "method": "CreateLegacy",
+      "use": "write",
+      "contract": "srh.custom_filter.manage.v1",
+      "replicaEvent": "srh.custom_filter.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "file": "internal/handler/custom_filter_handler.go",
+      "symbol": "CustomFilterRepository",
+      "method": "DeleteLegacy",
+      "use": "write",
+      "contract": "srh.custom_filter.manage.v1",
+      "replicaEvent": "srh.custom_filter.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "file": "internal/handler/custom_filter_handler.go",
+      "symbol": "CustomFilterRepository",
+      "method": "Find",
+      "use": "read",
+      "contract": "srh.custom_filter.get.v1",
+      "replicaEvent": "srh.custom_filter.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "file": "internal/handler/custom_filter_handler.go",
+      "symbol": "CustomFilterRepository",
+      "method": "List",
+      "use": "read",
+      "contract": "srh.custom_filter.get.v1",
+      "replicaEvent": "srh.custom_filter.changed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "file": "internal/handler/custom_filter_handler.go",
+      "symbol": "CustomFilterRepository",
+      "method": "UpdateLegacy",
+      "use": "write",
+      "contract": "srh.custom_filter.manage.v1",
+      "replicaEvent": "srh.custom_filter.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "file": "internal/handler/call_recording_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "file": "internal/handler/call_recording_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CUS",
+      "file": "internal/handler/call_recording_handler.go",
+      "symbol": "ContactRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MED",
+      "file": "internal/handler/call_recording_handler.go",
+      "symbol": "LocalStorageService",
+      "method": "StageRecording",
+      "use": "write",
+      "contract": "med.upload.create.v1",
+      "replicaEvent": "med.media.ready.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "InboxRepository",
+      "method": "ListWhatsAppConnections",
+      "use": "read",
+      "contract": "chn.connection.status.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "InboxRepository",
+      "method": "ResolveChannelConnection",
+      "use": "read",
+      "contract": "chn.connection.status.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "InboxRepository",
+      "method": "CreateChannelConnection",
+      "use": "write",
+      "contract": "chn.channel.authorize.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CUS",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "ContactRepository",
+      "method": "EnsureChannelContact",
+      "use": "write",
+      "contract": "cus.contact.create.v1",
+      "replicaEvent": "cus.contact.created.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "ConversationRepository",
+      "method": "EnsureChannelConversation",
+      "use": "write",
+      "contract": "con.conversation.create.v1",
+      "replicaEvent": "con.conversation.created.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "MessageRepository",
+      "method": "HasChannelMessage",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "MessageRepository",
+      "method": "CreateChannelMessage",
+      "use": "write",
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "AutomationCaptureEnabled",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "CreateWithInitialMessages",
+      "use": "write",
+      "contract": "con.conversation.create.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "MessageRepository",
+      "method": "AutomationCaptureEnabled",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "MessageRepository",
+      "method": "CreateWithConversationReopen",
+      "use": "write",
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/public_handler.go",
+      "symbol": "MessageRepository",
+      "method": "AutomationCaptureEnabled",
+      "use": "read",
+      "contract": "msg.message.get.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/public_handler.go",
+      "symbol": "MessageRepository",
+      "method": "CreateWithConversationReopen",
+      "use": "write",
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "RTE",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "RoutingService",
+      "method": "CreateWithInitialMessage",
+      "use": "write",
+      "contract": "rte.assignment.transfer.v1",
+      "replicaEvent": "rte.assignment.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CON",
+      "file": "internal/service/routing_service.go",
+      "symbol": "ConversationRepository",
+      "method": "AutomationCaptureEnabled",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CON",
+      "file": "internal/service/routing_service.go",
+      "symbol": "ConversationRepository",
+      "method": "CreateWithInitialMessages",
+      "use": "write",
+      "contract": "con.conversation.create.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "ORC",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "CreationWorkflowCoordinator",
+      "method": "CompleteCreationWorkflow",
+      "use": "write",
+      "contract": "orc.process.resume.v1",
+      "replicaEvent": "orc.process.completed.v1"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "file": "internal/handler/automation_compatibility_handler.go",
+      "symbol": "AutomationService",
+      "method": "ListRuleCompatibility",
+      "use": "read",
+      "contract": "aut.rule.get.v1",
+      "replicaEvent": "aut.rule.changed.v1"
+    },
+    {
+      "consumer": "MSG",
+      "provider": "CON",
+      "file": "internal/service/channel_outbound_service.go",
+      "symbol": "ConversationRepository",
+      "method": "OutboundMessageTarget",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "InboxRepository",
+      "method": "FindSummaryByID",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "ConversationRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "ChannelOutboundService",
+      "method": "CreateText",
+      "use": "write",
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "ChannelOutboundService",
+      "method": "RetryText",
+      "use": "write",
+      "contract": "msg.message.retry.v1",
+      "replicaEvent": "msg.message_status.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "MessageRepository",
+      "method": "Create",
+      "use": "write",
+      "contract": "msg.message.create.v1",
+      "replicaEvent": "msg.message.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "MessageRepository",
+      "method": "RetryMessageAccepted",
+      "use": "write",
+      "contract": "msg.message.retry.v1",
+      "replicaEvent": "msg.message_status.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "file": "internal/handler/channel_ingress_handler.go",
+      "symbol": "ChannelOutboundService",
+      "method": "IngestWhatsAppStatus",
+      "use": "write",
+      "contract": "msg.provider_status.update.v1",
+      "replicaEvent": "msg.message_status.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "file": "internal/handler/channel_outbound_callback_handler.go",
+      "symbol": "ChannelOutboundService",
+      "method": "IngestTwilioStatus",
+      "use": "write",
+      "contract": "msg.provider_status.update.v1",
+      "replicaEvent": "msg.message_status.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "ChannelOutboundService",
+      "method": "ReconcileMessage",
+      "use": "write",
+      "contract": "msg.provider_status.update.v1",
+      "replicaEvent": "msg.message_status.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "CreateAgentInvitation",
+      "use": "write",
+      "contract": "ten.invitation.issue.v1",
+      "replicaEvent": "ten.invitation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "SetAgentInvitationDelivery",
+      "use": "write",
+      "contract": "ten.invitation.delivery_record.v1",
+      "replicaEvent": "ten.invitation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "ListAgentInvitations",
+      "use": "read",
+      "contract": "ten.invitations.list.v1",
+      "replicaEvent": "ten.invitation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "RevokeAgentInvitation",
+      "use": "write",
+      "contract": "ten.invitation.revoke.v1",
+      "replicaEvent": "ten.invitation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "InspectAgentInvitation",
+      "use": "read",
+      "contract": "ten.invitation.get.v1",
+      "replicaEvent": "ten.invitation.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "AcceptAgentInvitation",
+      "use": "write",
+      "contract": "ten.invitation.accept.v1",
+      "replicaEvent": "ten.membership.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository",
+      "method": "FindByID",
+      "use": "read",
+      "contract": "ten.account.get.v1",
+      "replicaEvent": "ten.account.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "UserRepository",
+      "method": "FindInvitationIdentityByEmail",
+      "use": "read",
+      "contract": "iam.identity.get.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "UserRepository",
+      "method": "ActivateInvitedIdentity",
+      "use": "write",
+      "contract": "iam.invitation.activate.v1",
+      "replicaEvent": "iam.user.created.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "UserRepository",
+      "method": "AuthorizeInvitationAcceptance",
+      "use": "write",
+      "contract": "iam.invitation.authorize.v1",
+      "replicaEvent": "iam.invitation_authorization.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "EmailService",
+      "method": "CheckAgentInvitationConfiguration",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "EmailService",
+      "method": "SendAgentInvitationEmail",
+      "use": "write",
+      "contract": "msg.email.send.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "file": "internal/handler/auth_handler.go",
+      "symbol": "ChannelIAMRepository",
+      "method": "ActivateConfirmationToken",
+      "use": "write",
+      "contract": "iam.user.manage.v1",
+      "replicaEvent": "iam.identity.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/auth_handler.go",
+      "symbol": "EmailService",
+      "method": "CheckConfirmationConfiguration",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "TEN",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "AccountRepository",
+      "method": "GetCallReadMembership",
+      "use": "read",
+      "contract": "ten.permissions.check.v1",
+      "replicaEvent": "ten.membership.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "InboxRepository",
+      "method": "Exists",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "InboxRepository",
+      "method": "ListMemberIDs",
+      "use": "read",
+      "contract": "chn.inbox.get.v1",
+      "replicaEvent": "chn.inbox.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CUS",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "ContactRepository",
+      "method": "Exists",
+      "use": "read",
+      "contract": "cus.contact.get.v1",
+      "replicaEvent": "cus.contact.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "ConversationRepository",
+      "method": "FindCallReadReference",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "ConversationRepository",
+      "method": "ListParticipants",
+      "use": "read",
+      "contract": "con.conversation.get.v1",
+      "replicaEvent": "con.conversation.changed.v1"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "TEN",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "TeamRepository",
+      "method": "ListMemberIDs",
+      "use": "read",
+      "contract": "ten.members.list.v1",
+      "replicaEvent": "ten.team.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "EmailService",
+      "method": "ManagedTranscriptSender",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "EmailService",
+      "method": "RenderTranscriptHTML",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "EmailService",
+      "method": "RenderTranscriptText",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "EmailService",
+      "method": "ManagedTranscriptInboxBinding",
+      "use": "read",
+      "contract": "msg.email_delivery.get.v1",
+      "replicaEvent": "msg.email_delivery.changed.v1"
+    }
+  ],
+  "localOwnerPortBindings": [
+    {
+      "consumer": "MSG",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "port": "domain.InboxTranscriptSMTP",
+      "method": "SendInboxTranscript",
+      "definitionFile": "internal/domain/inbox_transcript_smtp.go",
+      "consumerFieldFile": "internal/modruntime/runtime.go",
+      "consumerField": "InboxTranscriptSMTP",
+      "consumerFile": "internal/modruntime/ordinary_email.go",
+      "providerFile": "internal/service/inbox_transcript_smtp.go",
+      "providerFactory": "NewInboxTranscriptSMTP",
+      "providerRepository": "InboxTranscriptSMTPRepository",
+      "providerRepositoryMethod": "FindInboxSMTP",
+      "providerRepositoryFile": "internal/repository/inbox_repository.go",
+      "compositionFile": "cmd/server/main.go",
+      "standaloneFile": "cmd/module-server/main.go"
+    }
+  ],
+  "localCountOwnerPortBindings": [
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "scope": "local-count-only",
+      "port": "service.ReportConversationCountPort",
+      "method": "CountReportBuckets",
+      "definitionFile": "internal/service/report_count_series.go",
+      "consumerFieldFile": "internal/service/report_service.go",
+      "consumerField": "conversationCounts",
+      "consumerFile": "internal/service/report_count_series.go",
+      "providerRepository": "ConversationRepository",
+      "providerRepositoryFile": "internal/repository/conversation_report_count.go",
+      "providerTable": "conversations",
+      "providerFactory": "NewConversationRepository",
+      "defaultCompositionFile": "internal/service/report_service.go",
+      "defaultCompositionFunction": "NewReportService",
+      "compositionFile": "internal/router/router.go",
+      "compositionMethod": "SetCountOwners",
+      "maxBuckets": 400
+    },
+    {
+      "consumer": "RPT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "scope": "local-count-only",
+      "port": "service.ReportMessageCountPort",
+      "method": "CountReportBuckets",
+      "definitionFile": "internal/service/report_count_series.go",
+      "consumerFieldFile": "internal/service/report_service.go",
+      "consumerField": "messageCounts",
+      "consumerFile": "internal/service/report_count_series.go",
+      "providerRepository": "MessageRepository",
+      "providerRepositoryFile": "internal/repository/message_report_count.go",
+      "providerTable": "messages",
+      "providerFactory": "NewMessageRepository",
+      "defaultCompositionFile": "internal/service/report_service.go",
+      "defaultCompositionFunction": "NewReportService",
+      "compositionFile": "internal/router/router.go",
+      "compositionMethod": "SetCountOwners",
+      "maxBuckets": 400
+    }
+  ],
+  "localSummaryOwnerPortBindings": [
+    {
+      "consumer": "RPT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "scope": "local-summary-count-only",
+      "port": "service.ReportMessageSummaryPort",
+      "method": "CountReportSummary",
+      "definitionFile": "internal/service/report_message_summary.go",
+      "consumerFieldFile": "internal/service/report_service.go",
+      "consumerField": "summaryMessageCounts",
+      "consumerFile": "internal/service/report_service.go",
+      "providerRepository": "MessageRepository",
+      "providerRepositoryFile": "internal/repository/message_report_summary.go",
+      "providerTable": "messages",
+      "providerFactory": "NewMessageRepository",
+      "defaultCompositionFile": "internal/service/report_service.go",
+      "defaultCompositionFunction": "NewReportService",
+      "compositionFile": "internal/router/router.go",
+      "compositionMethod": "SetSummaryMessageOwner"
+    }
+  ],
+  "localTextOwnerPortBindings": [
+    {
+      "consumer": "MSG",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "scope": "local-text-transport-only",
+      "port": "channel.TextOwner",
+      "methods": [
+        "Ready",
+        "OutboundEnabled",
+        "PrepareText",
+        "PrepareDispatch",
+        "LookupText",
+        "VerifyTwilioStatus",
+        "ParseWhatsAppStatuses",
+        "CheckBinding"
+      ],
+      "definitionFile": "internal/channel/text_owner.go",
+      "consumerFile": "internal/service/channel_outbound_service.go",
+      "consumerType": "ChannelOutboundService",
+      "consumerField": "owner",
+      "consumerFactory": "NewChannelOutboundService",
+      "providerFile": "internal/service/channel_text_owner.go",
+      "providerType": "channelTextOwner",
+      "providerFactory": "NewChannelTextOwner",
+      "providerRepository": "InboxRepository",
+      "providerRepositoryMethod": "OutboundConnection",
+      "providerRepositoryFile": "internal/repository/inbox_outbound.go",
+      "preparedPort": "channel.PreparedText",
+      "preparedType": "preparedChannelText",
+      "compositionFile": "internal/router/router.go",
+      "standaloneFile": "cmd/module-server/main.go"
+    }
+  ],
+  "localFirebaseConfigOwnerPortBindings": [
+    {
+      "consumer": "NTF",
+      "provider": "SYS",
+      "kind": "synchronous",
+      "scope": "local-private-firebase-config-only",
+      "port": "service.FirebasePushConfigPort",
+      "method": "FirebasePushConfiguration",
+      "definitionFile": "internal/service/push_service.go",
+      "consumerType": "PushService",
+      "consumerFactory": "NewPushService",
+      "consumerField": "firebaseConfig",
+      "consumerFile": "internal/service/push_fcm.go",
+      "providerRepository": "SystemConfigRepository",
+      "providerRepositoryFile": "internal/repository/system_config_firebase.go",
+      "providerFactory": "NewSystemConfigRepository",
+      "providerTable": "system_configs",
+      "keys": [
+        "FIREBASE_PROJECT_ID",
+        "FIREBASE_CREDENTIALS"
+      ],
+      "maxRows": 3,
+      "maxValueBytes": 32768,
+      "compositionFile": "internal/router/router.go",
+      "compositionFunction": "SetupRouterWithOptions",
+      "compositionMethod": "SetFirebaseConfigOwner",
+      "standaloneFile": "cmd/module-server/main.go"
     }
   ]
 }

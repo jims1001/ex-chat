@@ -326,24 +326,24 @@ func TestMessageLifecycleManagement(t *testing.T) {
 			Data domain.Message `json:"data"`
 		}
 		json.Unmarshal(w.Body.Bytes(), &retriedResp)
-		if retriedResp.Data.Status != "sent" {
-			t.Fatalf("expected status to be reset to 'sent', got: %s", retriedResp.Data.Status)
+		if retriedResp.Data.Status != domain.MessageStatusQueued {
+			t.Fatalf("expected locally accepted status 'queued', got: %s", retriedResp.Data.Status)
 		}
 
 		// Verify in DB directly
 		var dbMsg2 domain.Message
 		db.First(&dbMsg2, msg2ID)
-		if dbMsg2.Status != "sent" {
-			t.Fatalf("DB message status not 'sent': %s", dbMsg2.Status)
+		if dbMsg2.Status != domain.MessageStatusQueued {
+			t.Fatalf("DB message status not 'queued': %s", dbMsg2.Status)
 		}
 
-		// Subsequent retry should fail since status is now 'sent'
+		// Legacy repeat is rejected because the accepted retry is already queued
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/messages/%d/retry", accountID, convID, msg2ID), nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 when retrying already sent message, got %d", w.Code)
+			t.Fatalf("expected 400 when retrying already queued message, got %d", w.Code)
 		}
 	})
 

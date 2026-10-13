@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -178,7 +179,11 @@ func (h *AppliedSLAHandler) ListAppliedSLAs(c *gin.Context) {
 		// Calculate due at values if conversation & policy exist
 		var frtDueUnix, nrtDueUnix, rtDueUnix *int64
 		if item.Conversation != nil && h.slaService != nil {
-			frtDue, nrtDue, rtDue, _, _, _, _ := h.slaService.GetConversationSLADeadlines(item.Conversation)
+			frtDue, nrtDue, rtDue, _, _, _, _, err := h.slaService.GetConversationSLADeadlines(item.Conversation)
+			if err != nil {
+				response.InternalError(c, "Failed to load SLA deadlines")
+				return
+			}
 			if frtDue != nil {
 				u := frtDue.Unix()
 				frtDueUnix = &u
@@ -397,12 +402,20 @@ func (h *AppliedSLAHandler) GetConversationAppliedSLA(c *gin.Context) {
 		return
 	}
 
-	applied, _ := h.appliedSLARepo.GetAppliedSLAByConversation(accountID, uint(convID))
+	applied, err := h.appliedSLARepo.GetAppliedSLAByConversation(accountID, uint(convID))
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		response.InternalError(c, "Failed to load applied SLA")
+		return
+	}
 	if applied != nil {
 		applied.Conversation = conv
 	}
 
-	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(conv)
+	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy, err := h.slaService.GetConversationSLADeadlines(conv)
+	if err != nil {
+		response.InternalError(c, "Failed to load SLA deadlines")
+		return
+	}
 	now := time.Now().UTC()
 
 	var frtRemainingSec, nrtRemainingSec, resRemainingSec *int

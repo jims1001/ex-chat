@@ -1,0 +1,74 @@
+{
+  "version": "automation-actions-v1",
+  "defaultMode": "legacy",
+  "sources": {
+    "internal/modruntime/aut_runner.go": "AUT",
+    "internal/modruntime/aut_causality.go": "AUT",
+    "internal/modruntime/aut_sibling_conditions.go": "AUT",
+    "internal/modruntime/aut_action_plan.go": "AUT",
+    "internal/modruntime/aut_failure_policy.go": "AUT",
+    "internal/modruntime/aut_activity_policy.go": "AUT",
+    "internal/modruntime/aut_action_dispatch.go": "AUT",
+    "internal/modruntime/aut_owner_actions.go": "CON",
+    "internal/modruntime/aut_customer_actions.go": "CUS",
+    "internal/modruntime/aut_message_actions.go": "MSG",
+    "internal/repository/message_conversation_fence.go": "MSG",
+    "internal/repository/message_conversation_cleanup.go": "MSG",
+    "internal/modruntime/aut_cascade.go": "AUT",
+    "internal/modruntime/aut_numeric_conditions.go": "AUT",
+    "internal/modruntime/cus_numeric_catalog.go": "CUS"
+  },
+  "newContracts": [
+    {
+      "owner": "CON",
+      "kind": "command",
+      "name": "con.automation.apply.v1",
+      "source": "internal/modruntime/aut_owner_actions.go"
+    },
+    {
+      "owner": "CON",
+      "kind": "command",
+      "name": "con.automation.message.prepare.v1",
+      "source": "internal/modruntime/aut_owner_actions.go"
+    },
+    {
+      "owner": "CON",
+      "kind": "query",
+      "name": "con.automation.message_authorization.get.v1",
+      "source": "internal/modruntime/aut_owner_actions.go"
+    },
+    {
+      "owner": "CUS",
+      "kind": "command",
+      "name": "cus.automation.label.resolve.v1",
+      "source": "internal/modruntime/aut_customer_actions.go"
+    },
+    {
+      "owner": "MSG",
+      "kind": "command",
+      "name": "msg.automation.message.create.v1",
+      "source": "internal/modruntime/aut_message_actions.go"
+    },
+    {
+      "owner": "CUS",
+      "kind": "query",
+      "name": "cus.automation.number_definition.get.v1",
+      "source": "internal/modruntime/cus_numeric_catalog.go"
+    }
+  ],
+  "ownerDirections": {
+    "AUT": [
+      "CON",
+      "CUS",
+      "MSG"
+    ],
+    "CON": [
+      "TEN",
+      "CUS"
+    ],
+    "CUS": [],
+    "MSG": [
+      "CON"
+    ]
+  }
+}

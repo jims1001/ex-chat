@@ -23,26 +23,34 @@ import (
 )
 
 type ConversationHandler struct {
-	convRepo          *repository.ConversationRepository
-	msgRepo           *repository.MessageRepository
-	inboxRepo         *repository.InboxRepository
-	contactRepo       *repository.ContactRepository
-	notificationRepo  *repository.NotificationRepository
-	routingService    *service.RoutingService
-	automationService *service.AutomationService
-	webhookService    *service.WebhookService
-	pushService       *service.PushService
-	slaService        *service.SLAService
-	emailService      *service.EmailService
-	campaignService   *service.CampaignService
-	captainRepo       *repository.CaptainRepository
-	enterpriseRepo    repository.ChannelRPTRepository
-	journalRepo       *repository.JournalRepository
-	accountRepo       *repository.AccountRepository
-	teamRepo          *repository.TeamRepository
-	userRepo          *repository.UserRepository
-	hub               *ws.Hub
+	accountTranscripts          domain.AccountTranscriptQueue
+	widgetTranscripts           domain.WidgetTranscriptQueue
+	widgetTranscriptRevocations interface{ IsTokenRevoked(string) (bool, error) }
+	channelOutbound             *service.ChannelOutboundService
+	creationWorkflows           *repository.CreationWorkflowCoordinator
+	convRepo                    *repository.ConversationRepository
+	msgRepo                     *repository.MessageRepository
+	inboxRepo                   *repository.InboxRepository
+	contactRepo                 *repository.ContactRepository
+	notificationRepo            *repository.NotificationRepository
+	routingService              *service.RoutingService
+	automationService           *service.AutomationService
+	webhookService              *service.WebhookService
+	pushService                 *service.PushService
+	slaService                  *service.SLAService
+	emailService                *service.EmailService
+	campaignService             *service.CampaignService
+	captainRepo                 *repository.CaptainRepository
+	enterpriseRepo              repository.ChannelRPTRepository
+	journalRepo                 *repository.JournalRepository
+	accountRepo                 *repository.AccountRepository
+	teamRepo                    *repository.TeamRepository
+	userRepo                    *repository.UserRepository
+	hub                         *ws.Hub
+	jwtSecret                   string
 }
+
+func (h *ConversationHandler) SetJWTSecret(secret string) { h.jwtSecret = secret }
 
 func NewConversationHandler(
 	convRepo *repository.ConversationRepository,
@@ -53,12 +61,13 @@ func NewConversationHandler(
 	hub *ws.Hub,
 ) *ConversationHandler {
 	return &ConversationHandler{
-		convRepo:       convRepo,
-		msgRepo:        msgRepo,
-		inboxRepo:      inboxRepo,
-		contactRepo:    contactRepo,
-		routingService: routingService,
-		hub:            hub,
+		creationWorkflows: repository.NewCreationWorkflowCoordinator(convRepo, msgRepo),
+		convRepo:          convRepo,
+		msgRepo:           msgRepo,
+		inboxRepo:         inboxRepo,
+		contactRepo:       contactRepo,
+		routingService:    routingService,
+		hub:               hub,
 	}
 }
 
@@ -69,6 +78,10 @@ func (h *ConversationHandler) SetAutomationAndWebhook(as *service.AutomationServ
 
 func (h *ConversationHandler) SetPushService(ps *service.PushService) {
 	h.pushService = ps
+}
+
+func (h *ConversationHandler) SetAccountTranscriptQueue(queue domain.AccountTranscriptQueue) {
+	h.accountTranscripts = queue
 }
 
 func (h *ConversationHandler) SetEmailService(es *service.EmailService) {
@@ -151,12 +164,12 @@ type CreateMessageRequest struct {
 }
 
 type WidgetCreateConversationRequest struct {
-	SourceID string `json:"source_id" binding:"required"`
+	SourceID string `json:"source_id"`
 	Message  string `json:"message" binding:"required"`
 }
 
 type WidgetCreateMessageRequest struct {
-	SourceID       string `json:"source_id" binding:"required"`
+	SourceID       string `json:"source_id"`
 	ConversationID uint   `json:"conversation_id" binding:"required"`
 	Content        string `json:"content" binding:"required"`
 }
@@ -253,12 +266,23 @@ func (h *ConversationHandler) CreateConversation(c *gin.Context) {
 		CustomAttributes: req.CustomAttributes,
 	}
 
-	if err := h.convRepo.Create(&conv); err != nil {
+	create := h.convRepo.Create
+	if h.convRepo.AutomationCaptureEnabled() && h.routingService != nil {
+		create = h.routingService.CreateWithAutoAssign
+	}
+	if err := create(&conv); err != nil {
 		response.InternalError(c, "Failed to create conversation")
 		return
 	}
 
-	if conv.AssigneeID == nil && h.routingService != nil {
+	if h.convRepo.AutomationCaptureEnabled() {
+		if _, err := h.creationWorkflows.CompleteCreationWorkflow(c.Request.Context(), conv.AccountID, conv.ID); err != nil {
+			response.InternalError(c, "Failed to complete conversation creation")
+			return
+		}
+	}
+
+	if !h.convRepo.AutomationCaptureEnabled() && conv.AssigneeID == nil && h.routingService != nil {
 		_, _ = h.routingService.AutoAssign(&conv)
 	}
 
@@ -627,13 +651,13 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 		Status:         domain.MessageStatusSent,
 	}
 
-	if err := h.msgRepo.Create(&msg); err != nil {
-		logger.WithComponent("message").Error("failed to create message",
-			"conversation_id", conv.ID,
-			"account_id", accountID,
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to create message")
+	accepted, err := h.createOrdinaryMessage(c, conv, &msg)
+	if err != nil {
+		channelError(c, err)
+		return
+	}
+	if !accepted {
+		response.Success(c, msg)
 		return
 	}
 
@@ -646,8 +670,7 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 		"private", msg.Private,
 	)
 
-	_ = h.convRepo.TouchActivity(accountID, conv.ID)
-
+	// MSG owns durable activity application; do not increment the target again.
 	if h.automationService != nil {
 		h.automationService.HandleMessageCreated(conv, &msg)
 	}
@@ -666,7 +689,7 @@ func (h *ConversationHandler) CreateMessage(c *gin.Context) {
 		})
 	}
 
-	if h.slaService != nil && msg.MessageType == domain.MessageTypeOutgoing && !isPrivate {
+	if h.slaService != nil && msg.MessageType == domain.MessageTypeOutgoing && !isPrivate && (msg.Status == domain.MessageStatusSent || msg.Status == domain.MessageStatusDelivered || msg.Status == domain.MessageStatusRead) {
 		_, _ = h.slaService.EvaluateConversation(conv)
 	}
 
@@ -690,30 +713,25 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 		websiteToken = c.GetHeader("X-Auth-Token")
 	}
 
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
+	}
+
 	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
 	if err != nil || inbox == nil {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	contact := identity.contact
 
 	var req WidgetCreateConversationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
-	}
-
-	contact, err := h.contactRepo.FindContactBySourceID(inbox.ID, req.SourceID)
-	if err != nil || contact == nil {
-		newContact := domain.Contact{
-			AccountID: inbox.AccountID,
-			Name:      "Visitor " + req.SourceID[:min(8, len(req.SourceID))],
-		}
-		if err := h.contactRepo.Create(&newContact); err != nil {
-			response.InternalError(c, "Failed to create contact")
-			return
-		}
-		_, _ = h.contactRepo.FindOrCreateContactInbox(newContact.ID, inbox.ID, req.SourceID)
-		contact = &newContact
 	}
 
 	conv := domain.Conversation{
@@ -722,11 +740,6 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 		ContactID: contact.ID,
 		Status:    domain.ConversationStatusOpen,
 		Priority:  domain.PriorityMedium,
-	}
-
-	if err := h.convRepo.Create(&conv); err != nil {
-		response.InternalError(c, "Failed to start conversation")
-		return
 	}
 
 	msg := domain.Message{
@@ -741,11 +754,37 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 		Status:         domain.MessageStatusSent,
 	}
 
-	if err := h.msgRepo.Create(&msg); err != nil {
+	var createErr error
+	if h.convRepo.AutomationCaptureEnabled() {
+		if h.routingService != nil {
+			createErr = h.routingService.CreateWithInitialMessage(&conv, &msg)
+		} else {
+			createErr = h.convRepo.CreateWithInitialMessages(&conv, []domain.Message{msg})
+		}
+		if createErr == nil {
+			var messages []domain.Message
+			messages, createErr = h.creationWorkflows.CompleteCreationWorkflow(c.Request.Context(), conv.AccountID, conv.ID)
+			if createErr == nil {
+				if len(messages) == 0 {
+					createErr = errors.New("creation workflow returned no initial message")
+				} else {
+					msg = messages[0]
+				}
+			}
+		}
+	} else {
+		if err := h.convRepo.Create(&conv); err != nil {
+			response.InternalError(c, "Failed to start conversation")
+			return
+		}
+		msg.ConversationID = conv.ID
+		createErr = h.msgRepo.Create(&msg)
+	}
+	if createErr != nil {
 		logger.WithComponent("message").Error("failed to create initial widget message",
 			"conversation_id", conv.ID,
 			"account_id", inbox.AccountID,
-			"error", err.Error(),
+			"error", createErr.Error(),
 		)
 		response.InternalError(c, "Failed to create initial message")
 		return
@@ -759,7 +798,7 @@ func (h *ConversationHandler) WidgetCreateConversation(c *gin.Context) {
 		"sender_id", msg.SenderID,
 	)
 
-	if h.routingService != nil {
+	if !h.convRepo.AutomationCaptureEnabled() && h.routingService != nil {
 		_, _ = h.routingService.AutoAssign(&conv)
 	}
 
@@ -802,6 +841,11 @@ func (h *ConversationHandler) WidgetListMessages(c *gin.Context) {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	contact := identity.contact
 
 	convID, err := strconv.ParseUint(c.Query("conversation_id"), 10, 64)
 	if err != nil {
@@ -810,29 +854,9 @@ func (h *ConversationHandler) WidgetListMessages(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, uint(convID))
-	if err != nil || conv == nil || conv.InboxID != inbox.ID {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID || conv.ContactID != contact.ID {
 		response.NotFound(c, "Conversation not found")
 		return
-	}
-
-	// If source_id / contact_token is provided, ensure caller owns this conversation
-	sourceID := strings.TrimSpace(c.Query("source_id"))
-	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
-		sourceID = strings.TrimSpace(c.Query("contact_token"))
-	}
-	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
-		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
-	}
-	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
-		response.Error(c, http.StatusUnauthorized, "visitor_session or source_id is required")
-		return
-	}
-	if sourceID != "" {
-		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
-		if contact == nil || conv.ContactID != contact.ID {
-			response.NotFound(c, "Conversation not found")
-			return
-		}
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -862,16 +886,15 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	contact := identity.contact
 
 	var req WidgetCreateMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
-		return
-	}
-
-	contact, err := h.contactRepo.FindContactBySourceID(inbox.ID, req.SourceID)
-	if err != nil || contact == nil {
-		response.NotFound(c, "Contact not found for this source_id")
 		return
 	}
 
@@ -893,7 +916,9 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 		Status:         domain.MessageStatusSent,
 	}
 
-	if err := h.msgRepo.Create(&msg); err != nil {
+	isMutedOrBlocked := conv.Muted || (contact != nil && contact.Blocked)
+	reopen := !isMutedOrBlocked && conv.Status == domain.ConversationStatusResolved
+	if err := h.msgRepo.CreateWithConversationReopen(&msg, conv.ObjectVersion, reopen); err != nil {
 		logger.WithComponent("message").Error("failed to send widget message",
 			"conversation_id", conv.ID,
 			"account_id", inbox.AccountID,
@@ -911,13 +936,9 @@ func (h *ConversationHandler) WidgetCreateMessage(c *gin.Context) {
 		"sender_id", msg.SenderID,
 	)
 
-	isMutedOrBlocked := conv.Muted || (contact != nil && contact.Blocked)
-
-	// Re-open conversation if it was resolved (only if not muted or blocked)
-	if !isMutedOrBlocked && conv.Status == domain.ConversationStatusResolved {
+	// Durable mode completes this transition in CON's message activity receipt.
+	if !h.msgRepo.AutomationCaptureEnabled() && reopen {
 		_ = h.convRepo.UpdateStatus(inbox.AccountID, conv.ID, domain.ConversationStatusOpen, nil)
-	} else {
-		_ = h.convRepo.TouchActivity(inbox.AccountID, conv.ID)
 	}
 
 	if h.automationService != nil {
@@ -1232,7 +1253,63 @@ func (h *ConversationHandler) SendTranscript(c *gin.Context) {
 	var req struct {
 		Email string `json:"email"`
 	}
-	_ = c.ShouldBindJSON(&req)
+	decoder := json.NewDecoder(c.Request.Body)
+	bindErr := decoder.Decode(&req)
+	if bindErr == nil {
+		var trailing struct{}
+		if decoder.Decode(&trailing) != io.EOF {
+			bindErr = domain.ErrAccountTranscriptInvalid
+		}
+	}
+
+	if h.accountTranscripts != nil {
+		if len(c.Request.Header.Values("Idempotency-Key")) > 1 {
+			accountTranscriptError(c, domain.ErrAccountTranscriptInvalid)
+			return
+		}
+		userID, _ := c.Get(middleware.ContextUserID)
+		requesterID, _ := userID.(uint)
+		admission, handled, err := h.accountTranscripts.Submit(c.Request.Context(), domain.AccountTranscriptRequest{AccountID: accountID, UserID: requesterID, ConversationID: conv.ID, Key: c.GetHeader("Idempotency-Key"), Email: req.Email, InvalidInput: bindErr != nil && !errors.Is(bindErr, io.EOF)}, func(context.Context) (domain.AccountTranscriptPrepared, error) {
+			// Reload render metadata after acquiring the shared account fence.
+			fresh, err := h.convRepo.FindByID(accountID, conv.ID)
+			if err != nil {
+				return domain.AccountTranscriptPrepared{}, domain.ErrAccountTranscriptUnavailable
+			}
+			if fresh == nil {
+				return domain.AccountTranscriptPrepared{}, domain.ErrAccountTranscriptNotFound
+			}
+			if h.emailService == nil {
+				return domain.AccountTranscriptPrepared{}, nil
+			}
+			from, eligible := h.emailService.ManagedTranscriptSender(fresh)
+			inboxRoute, inboxSelected := h.emailService.ManagedTranscriptInboxBinding(fresh)
+			if !eligible && !inboxSelected {
+				return domain.AccountTranscriptPrepared{}, nil
+			}
+			to := req.Email
+			if to == "" && fresh.Contact != nil {
+				to = fresh.Contact.Email
+			}
+			if to == "" {
+				return domain.AccountTranscriptPrepared{}, domain.ErrAccountTranscriptInvalid
+			}
+			displayID := fresh.ID
+			if fresh.DisplayID > 0 {
+				displayID = uint(fresh.DisplayID)
+			}
+			return domain.AccountTranscriptPrepared{Eligible: true, InboxSelected: inboxSelected, InboxRoute: inboxRoute, From: from, To: to, Subject: fmt.Sprintf("[#%d] 会话记录", displayID), Render: func(messages []domain.Message) (string, string) {
+				return h.emailService.RenderTranscriptHTML(fresh, messages), h.emailService.RenderTranscriptText(fresh, messages)
+			}}, nil
+		})
+		if err != nil {
+			accountTranscriptError(c, err)
+			return
+		}
+		if handled {
+			response.Success(c, gin.H{"message": "Transcript queued", "email": admission.Email, "messages_count": admission.MessagesCount, "queued": true, "status": "pending", "email_log_id": admission.EmailLogID, "status_url": fmt.Sprintf("/api/v1/accounts/%d/email_logs/%d", accountID, admission.EmailLogID)})
+			return
+		}
+	}
 
 	targetEmail := req.Email
 	if targetEmail == "" && conv.Contact != nil {
@@ -1305,6 +1382,11 @@ func (h *ConversationHandler) WidgetUpdateLastSeen(c *gin.Context) {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	contact := identity.contact
 
 	convID := req.ConversationID
 	if convID == 0 {
@@ -1318,28 +1400,7 @@ func (h *ConversationHandler) WidgetUpdateLastSeen(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, convID)
-	if err != nil || conv == nil || conv.InboxID != inbox.ID {
-		response.NotFound(c, "Conversation not found")
-		return
-	}
-
-	// Verify contact matches if source_id is provided
-	sourceID := strings.TrimSpace(req.SourceID)
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.Query("source_id"))
-	}
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.Query("contact_token"))
-	}
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
-	}
-	if sourceID == "" {
-		response.Error(c, http.StatusUnauthorized, "visitor_session or source_id is required")
-		return
-	}
-	contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
-	if contact == nil || conv.ContactID != contact.ID {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID || conv.ContactID != contact.ID {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -1393,33 +1454,19 @@ func (h *ConversationHandler) WidgetToggleTyping(c *gin.Context) {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	contact := identity.contact
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
-	if err != nil || conv == nil || conv.InboxID != inbox.ID {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID || conv.ContactID != contact.ID {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
 
-	var contactName string
-	sourceID := strings.TrimSpace(req.SourceID)
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.Query("source_id"))
-	}
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.Query("contact_token"))
-	}
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
-	}
-
-	if sourceID != "" {
-		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
-		if contact == nil || conv.ContactID != contact.ID {
-			response.NotFound(c, "Conversation not found")
-			return
-		}
-		contactName = contact.Name
-	}
+	contactName := contact.Name
 
 	eventName := "conversation.typing_on"
 	if req.TypingStatus == "off" {
@@ -1434,7 +1481,7 @@ func (h *ConversationHandler) WidgetToggleTyping(c *gin.Context) {
 			Data: gin.H{
 				"conversation_id": conv.ID,
 				"contact": gin.H{
-					"source_id": req.SourceID,
+					"source_id": identity.claims.SourceID,
 					"name":      contactName,
 				},
 				"typing_status": req.TypingStatus,
@@ -1461,8 +1508,14 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 		ConversationID uint   `json:"conversation_id"`
 		Email          string `json:"email"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request payload: "+err.Error())
+	decoder := json.NewDecoder(c.Request.Body)
+	if err := decoder.Decode(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload")
+		return
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		response.BadRequest(c, "Invalid request payload")
 		return
 	}
 	if websiteToken == "" {
@@ -1474,27 +1527,65 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	contact := identity.contact
 
 	conv, err := h.convRepo.FindByID(inbox.AccountID, req.ConversationID)
-	if err != nil || conv == nil || conv.InboxID != inbox.ID {
+	if err != nil || conv == nil || conv.InboxID != inbox.ID || conv.ContactID != contact.ID {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
 
-	sourceID := strings.TrimSpace(req.SourceID)
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.Query("source_id"))
-	}
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.Query("contact_token"))
-	}
-	if sourceID == "" {
-		sourceID = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
-	}
-	if sourceID != "" {
-		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
-		if contact != nil && conv.ContactID != contact.ID {
-			response.NotFound(c, "Conversation not found")
+	if h.widgetTranscripts != nil {
+		if len(c.Request.Header.Values("Idempotency-Key")) > 1 {
+			accountTranscriptError(c, domain.ErrAccountTranscriptInvalid)
+			return
+		}
+		request := domain.WidgetTranscriptRequest{AccountID: inbox.AccountID, InboxID: inbox.ID, ContactID: contact.ID, SourceID: identity.claims.SourceID, ConversationID: conv.ID, Key: c.GetHeader("Idempotency-Key"), Email: req.Email}
+		authorize := h.widgetTranscriptAuthority(c, websiteToken, request)
+		admission, handled, err := h.widgetTranscripts.Submit(c.Request.Context(), request, authorize, func(ctx context.Context) (domain.WidgetTranscriptPrepared, error) {
+			fresh, err := h.convRepo.FindByID(inbox.AccountID, conv.ID)
+			if err != nil {
+				return domain.WidgetTranscriptPrepared{}, domain.ErrAccountTranscriptUnavailable
+			}
+			if fresh == nil || fresh.InboxID != request.InboxID || fresh.ContactID != request.ContactID {
+				return domain.WidgetTranscriptPrepared{}, domain.ErrAccountTranscriptNotFound
+			}
+			if fresh.Inbox == nil {
+				fresh.Inbox = inbox
+			}
+			if h.emailService == nil {
+				return domain.WidgetTranscriptPrepared{}, nil
+			}
+			from, eligible := h.emailService.ManagedTranscriptSender(fresh)
+			inboxRoute, inboxSelected := h.emailService.ManagedTranscriptInboxBinding(fresh)
+			if !eligible && !inboxSelected {
+				return domain.WidgetTranscriptPrepared{}, nil
+			}
+			to := req.Email
+			if to == "" && fresh.Contact != nil {
+				to = fresh.Contact.Email
+			}
+			if to == "" {
+				return domain.WidgetTranscriptPrepared{}, domain.ErrAccountTranscriptInvalid
+			}
+			displayID := fresh.ID
+			if fresh.DisplayID > 0 {
+				displayID = uint(fresh.DisplayID)
+			}
+			return domain.WidgetTranscriptPrepared{Eligible: true, InboxSelected: inboxSelected, InboxRoute: inboxRoute, From: from, To: to, Subject: fmt.Sprintf("[#%d] 会话记录", displayID), Render: func(messages []domain.Message) (string, string) {
+				return h.emailService.RenderTranscriptHTML(fresh, messages), h.emailService.RenderTranscriptText(fresh, messages)
+			}}, nil
+		})
+		if err != nil {
+			widgetTranscriptError(c, err)
+			return
+		}
+		if handled {
+			response.Success(c, gin.H{"message": "Transcript queued", "email": admission.Email, "messages_count": admission.MessagesCount, "queued": true, "status": "pending", "email_log_id": admission.EmailLogID, "status_url": fmt.Sprintf("/api/v1/widget/conversations/%d/transcript/%d", conv.ID, admission.EmailLogID)})
 			return
 		}
 	}
@@ -1508,7 +1599,11 @@ func (h *ConversationHandler) WidgetSendTranscript(c *gin.Context) {
 		return
 	}
 
-	messages, _, _ := h.msgRepo.ListByConversation(inbox.AccountID, conv.ID, false, 1, 100)
+	messages, _, err := h.msgRepo.ListByConversation(inbox.AccountID, conv.ID, false, 1, 100)
+	if err != nil {
+		response.InternalError(c, "Failed to load transcript")
+		return
+	}
 
 	if conv.Inbox == nil {
 		conv.Inbox = inbox
@@ -1742,7 +1837,7 @@ func (h *ConversationHandler) DeleteMessage(c *gin.Context) {
 	response.Success(c, deletedMsg)
 }
 
-// RetryMessage re-attempts delivery of a failed message
+// RetryMessage accepts a local retry; queued is pending transport, never delivery.
 func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -1770,21 +1865,30 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 		return
 	}
 
-	if msg.Status != domain.MessageStatusFailed {
+	if msg.Status != domain.MessageStatusFailed && !h.msgRepo.AutomationCaptureEnabled() {
 		response.BadRequest(c, "Only failed messages can be retried")
 		return
 	}
 
-	retriedMsg, err := h.msgRepo.RetryMessage(accountID, uint(convID), uint(msgID))
+	retriedMsg, accepted, err := h.retryOrdinaryMessage(c, accountID, uint(convID), uint(msgID), msg)
+	if errors.Is(err, repository.ErrMessageNotRetryable) {
+		response.BadRequest(c, "Only failed messages or an exact accepted retry can be retried")
+		return
+	}
 	if err != nil {
-		response.InternalError(c, "Failed to retry message: "+err.Error())
+		channelError(c, err)
+		return
+	}
+
+	if !accepted {
+		response.Success(c, retriedMsg)
 		return
 	}
 
 	conv, _ := h.convRepo.FindByID(accountID, uint(convID))
 
 	// Re-open conversation if resolved when an incoming message is retried, or touch activity to bubble up conversation
-	if conv != nil {
+	if conv != nil && !h.msgRepo.AutomationCaptureEnabled() {
 		if conv.Status == domain.ConversationStatusResolved && retriedMsg.MessageType == domain.MessageTypeIncoming {
 			_ = h.convRepo.UpdateStatus(accountID, conv.ID, domain.ConversationStatusOpen, nil)
 		} else {
@@ -1813,7 +1917,7 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 		h.automationService.HandleMessageCreated(conv, retriedMsg)
 	}
 
-	// Trigger external webhooks for true HTTP delivery
+	// Best-effort external webhook fanout; this is not provider delivery.
 	if h.webhookService != nil {
 		h.webhookService.Dispatch(accountID, "message_created", retriedMsg)
 	}
@@ -1831,8 +1935,8 @@ func (h *ConversationHandler) RetryMessage(c *gin.Context) {
 		})
 	}
 
-	// Re-evaluate SLA clocks for outgoing non-private agent messages
-	if h.slaService != nil && conv != nil && retriedMsg.MessageType == domain.MessageTypeOutgoing && !retriedMsg.Private {
+	// Queued work cannot satisfy first-response/reply SLA metrics.
+	if h.slaService != nil && conv != nil && retriedMsg.MessageType == domain.MessageTypeOutgoing && !retriedMsg.Private && (retriedMsg.Status == domain.MessageStatusSent || retriedMsg.Status == domain.MessageStatusDelivered || retriedMsg.Status == domain.MessageStatusRead) {
 		_, _ = h.slaService.EvaluateConversation(conv)
 	}
 
@@ -1857,7 +1961,7 @@ func (h *ConversationHandler) UpdateConversation(c *gin.Context) {
 	}
 
 	var req UpdateConversationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
@@ -2210,7 +2314,7 @@ func (h *ConversationHandler) UpdateCustomAttributes(c *gin.Context) {
 	}
 
 	var rawBody map[string]any
-	if err := c.ShouldBindJSON(&rawBody); err != nil {
+	if err := bindCustomAttributesJSON(c, &rawBody); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
@@ -2277,8 +2381,17 @@ func (h *ConversationHandler) ListConversationAttachments(c *gin.Context) {
 	})
 }
 
-// GetConversationAssistant returns the Captain Assistant associated with this conversation's inbox
+// GetConversationAssistant retains the legacy envelope and unbound 404.
 func (h *ConversationHandler) GetConversationAssistant(c *gin.Context) {
+	h.getConversationAssistant(c, false)
+}
+
+// GetConversationInboxAssistant serves the documented id/name-or-null contract.
+func (h *ConversationHandler) GetConversationInboxAssistant(c *gin.Context) {
+	h.getConversationAssistant(c, true)
+}
+
+func (h *ConversationHandler) getConversationAssistant(c *gin.Context, canonical bool) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
 
@@ -2294,14 +2407,25 @@ func (h *ConversationHandler) GetConversationAssistant(c *gin.Context) {
 		return
 	}
 
+	// A surviving AIC binding cannot authorize a missing or foreign CHN inbox.
+	// FindByID already obtains this account-scoped owner summary.
+	if conv.Inbox == nil || conv.Inbox.AccountID != accountID || conv.Inbox.ID != conv.InboxID {
+		response.NotFound(c, "Inbox not found")
+		return
+	}
+
 	if h.captainRepo == nil {
 		response.NotFound(c, "Captain repository not configured")
 		return
 	}
 
-	assistant, err := h.captainRepo.FindAssistantByInbox(accountID, conv.InboxID)
+	assistant, err := h.captainRepo.FindAssistantByInbox(c.Request.Context(), accountID, conv.InboxID)
 	if err != nil {
-		response.InternalError(c, "Failed to get conversation assistant: "+err.Error())
+		response.InternalError(c, "Failed to get conversation assistant")
+		return
+	}
+	if canonical {
+		c.JSON(http.StatusOK, gin.H{"assistant": assistant})
 		return
 	}
 	if assistant == nil {

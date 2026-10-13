@@ -2,7 +2,7 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -102,17 +102,6 @@ func (h *AuthHandler) SignUp(c *gin.Context) {
 		return
 	}
 
-	var confirmationToken string
-	if h.enterpriseRepo != nil {
-		confirmationToken, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
-	}
-
-	if confirmationToken != "" && h.emailService != nil {
-		go func(u domain.User, token string) {
-			_, _ = h.emailService.SendConfirmationEmail(context.Background(), &u, token)
-		}(user, confirmationToken)
-	}
-
 	// Create initial workspace account for new admin
 	accountName := req.AccountName
 	if accountName == "" {
@@ -141,10 +130,13 @@ func (h *AuthHandler) SignUp(c *gin.Context) {
 		"client_ip", c.ClientIP(),
 	)
 
+	confirmationStatus := h.dispatchConfirmation(c.Request.Context(), user.ID)
+
 	response.Created(c, gin.H{
-		"user":     user,
-		"token":    token,
-		"accounts": accounts,
+		"user":                user,
+		"token":               token,
+		"accounts":            accounts,
+		"confirmation_status": confirmationStatus,
 	})
 }
 
@@ -173,7 +165,11 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 	// Check if user has MFA enabled
 	if h.enterpriseRepo != nil {
 		profile, err := h.enterpriseRepo.GetMFAProfile(user.ID)
-		if err == nil && profile != nil && profile.Enabled {
+		if err != nil {
+			response.InternalError(c, "Failed to check MFA configuration")
+			return
+		}
+		if profile != nil && profile.Enabled {
 			otp := req.MFAOTP
 			if otp == "" {
 				otp = req.OTPCode
@@ -184,7 +180,11 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 
 			if otp == "" {
 				// Block login: prompt client for MFA token
-				mfaToken, _ := auth.GenerateToken(user, h.cfg.JWTSecret, 1)
+				mfaToken, err := auth.GenerateMFAToken(user, h.cfg.JWTSecret)
+				if err != nil {
+					response.InternalError(c, "Failed to generate MFA session token")
+					return
+				}
 				logger.WithComponent("auth").Info("sign-in mfa challenge required", "user_id", user.ID, "email", req.Email)
 				c.JSON(http.StatusPartialContent, gin.H{
 					"success":      false,
@@ -199,26 +199,10 @@ func (h *AuthHandler) SignIn(c *gin.Context) {
 				return
 			}
 
-			// Verify MFA TOTP code or backup code
-			valid := auth.VerifyTOTPCode(profile.Secret, otp)
-			if !valid {
-				var backupCodes []string
-				_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
-				for i, code := range backupCodes {
-					if code == otp {
-						valid = true
-						backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
-						bBytes, _ := json.Marshal(backupCodes)
-						profile.BackupCodes = string(bBytes)
-						_ = h.enterpriseRepo.SaveMFAProfile(profile)
-						logger.WithComponent("auth").Info("sign-in backup code used", "user_id", user.ID, "remaining_codes", len(backupCodes))
-						break
-					}
-				}
-			}
-			if !valid {
-				logger.WithComponent("auth").Warn("sign-in failed: invalid mfa otp", "user_id", user.ID, "email", req.Email)
-				response.Unauthorized(c, "Invalid MFA verification code")
+			// Password was verified above; all second-factor state is persisted
+			// atomically so other instances cannot bypass limits or reuse a code.
+			if err := h.enterpriseRepo.VerifyMFALogin(user.ID, otp, "", time.Time{}); err != nil {
+				respondMFAVerificationError(c, err)
 				return
 			}
 		}
@@ -402,6 +386,8 @@ type ConfirmEmailRequest struct {
 
 // ConfirmEmail verifies the user's email address using a confirmation token
 func (h *AuthHandler) ConfirmEmail(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	token := c.Query("confirmation_token")
 	if token == "" {
 		var req ConfirmEmailRequest
@@ -429,7 +415,30 @@ func (h *AuthHandler) ConfirmEmail(c *gin.Context) {
 		return
 	}
 
-	tokenStr, _ := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	// Mailbox proof does not bypass the user's current second-factor policy.
+	profile, err := h.enterpriseRepo.GetMFAProfile(user.ID)
+	if err != nil {
+		response.InternalError(c, "Email confirmed; sign in to continue")
+		return
+	}
+	if profile != nil && profile.Enabled {
+		challenge, err := auth.GenerateMFAToken(user, h.cfg.JWTSecret)
+		if err != nil {
+			response.InternalError(c, "Email confirmed; sign in to continue")
+			return
+		}
+		c.JSON(http.StatusPartialContent, gin.H{
+			"success": false, "mfa_required": true, "mfa_token": challenge,
+			"message": "Email confirmed; multi-factor authentication required",
+			"data":    gin.H{"mfa_required": true, "mfa_token": challenge},
+		})
+		return
+	}
+	tokenStr, err := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	if err != nil {
+		response.InternalError(c, "Email confirmed; sign in to continue")
+		return
+	}
 	accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
 
 	response.Success(c, gin.H{
@@ -444,42 +453,72 @@ type ResendConfirmationRequest struct {
 	Email string `json:"email"`
 }
 
-// ResendConfirmation dispatches email confirmation instructions
+// ResendConfirmation processes anonymous requests without claiming delivery or
+// revealing eligibility. Authenticated callers may see their own attempt status.
 func (h *AuthHandler) ResendConfirmation(c *gin.Context) {
-	var user *domain.User
-	if rawUserID, exists := c.Get(middleware.ContextUserID); exists {
-		user, _ = h.userRepo.FindByID(rawUserID.(uint))
+	if h.enterpriseRepo == nil || h.emailService == nil || h.emailService.CheckConfirmationConfiguration() != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "Email confirmation is unavailable"})
+		return
 	}
-	if user == nil {
+	var user *domain.User
+	authenticated := false
+	if rawUserID, exists := c.Get(middleware.ContextUserID); exists {
+		authenticated = true
+		user, _ = h.userRepo.FindByID(rawUserID.(uint))
+	} else {
 		var req ResendConfirmationRequest
 		_ = c.ShouldBindJSON(&req)
 		if req.Email != "" {
 			user, _ = h.userRepo.FindByEmail(strings.ToLower(strings.TrimSpace(req.Email)))
 		}
 	}
-
-	if user == nil {
-		response.Success(c, gin.H{"message": "Confirmation instructions sent"})
-		return
+	status := "unavailable"
+	if user != nil {
+		if user.IsConfirmed() {
+			status = "already_confirmed"
+		} else {
+			status = h.dispatchConfirmation(c.Request.Context(), user.ID)
+		}
 	}
-
-	if user.IsConfirmed() {
-		response.Success(c, gin.H{"message": "Already confirmed"})
-		return
+	data := gin.H{"message": "Confirmation request processed"}
+	if authenticated {
+		data["confirmation_status"] = status
 	}
+	response.Success(c, data)
+}
 
-	var confirmationToken string
-	if h.enterpriseRepo != nil {
-		confirmationToken, _ = h.enterpriseRepo.GenerateConfirmationToken(user.ID)
+// Synchronous, bounded submission keeps completion tied to this exact proof.
+// No detached goroutine or generic email retry can later activate an old link.
+// Signup/account creation remains independent of optional email delivery.
+func (h *AuthHandler) dispatchConfirmation(ctx context.Context, userID uint) string {
+	if h.enterpriseRepo == nil || h.emailService == nil || h.emailService.CheckConfirmationConfiguration() != nil {
+		return "unavailable"
 	}
-
-	if confirmationToken != "" && h.emailService != nil {
-		go func(u domain.User, token string) {
-			_, _ = h.emailService.SendConfirmationEmail(context.Background(), &u, token)
-		}(*user, confirmationToken)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if ctx.Err() != nil {
+		return "unavailable"
 	}
-
-	response.Success(c, gin.H{"message": "Confirmation instructions sent"})
+	proof, raw, err := h.enterpriseRepo.GenerateConfirmationToken(userID)
+	if err != nil || proof == nil || proof.ConfirmationExpiresAt == nil {
+		return "unavailable"
+	}
+	state, err := h.emailService.SendConfirmationEmail(ctx, proof, raw, *proof.ConfirmationExpiresAt)
+	if err != nil || (state != "submitted" && state != "captured_mock") {
+		if state == "delivery_unknown" {
+			return state
+		}
+		return "unavailable"
+	}
+	// An expired request after provider acceptance is ambiguous. Never activate
+	// it based on a late sender response after the request has been canceled.
+	if ctx.Err() != nil {
+		return "delivery_unknown"
+	}
+	if err := h.enterpriseRepo.ActivateConfirmationToken(proof.ID, raw); err != nil {
+		return "inactive"
+	}
+	return state
 }
 
 // UploadAvatar updates the authenticated user's avatar via file upload or URL
@@ -572,15 +611,15 @@ func (h *AuthHandler) VerifyMFAForLogin(c *gin.Context) {
 		return
 	}
 
-	claims, err := auth.ValidateToken(req.MFAToken, h.cfg.JWTSecret)
+	claims, err := auth.ValidateMFAToken(req.MFAToken, h.cfg.JWTSecret)
 	if err != nil {
 		response.Unauthorized(c, "Invalid or expired MFA session token")
 		return
 	}
 
 	user, err := h.userRepo.FindByID(claims.UserID)
-	if err != nil || user == nil {
-		response.NotFound(c, "User not found")
+	if err != nil || !auth.ClaimsMatchUser(claims, user) {
+		response.Unauthorized(c, "Invalid or revoked MFA session")
 		return
 	}
 
@@ -589,35 +628,12 @@ func (h *AuthHandler) VerifyMFAForLogin(c *gin.Context) {
 		return
 	}
 
-	profile, err := h.enterpriseRepo.GetMFAProfile(user.ID)
-	if err != nil || profile == nil || !profile.Enabled {
-		response.BadRequest(c, "MFA is not enabled for this user")
-		return
-	}
-
 	code := req.OTPCode
 	if code == "" {
 		code = req.BackupCode
 	}
-
-	valid := auth.VerifyTOTPCode(profile.Secret, code)
-	if !valid {
-		var backupCodes []string
-		_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
-		for i, bc := range backupCodes {
-			if bc == code {
-				valid = true
-				backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
-				bBytes, _ := json.Marshal(backupCodes)
-				profile.BackupCodes = string(bBytes)
-				_ = h.enterpriseRepo.SaveMFAProfile(profile)
-				break
-			}
-		}
-	}
-
-	if !valid {
-		response.Unauthorized(c, "Invalid MFA code or backup code")
+	if err := h.enterpriseRepo.VerifyMFALogin(user.ID, code, claims.ID, claims.ExpiresAt.Time); err != nil {
+		respondMFAVerificationError(c, err)
 		return
 	}
 
@@ -633,4 +649,17 @@ func (h *AuthHandler) VerifyMFAForLogin(c *gin.Context) {
 		"token":    token,
 		"accounts": accounts,
 	})
+}
+
+// Authentication errors intentionally do not reveal which factor was accepted.
+func respondMFAVerificationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, repository.ErrMFARateLimited):
+		c.Header("Retry-After", "300")
+		response.Error(c, http.StatusTooManyRequests, "Too many MFA verification attempts; try again later")
+	case errors.Is(err, repository.ErrMFAInvalidCode), errors.Is(err, repository.ErrMFAReplay), errors.Is(err, repository.ErrMFANotEnabled):
+		response.Unauthorized(c, "Invalid or already used MFA verification")
+	default:
+		response.InternalError(c, "Unable to verify MFA securely")
+	}
 }

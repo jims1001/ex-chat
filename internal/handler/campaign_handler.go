@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
@@ -347,6 +349,12 @@ func (h *AdvancedHandler) TriggerCampaign(c *gin.Context) {
 	if h.campaignService != nil {
 		sentCount, err := h.campaignService.TriggerCampaign(accID, uint(id))
 		if err != nil {
+			if errors.Is(err, service.ErrCampaignPrerequisiteRead) {
+				logger.WithComponent("campaign").Error("campaign prerequisite read unavailable",
+					"account_id", accID, "campaign_id", id)
+				response.InternalError(c, "Campaign prerequisite unavailable")
+				return
+			}
 			logger.WithComponent("campaign").Warn("failed to trigger campaign",
 				"account_id", accID,
 				"campaign_id", id,
@@ -358,7 +366,7 @@ func (h *AdvancedHandler) TriggerCampaign(c *gin.Context) {
 		response.Success(c, gin.H{"status": "completed", "sent_count": sentCount})
 		return
 	}
-	response.Success(c, gin.H{"status": "completed"})
+	response.InternalError(c, "Campaign service unavailable")
 }
 
 // PauseCampaign pauses an active or scheduled campaign

@@ -86,6 +86,67 @@ func (r *NotificationRepository) MarkConversationNotificationsRead(ctx context.C
 		Update("read_at", now).Error
 }
 
+// NotificationStateChange contains only notification-owned state. Read nil and
+// SetSnoozedUntil false leave their respective fields unchanged.
+type NotificationStateChange struct {
+	Read            *bool
+	SnoozedUntil    *time.Time
+	SetSnoozedUntil bool
+}
+
+// NotificationStateReadbackError distinguishes a failed response read after a
+// successful scoped write from an initially missing mutation target.
+type NotificationStateReadbackError struct {
+	Err error
+}
+
+func (e *NotificationStateReadbackError) Error() string {
+	return "notification state readback failed: " + e.Err.Error()
+}
+
+func (e *NotificationStateReadbackError) Unwrap() error { return e.Err }
+
+// UpdateState applies all submitted fields in one scoped UPDATE, then reads the
+// response inside the same transaction. A failed write or readback rolls back;
+// this must never use Save/upsert, which could recreate a deleted notification.
+func (r *NotificationRepository) UpdateState(ctx context.Context, accountID, userID, id uint, change NotificationStateChange) (*domain.Notification, error) {
+	updates := map[string]any{}
+	if change.Read != nil {
+		updates["read_at"] = nil
+		if *change.Read {
+			updates["read_at"] = time.Now().UTC()
+		}
+	}
+	if change.SetSnoozedUntil {
+		updates["snoozed_until"] = change.SnoozedUntil
+	}
+
+	var notification *domain.Notification
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(updates) > 0 {
+			result := tx.Model(&domain.Notification{}).
+				Where("account_id = ? AND user_id = ? AND id = ?", accountID, userID, id).
+				Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return gorm.ErrRecordNotFound
+			}
+		}
+		var err error
+		notification, err = NewNotificationRepository(tx).FindByID(ctx, accountID, userID, id)
+		if err != nil && len(updates) > 0 {
+			return &NotificationStateReadbackError{Err: err}
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return notification, nil
+}
+
 func (r *NotificationRepository) MarkRead(ctx context.Context, accountID, userID, id uint) error {
 	now := time.Now().UTC()
 	res := r.db.WithContext(ctx).

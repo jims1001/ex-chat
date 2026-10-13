@@ -11,6 +11,10 @@ import (
 
 func testAccountRepositoryIAMBoundary(t *testing.T, openStore func(string) *gorm.DB) {
 	tenDB, iamDB := openStore("TEN"), openStore("IAM")
+	// Membership serialization requires the real TEN-owned parent account.
+	if err := tenDB.Create(&domain.Account{ID: 1, Name: "Isolated account"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	owned := domain.User{Name: "TEN IAM member", Email: "ten-iam@example.test"}
 	if err := iamDB.Create(&owned).Error; err != nil {
 		t.Fatal(err)

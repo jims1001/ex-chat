@@ -1129,7 +1129,7 @@ func TestMSGProviderStatusAndRetryEnforceMonotonicOwnerState(t *testing.T) {
 	retry.Input = map[string]any{}
 	for index := 0; index < 2; index++ {
 		response := call("/contracts/commands/msg.message.retry.v1", retry)
-		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"sent"`) {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"queued"`) {
 			t.Fatalf("retry=%d body=%s", response.Code, response.Body.String())
 		}
 	}
@@ -1143,7 +1143,7 @@ func TestMSGProviderStatusAndRetryEnforceMonotonicOwnerState(t *testing.T) {
 	_ = db.First(&delivered, messages[0].ID).Error
 	_ = db.First(&retried, messages[1].ID).Error
 	_ = db.First(&untouched, messages[2].ID).Error
-	if delivered.Status != domain.MessageStatusDelivered || retried.Status != domain.MessageStatusSent || untouched.Status != domain.MessageStatusFailed {
+	if delivered.Status != domain.MessageStatusDelivered || retried.Status != domain.MessageStatusQueued || untouched.Status != domain.MessageStatusFailed {
 		t.Fatalf("delivered=%s retried=%s untouched=%s", delivered.Status, retried.Status, untouched.Status)
 	}
 	var events int64
@@ -1251,6 +1251,7 @@ func TestMSGEmailSendQueuesOwnerDeliveryWithoutLeakingContent(t *testing.T) {
 	defer tenServer.Shutdown(context.Background())
 	db := newModuleTestDB(t, "MSG")
 	cfg := businessConfig("MSG")
+	cfg.OrdinaryEmail = OrdinaryEmailConfig{Enabled: true, From: "support@example.test", Host: "localhost", Port: "2525"}
 	cfg.Dependencies = map[string]DependencyConfig{"CON": {URL: "http://" + conAddress, Token: conCfg.AuthToken}, "TEN": {URL: "http://" + tenAddress, Token: tenCfg.AuthToken}}
 	newRuntime := func() Runtime {
 		runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
@@ -1284,7 +1285,7 @@ func TestMSGEmailSendQueuesOwnerDeliveryWithoutLeakingContent(t *testing.T) {
 	if err := db.First(&stored).Error; err != nil {
 		t.Fatal(err)
 	}
-	if stored.ToEmail != "customer@example.test" || stored.Subject != "Private subject" || stored.ContentText != "Private body" {
+	if stored.ToEmail != "customer@example.test" || stored.Subject != "Private subject" || stored.ContentText != "" {
 		t.Fatalf("stored=%+v", stored)
 	}
 	var journal domain.LocalChangeJournal
@@ -3467,6 +3468,13 @@ func TestCHNMixedVersionUpgradeRollbackPreservesTemplateFact(t *testing.T) {
 	if response := call(v1, "v1", "/contracts/commands/chn.template.manage.v1", command); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "survives_rollback") {
 		t.Fatalf("v1 replay status=%d body=%s", response.Code, response.Body.String())
 	}
+	var stored domain.InboxMessageTemplate
+	if err := db.Where("account_id = ? AND inbox_id = ?", 91, inbox.ID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "" || stored.SyncStatus != "" || stored.LastSyncAt != nil {
+		t.Fatalf("local command invented provider state: %+v", stored)
+	}
 	query := foundation.QueryEnvelope{QueryType: "chn.templates.list.v1", AccountID: 91, Actor: command.Actor, Filter: map[string]any{"inbox_id": inbox.ID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "name"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
 	if response := call(v1, "v1", "/contracts/queries/chn.templates.list.v1", query); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "survives_rollback") {
 		t.Fatalf("v1 read status=%d body=%s", response.Code, response.Body.String())
@@ -3514,9 +3522,9 @@ func TestCUSIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	if err := runtime.RegisterBusinessContracts(); err != nil {
 		t.Fatal(err)
 	}
-	// module_contracts.json declares seven commands and five queries for CUS.
-	if registry.Count() != 12 {
-		t.Fatalf("CUS registered contracts=%d want=12", registry.Count())
+	// module_contracts.json declares eight commands and six queries for CUS.
+	if registry.Count() != 14 {
+		t.Fatalf("CUS registered contracts=%d want=14", registry.Count())
 	}
 	if err := runtime.Readiness(); err != nil {
 		t.Fatalf("CUS runtime readiness: %v", err)
@@ -3558,9 +3566,9 @@ func TestCONIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	if err := runtime.RegisterBusinessContracts(); err != nil {
 		t.Fatal(err)
 	}
-	// module_contracts.json declares seven commands and four queries for CON.
-	if registry.Count() != 11 {
-		t.Fatalf("CON registered contracts=%d want=11", registry.Count())
+	// module_contracts.json declares nine commands and five queries for CON.
+	if registry.Count() != 14 {
+		t.Fatalf("CON registered contracts=%d want=14", registry.Count())
 	}
 	if err := runtime.Readiness(); err != nil {
 		t.Fatalf("CON runtime readiness: %v", err)
@@ -3581,8 +3589,8 @@ func TestMSGIndependentRuntimeRegistersCompleteDeclaredSurface(t *testing.T) {
 	if err := runtime.RegisterBusinessContracts(); err != nil {
 		t.Fatal(err)
 	}
-	if registry.Count() != 12 {
-		t.Fatalf("MSG registered contracts=%d want=12", registry.Count())
+	if registry.Count() != 13 {
+		t.Fatalf("MSG registered contracts=%d want=13", registry.Count())
 	}
 	if err := runtime.Readiness(); err != nil {
 		t.Fatalf("MSG runtime readiness: %v", err)
@@ -6384,5 +6392,98 @@ func TestNTFMixedVersionUpgradeRollbackPreservesNotification(t *testing.T) {
 	}
 	if response := call(v1, "v2", "/contracts/queries/ntf.notifications.list.v1", query); response.Code != http.StatusBadRequest {
 		t.Fatalf("rollback accepted v2=%d", response.Code)
+	}
+}
+
+func TestMSGStandaloneRetryLocalOutcomesRemainOutgoingOnlyAndAutomationSilent(t *testing.T) {
+	db := newModuleTestDB(t, "MSG")
+	cfg := businessConfig("MSG")
+	runtime := Runtime{Config: cfg, DB: db, Contracts: NewContractRegistry("MSG")}
+	if err := runtime.RegisterBusinessContracts(); err != nil {
+		t.Fatal(err)
+	}
+	handler := runtime.Handler()
+	for index, test := range []struct {
+		name, messageType, outcome string
+		private, deleted           bool
+		want                       int
+	}{
+		{name: "public outgoing queues", messageType: domain.MessageTypeOutgoing, outcome: domain.MessageStatusQueued, want: http.StatusOK},
+		{name: "private outgoing saves", messageType: domain.MessageTypeOutgoing, private: true, outcome: domain.MessageStatusSaved, want: http.StatusOK},
+		{name: "incoming still rejected", messageType: domain.MessageTypeIncoming, outcome: domain.MessageStatusFailed, want: http.StatusConflict},
+		{name: "activity still rejected", messageType: domain.MessageTypeActivity, outcome: domain.MessageStatusFailed, want: http.StatusConflict},
+		{name: "deleted still rejected", messageType: domain.MessageTypeOutgoing, deleted: true, outcome: domain.MessageStatusFailed, want: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+			message := domain.Message{AccountID: 91, ConversationID: 11, SenderType: domain.SenderTypeUser, SenderID: 7, MessageType: test.messageType, ContentType: domain.ContentTypeText, Content: "original standalone retry body", Private: test.private, Deleted: test.deleted, Status: domain.MessageStatusFailed, CreatedAt: created, UpdatedAt: created}
+			if err := db.Create(&message).Error; err != nil {
+				t.Fatal(err)
+			}
+			key := fmt.Sprintf("standalone-local-retry-%d", index)
+			command := foundation.CommandEnvelope{CommandID: key, CommandType: "msg.message.retry.v1", AccountID: 91, Actor: foundation.ContractActor{Type: "System", ID: "1", AuthSource: "module"}, Target: foundation.ContractTarget{Type: "message", ID: strconv.FormatUint(uint64(message.ID), 10)}, Input: map[string]any{}, IdempotencyKey: key, CorrelationID: key, CausationID: key, RequestedAt: time.Now().UTC(), TimeoutPolicy: foundation.TimeoutPolicy{TimeoutMS: 1000, OnTimeout: "query", StatusQuery: "msg.delivery_status.get.v1"}}
+			call := func() *httptest.ResponseRecorder {
+				return performContractRequest(handler, "/contracts/commands/msg.message.retry.v1", command, func(request *http.Request) {
+					request.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+					request.Header.Set(headerCaller, "API")
+					request.Header.Set(headerCorrelationID, command.CorrelationID)
+				})
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				response := call()
+				if response.Code != test.want {
+					t.Fatalf("retry=%d body=%s", response.Code, response.Body.String())
+				}
+				if test.want == http.StatusOK && !strings.Contains(response.Body.String(), `"status":"`+test.outcome+`"`) {
+					t.Fatalf("local outcome missing: %s", response.Body.String())
+				}
+			}
+			var stored domain.Message
+			if err := db.First(&stored, message.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.Status != test.outcome || stored.Content != message.Content || !stored.CreatedAt.Equal(message.CreatedAt) || stored.Private != message.Private {
+				t.Fatalf("unexpected retried row: %+v", stored)
+			}
+			var rows int64
+			if err := db.Model(&domain.Message{}).Where("account_id = ? AND id = ?", 91, message.ID).Count(&rows).Error; err != nil || rows != 1 {
+				t.Fatalf("message count=%d err=%v", rows, err)
+			}
+		})
+	}
+	var outboxes []domain.LocalChangeJournal
+	if err := db.Where("action = ?", "event_outbox").Find(&outboxes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(outboxes) != 2 {
+		t.Fatalf("expected two accepted retry status outboxes, got %d", len(outboxes))
+	}
+	for _, row := range outboxes {
+		var event foundation.EventEnvelope
+		if err := json.Unmarshal([]byte(row.AfterState), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.EventType != "msg.message_status.changed.v1" || event.Payload["operation"] != "retry" {
+			t.Fatalf("unexpected retry outbox: %+v", event)
+		}
+		if _, marked := event.Payload["retry_profile"]; marked {
+			t.Fatal("standalone retry must not gain the monolith AUT compatibility marker")
+		}
+		if event.Payload["status"] != domain.MessageStatusQueued && event.Payload["status"] != domain.MessageStatusSaved {
+			t.Fatalf("untruthful outbox status: %+v", event.Payload)
+		}
+	}
+	messages := repository.NewMessageRepositoryWithConversationPort(db, nil)
+	messages.SetAutomationCapture(true)
+	facts, err := messages.PendingAutomationFacts(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("unmarked standalone retry must stay excluded from AUT: %+v", facts)
+	}
+	var marked int64
+	if err := db.Model(&domain.LocalChangeJournal{}).Where("action IN ?", []string{"retry_attempt", "automation_trigger"}).Count(&marked).Error; err != nil || marked != 0 {
+		t.Fatalf("monolith retry journal rows=%d err=%v", marked, err)
 	}
 }

@@ -247,57 +247,9 @@ func (h *AuditHandler) ListSecurityAuditLogs(c *gin.Context) {
 
 // CreateAuditExport POST /api/v1/accounts/:account_id/audit_exports
 func (h *AuditHandler) CreateAuditExport(c *gin.Context) {
-	rawAccountID, _ := c.Get(middleware.ContextAccountID)
-	accountID := rawAccountID.(uint)
-
-	var req struct {
-		Since       string `json:"since"`
-		Until       string `json:"until"`
-		ObjectTypes string `json:"object_types"`
-		Actions     string `json:"actions"`
-		Format      string `json:"format"`
-		Purpose     string `json:"purpose"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	var since, until time.Time
-	if req.Since != "" {
-		since, _ = time.Parse(time.RFC3339, req.Since)
-	}
-	if req.Until != "" {
-		until, _ = time.Parse(time.RFC3339, req.Until)
-	}
-	if req.Format == "" {
-		req.Format = "json"
-	}
-	if req.Purpose == "" {
-		req.Purpose = "compliance_review"
-	}
-
-	export := domain.AuditExport{
-		AccountID:   accountID,
-		Status:      "completed",
-		Since:       since,
-		Until:       until,
-		ObjectTypes: req.ObjectTypes,
-		Actions:     req.Actions,
-		Format:      req.Format,
-		Purpose:     req.Purpose,
-		RecordCount: 10,
-	}
-
-	if err := h.journalRepo.CreateAuditExport(&export); err != nil {
-		response.InternalError(c, "Failed to create audit export")
-		return
-	}
-
-	// 记录导出访问日志（LOG-05 Section 9）
-	rawUserID, _ := c.Get(middleware.ContextUserID)
-	if rawUserID != nil {
-		_ = h.journalRepo.RecordAccessLog(accountID, rawUserID.(uint), "export_audit", export.ExportID, req.Purpose, c.ClientIP())
-	}
-
-	c.JSON(http.StatusAccepted, gin.H{"data": export})
+	// No export worker or artifact store backs this endpoint. Do not accept a
+	// job that cannot run or manufacture completion metadata.
+	response.Error(c, http.StatusNotImplemented, "Audit export generation is not implemented")
 }
 
 // GetAuditExport GET /api/v1/accounts/:account_id/audit_exports/:export_id
@@ -312,42 +264,24 @@ func (h *AuditHandler) GetAuditExport(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, export)
+	// Preserve historical stored claims without presenting them as execution
+	// evidence or a usable artifact. Legacy rows have no execution provenance.
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    export,
+		"meta": gin.H{
+			"record_semantics":    "historical_unverified_claim",
+			"execution_available": false,
+			"execution_proven":    false,
+			"artifact_available":  false,
+		},
+	})
 }
 
 // CreateIntegrityVerification POST /api/v1/accounts/:account_id/audit_integrity/verifications
 func (h *AuditHandler) CreateIntegrityVerification(c *gin.Context) {
-	rawAccountID, _ := c.Get(middleware.ContextAccountID)
-	accountID := rawAccountID.(uint)
-
-	var req struct {
-		PartitionID  string `json:"partition_id"`
-		CheckpointID string `json:"checkpoint_id"`
-		Purpose      string `json:"purpose"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	if req.PartitionID == "" {
-		req.PartitionID = "default"
-	}
-
-	v := domain.IntegrityVerification{
-		AccountID:     accountID,
-		PartitionID:   req.PartitionID,
-		CheckpointID:  req.CheckpointID,
-		Verified:      true,
-		GapCount:      0,
-		ConflictCount: 0,
-		Status:        "completed",
-		Details:       "All cryptographic hash chains and checkpoints verified successfully",
-	}
-
-	if err := h.journalRepo.CreateIntegrityVerification(&v); err != nil {
-		response.InternalError(c, "Failed to create integrity verification")
-		return
-	}
-
-	c.JSON(http.StatusCreated, gin.H{"data": v})
+	// Persisted hashes alone are not an implemented chain/checkpoint verifier.
+	response.Error(c, http.StatusNotImplemented, "Audit integrity verification is not implemented")
 }
 
 // GetIntegrityVerification GET /api/v1/accounts/:account_id/audit_integrity/verifications/:verification_id
@@ -362,7 +296,15 @@ func (h *AuditHandler) GetIntegrityVerification(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, v)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    v,
+		"meta": gin.H{
+			"record_semantics":    "historical_unverified_claim",
+			"execution_available": false,
+			"execution_proven":    false,
+		},
+	})
 }
 
 // ListIntegrityVerifications GET /api/v1/accounts/:account_id/audit_integrity/verifications
@@ -380,7 +322,10 @@ func (h *AuditHandler) ListIntegrityVerifications(c *gin.Context) {
 		"data":    list,
 		"payload": list,
 		"meta": gin.H{
-			"total": len(list),
+			"total":               len(list),
+			"record_semantics":    "historical_unverified_claim",
+			"execution_available": false,
+			"execution_proven":    false,
 		},
 	})
 }

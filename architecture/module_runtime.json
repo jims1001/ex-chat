@@ -45,9 +45,12 @@
       "capabilityDependencies": [],
       "asynchronousDependencies": [],
       "storedModels": [
+        "InvitationIdentity",
         "MFAProfile",
         "PasswordResetToken",
         "RevokedToken",
+        "SAMLAuthnRequest",
+        "SAMLReplay",
         "SAMLSetting",
         "User",
         "UserSession"
@@ -68,7 +71,19 @@
       "implementedIndependentEvents": [
         "iam.identity.changed.v1 outbox"
       ],
-      "mixedVersionUpgradeRollbackVerified": true
+      "mixedVersionUpgradeRollbackVerified": true,
+      "samlSecurityPrimitives": {
+        "scope": "independent storage and verification primitives; login endpoints remain HTTP 503",
+        "requestSnapshotCodec": "iam.saml_request.v1",
+        "replaySnapshotCodec": "iam.saml_replay.v1",
+        "restorePolicy": "invalidate restored pending requests; retain target and checkpoint replay facts; fail closed on conflicting pairs",
+        "contract": "architecture/saml-security-primitives.md"
+      },
+      "invitationRecovery": {
+        "snapshotCodec": "iam.invitation_identity.v1",
+        "restorePolicy": "preserve create-once activation checkpoints with matching owner identity; checkpoints never authorize login or tenant membership",
+        "contract": "architecture/agent-invitation-recovery.md"
+      }
     },
     {
       "module": "TEN",
@@ -83,6 +98,7 @@
       "storedModels": [
         "Account",
         "AccountUser",
+        "AgentInvitation",
         "CustomRole",
         "Onboarding",
         "Team",
@@ -114,7 +130,12 @@
       "mixedVersionUpgradeRollbackVerified": true,
       "ownerBackupRestoreVerified": true,
       "projectionRebuildVerified": true,
-      "recoveryReadinessGateVerified": true
+      "recoveryReadinessGateVerified": true,
+      "invitationRecovery": {
+        "snapshotCodec": "ten.agent_invitation.v1",
+        "restorePolicy": "invalidate every restored invitation proof, including consumed-proof reconciliation; preserve consumed and revoked facts; no restored email proof grants membership",
+        "contract": "architecture/agent-invitation-recovery.md"
+      }
     },
     {
       "module": "ENT",
@@ -141,8 +162,20 @@
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedIndependentQueries": [
-        "ent.capability.check.v1"
-      ]
+        "ent.capability.check.v1",
+        "ent.features.list.v1"
+      ],
+      "persistedFeatureFlagsRead": {
+        "contract": "architecture/ent-persisted-feature-flags.md",
+        "data": "stored account feature_name to enabled boolean map only",
+        "authority": "existing authenticated allowed module caller supplies account scope; actor claims confer no global authority",
+        "bounds": {
+          "rows": 512,
+          "keyBytes": 400,
+          "dataJSONBytes": 65536
+        },
+        "sideEffects": false
+      }
     },
     {
       "module": "SYS",
@@ -170,7 +203,14 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "sys.configuration.get.v1"
+      ],
+      "publicConfigurationSnapshot": {
+        "scope": "persisted public-branding allowlist only; no privileged variant or effective-value resolution",
+        "contract": "architecture/sys-public-configuration.md"
+      }
     },
     {
       "module": "CHN",
@@ -186,6 +226,7 @@
       ],
       "asynchronousDependencies": [],
       "storedModels": [
+        "ChannelConnection",
         "Inbox",
         "InboxMember",
         "InboxMessageTemplate"
@@ -225,7 +266,18 @@
       "eventDeliveryRecoveryVerified": true,
       "ownerBackupRestoreVerified": true,
       "postgresMultiInstanceCommandVerified": true,
-      "mixedVersionUpgradeRollbackVerified": true
+      "mixedVersionUpgradeRollbackVerified": true,
+      "localInboxTranscriptSMTP": {
+        "port": "domain.InboxTranscriptSMTP",
+        "factory": "service.NewInboxTranscriptSMTP",
+        "repository": "service.InboxTranscriptSMTPRepository.FindInboxSMTP",
+        "composition": "cmd/server only",
+        "remoteContract": null,
+        "credentialOwner": "CHN",
+        "credentialsReturnedToMSG": false,
+        "routeIdentity": "tenant + Inbox + CreatedAt + selected SMTP route and fixed policy; no password",
+        "recheck": "fresh owner-local read on every attempt and immediately before DATA marker; no atomic cross-owner revocation"
+      }
     },
     {
       "module": "CUS",
@@ -239,6 +291,7 @@
       ],
       "asynchronousDependencies": [],
       "storedModels": [
+        "ChannelContactIdentity",
         "Company",
         "CompanyNote",
         "Contact",
@@ -353,6 +406,7 @@
       ],
       "asynchronousDependencies": [],
       "storedModels": [
+        "ChannelConversationSession",
         "Conversation",
         "ConversationLabel",
         "ConversationParticipant"
@@ -416,9 +470,13 @@
       "asynchronousDependencies": [],
       "storedModels": [
         "Attachment",
+        "ChannelMessageReceipt",
         "DraftMessage",
         "EmailLog",
-        "Message"
+        "Message",
+        "OrdinaryEmailAttempt",
+        "OrdinaryEmailIntent",
+        "OutboundMessageAttempt"
       ],
       "localJournal": "LocalChangeJournal",
       "failurePolicy": {
@@ -463,7 +521,53 @@
       "postgresMultiInstanceCommandVerified": true,
       "mixedVersionUpgradeRollbackVerified": true,
       "ownerBackupRestoreVerified": true,
-      "recoveryReadinessGateVerified": true
+      "recoveryReadinessGateVerified": true,
+      "commandInputRestrictions": {
+        "msg.email.send.v1": {
+          "allowedEmailTypes": [
+            "transcript",
+            "reset_password",
+            "notification"
+          ],
+          "rejectedEmailTypes": [
+            "confirmation"
+          ],
+          "confirmationTransport": "dedicated_direct_submission",
+          "rejectBeforeReceiptReplay": true,
+          "inboxRoute": "external command is global-only; reject caller route and reserved Inbox identity before receipt replay"
+        }
+      },
+      "ordinaryEmailQueue": {
+        "producer": "msg.email.send.v1",
+        "managedEmailTypes": [
+          "transcript",
+          "notification"
+        ],
+        "historicalAdoption": false,
+        "workerEnablement": "ORDINARY_EMAIL_WORKER_ENABLED=true",
+        "defaultEnabled": false,
+        "unknownAutomaticRetry": false,
+        "sentMeaning": "SMTP accepted, not delivered",
+        "snapshotRestore": "nonterminal intents quarantined unknown; no automatic dispatch",
+        "manualRetry": "existing legacy retry excludes managed queue",
+        "cancellation": "bounded worker context; account anonymization refuses active submission",
+        "inboxTranscript": {
+          "admissionEnablement": "INBOX_TRANSCRIPT_QUEUE_ENABLED=true plus matching Account/Widget producer and ordinary worker/global SMTP prerequisite",
+          "defaultEnabled": false,
+          "routePort": "domain.InboxTranscriptSMTP.SendInboxTranscript",
+          "routePersistence": "private canonical string owner identity + versioned fingerprint; no credentials",
+          "receiptIdentity": "internal-only acct-inbox-v1 / wdg-inbox-v1 route-bound command identity",
+          "producerDisable": "blocks fresh admissions only; accepted safe work remains on frozen route",
+          "workerDisable": "pauses all managed delivery",
+          "standaloneModuleServer": "adapter absent; worker does not claim or mutate Inbox rows",
+          "snapshotCodec": "msg.ordinary_email_intent.v4; strict original global v1-v3 kept",
+          "snapshotRestore": "pending/leased/submitting unknown; no resend; no coherent cross-owner snapshot",
+          "routeInvalidation": "fail before DATA with no global fallback; no atomic revocation after final CHN check",
+          "historicalEmailLogAdoption": false,
+          "mixedBinaryRolloutSupported": false,
+          "details": "architecture/inbox-transcript-queue.md"
+        }
+      }
     },
     {
       "module": "RTE",
@@ -687,7 +791,10 @@
       "storedModels": [
         "AccountBilling",
         "AccountSubscription",
+        "BillingCustomer",
         "Order",
+        "PaymentCheckoutIntent",
+        "PaymentWebhookReceipt",
         "SubscriptionPlan"
       ],
       "localJournal": "LocalChangeJournal",
@@ -747,6 +854,7 @@
       "capabilityDependencies": [
         "IAM",
         "TEN",
+        "SYS",
         "CON"
       ],
       "asynchronousDependencies": [
@@ -842,12 +950,30 @@
         "recovery": "恢复计划和逐目标状态"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "partial-contact-merge-consumer",
+      "acceptanceStatus": "partial-canned-response-maintenance-read-preview-and-contact-merge-consumer",
       "runtimeShellImplemented": true,
       "contractTransportImplemented": true,
       "implementedConsumedEvents": [
         "cus.contact.merged.v1"
-      ]
+      ],
+      "implementedIndependentQueries": [
+        "ops.canned_response.get.v1",
+        "ops.canned_response.preview.v1"
+      ],
+      "cannedResponseReadContract": "architecture/ops-canned-response-read.md",
+      "remainingScope": [
+        "Explicit legacy version adoption if required; no automatic takeover",
+        "Canned response UI integration and separately authorized MSG sending",
+        "Independent Macro/Campaign contracts and full OPS acceptance"
+      ],
+      "implementedIndependentCommands": [
+        "ops.canned_response.manage.v1"
+      ],
+      "implementedEmittedEvents": [
+        "ops.canned_response.changed.v1"
+      ],
+      "cannedResponseManagementContract": "architecture/ops-canned-response-management.md",
+      "cannedResponsePreviewContract": "architecture/ops-canned-response-preview.md"
     },
     {
       "module": "AIC",
@@ -889,7 +1015,36 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "aic.usage.get.v1",
+        "aic.assistant.get.v1"
+      ],
+      "persistedUsageRead": {
+        "contract": "architecture/aic-persisted-usage.md",
+        "data": "nine persisted AIUsageQuota fields for the envelope account only; stored application counters, not provider billing or entitlements",
+        "authority": "existing authenticated allowed module caller asserts account scope; gateway must authenticate current tenant access; actor claims confer no global authority",
+        "bounds": {
+          "rowsRead": 2,
+          "timestampBytes": 64,
+          "dataJSONBytes": 4096
+        },
+        "generationResultPollingImplemented": false,
+        "sideEffects": false
+      },
+      "boundAssistantRead": {
+        "contract": "architecture/aic-bound-assistant-read.md",
+        "data": "stored inbox-bound assistant id/name or null, without configuration or generation claims",
+        "adoption": "shared AIC owner primitive used by both existing gateway handlers and the module query adapter; not a remote-module cutover",
+        "authority": "authenticated allowlisted module caller asserts account scope; gateway retains end-user tenant and current conversation/inbox authorization",
+        "bounds": {
+          "rowsRead": 2,
+          "nameCharacters": 255,
+          "nameBytes": 1020
+        },
+        "foreignOwnerReads": false,
+        "sideEffects": false
+      }
     },
     {
       "module": "MIG",
@@ -966,7 +1121,11 @@
       "independentRuntimeImplemented": false,
       "acceptanceStatus": "pending",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentQueries": [
+        "rpt.report.get.v1"
+      ],
+      "storedReportingEventsReadProfile": "bounded existing owner rows; exact name/conversation filters; 25 results / 100 scanned plus lookahead; no generation, metrics or exports"
     },
     {
       "module": "SRH",
@@ -997,9 +1156,24 @@
         "recovery": "索引检查点重建"
       },
       "independentRuntimeImplemented": false,
-      "acceptanceStatus": "pending",
+      "acceptanceStatus": "partial-saved-filter-runtime",
       "runtimeShellImplemented": true,
-      "contractTransportImplemented": true
+      "contractTransportImplemented": true,
+      "implementedIndependentCommands": [
+        "srh.custom_filter.manage.v1 (private create, partial update, versioned delete)"
+      ],
+      "implementedIndependentQueries": [
+        "srh.custom_filter.get.v1 (private detail and complete descending-ID list)"
+      ],
+      "implementedIndependentEvents": [
+        "srh.custom_filter.changed.v1 (minimal owner outbox)"
+      ],
+      "savedFilterContract": "architecture/srh-saved-filters.md",
+      "remainingScope": [
+        "Search and index capabilities",
+        "REST adoption and legacy-row policy",
+        "Full independent SRH acceptance"
+      ]
     },
     {
       "module": "ORC",
@@ -1102,7 +1276,8 @@
         "CHN",
         "CUS",
         "CON",
-        "MSG"
+        "MSG",
+        "MED"
       ],
       "asynchronousDependencies": [
         "API",
@@ -1245,5 +1420,95 @@
     "readinessGate": "matching recovery_complete marker required when MODULE_RECOVERY_GENERATION is set",
     "foreignTableRejected": true,
     "verifiedModule": "TEN"
+  },
+  "automationLocalActionParity": {
+    "defaultMode": "legacy",
+    "activation": "explicit durable opt-in only",
+    "runner": "one frozen owner step per lease; receipt reconciliation before cancellation",
+    "ownerContracts": {
+      "CON": [
+        [
+          "con.automation.apply.v1",
+          "con.automation.message.prepare.v1"
+        ],
+        [
+          "con.automation.message_authorization.get.v1"
+        ]
+      ],
+      "CUS": [
+        [
+          "cus.automation.label.resolve.v1"
+        ],
+        []
+      ],
+      "MSG": [
+        [
+          "msg.automation.message.create.v1"
+        ],
+        []
+      ]
+    },
+    "publicMessages": "local queued rows only; no provider transmission or sent/delivered claim",
+    "privateNotes": "local saved outgoing private rows; bodies excluded from automation status and events",
+    "versionProof": "status/priority and message preparation +1; CON no-op same version; CUS/MSG steps carry previous CON version",
+    "snapshotCodec": "aut.execution.v3 adds frozen failure policy and logical action grouping; v1/v2 restores keep prior admission and stop decisions",
+    "synchronousEdges": [
+      "AUT -> CON",
+      "AUT -> CUS",
+      "AUT -> MSG",
+      "CON -> TEN",
+      "CON -> CUS",
+      "MSG -> CON"
+    ],
+    "samePoolSafety": "foreign owner guards execute before local receipt transaction, existing receipts checked first",
+    "sources": [
+      "internal/modruntime/aut_action_plan.go",
+      "internal/modruntime/aut_failure_policy.go",
+      "internal/modruntime/aut_action_dispatch.go",
+      "internal/modruntime/aut_owner_actions.go",
+      "internal/modruntime/aut_message_actions.go",
+      "internal/modruntime/aut_runner.go",
+      "internal/modruntime/aut_causality.go",
+      "internal/modruntime/aut_sibling_conditions.go",
+      "internal/modruntime/automation_snapshot.go",
+      "internal/modruntime/aut_customer_actions.go"
+    ],
+    "sourceOwnership": "architecture/automation_action_sources.json"
+  },
+  "automationTriggerParity": {
+    "phase": "phase11",
+    "defaultMode": "legacy",
+    "contract": "architecture/automation-trigger-parity.md",
+    "statusAliases": [
+      "conversation_opened",
+      "conversation_resolved"
+    ],
+    "createdOpen": "conversation_created only",
+    "causalOrdering": "breadth-first; complete terminal origin batch; parent rule/action order per generation; no live rebase",
+    "identity": "original owner envelope plus unique owner-command cascade claim and immutable AUT fact receipt",
+    "batchManifest": "aut.fact_batch.v1 for aut.fact.v2 receipts",
+    "paging": "opaque owner-bound fixed-horizon journal cursor; no shared mutable cursor",
+    "newHTTPContracts": [],
+    "sources": [
+      "internal/modruntime/aut_cascade.go",
+      "internal/modruntime/aut_bridge.go",
+      "internal/repository/message_automation.go",
+      "internal/repository/conversation_automation.go",
+      "internal/repository/conversation_automation_transition.go",
+      "internal/repository/automation_fact_page.go"
+    ]
+  },
+  "automationFailureContinuation": {
+    "phase": "phase13",
+    "defaultMode": "legacy",
+    "newPlanPolicy": "continue_definite.v1",
+    "snapshotCodec": "aut.execution.v3",
+    "legacySnapshotPolicy": "preserve v1/v2 stop decisions",
+    "logicalActionIndex": "expanded steps and results retain zero-based source action index",
+    "unknownOutcome": "reconcile same frozen owner request before any continuation",
+    "proof": "successful receipt transitions only; failed/skipped carry no invented version",
+    "aggregate": "owner-step partial progress, not logical completion or provider delivery",
+    "historyCompatibility": "G16 separate; no broad DTO adapter",
+    "document": "architecture/automation-failure-continuation.md"
   }
 }

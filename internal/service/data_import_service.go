@@ -371,13 +371,17 @@ func (s *DataImportService) prevalidateJSON(accountID uint, importType, rawJSON 
 // ExecuteImport processes raw data for an import task, tracking errors and skipped items
 func (s *DataImportService) ExecuteImport(ctx context.Context, accountID uint, imp *domain.DataImport) error {
 	imp.Status = "processing"
-	_ = s.db.Save(imp)
+	if err := s.db.Save(imp).Error; err != nil {
+		return err
+	}
 
 	rawData := strings.TrimSpace(imp.RawData)
 	if rawData == "" {
 		imp.Status = "failed"
 		imp.ErrorsJSON = `[{"line": 0, "reason": "No data to import"}]`
-		_ = s.db.Save(imp)
+		if err := s.db.Save(imp).Error; err != nil {
+			return err
+		}
 		return errors.New("no data to import")
 	}
 

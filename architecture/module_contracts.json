@@ -24,7 +24,12 @@
         "iam.session.revoke.v1",
         "iam.user.manage.v1",
         "iam.enterprise_record.manage.v1",
-        "iam.account_access.revoke.v1"
+        "iam.account_access.revoke.v1",
+        "iam.mfa.manage.v1",
+        "iam.password_reset.issue.v1",
+        "iam.password_reset.consume.v1",
+        "iam.invitation.activate.v1",
+        "iam.invitation.authorize.v1"
       ],
       "queries": [
         "iam.identity.get.v1",
@@ -37,7 +42,8 @@
         "iam.user.created.v1",
         "iam.session.revoked.v1",
         "iam.identity.changed.v1",
-        "iam.enterprise_record.changed.v1"
+        "iam.enterprise_record.changed.v1",
+        "iam.invitation_authorization.changed.v1"
       ]
     },
     {
@@ -48,19 +54,26 @@
         "ten.role.change.v1",
         "ten.team.manage.v1",
         "ten.account_deletion.schedule.v1",
-        "ten.account_deletion.finalize.v1"
+        "ten.account_deletion.finalize.v1",
+        "ten.invitation.issue.v1",
+        "ten.invitation.delivery_record.v1",
+        "ten.invitation.revoke.v1",
+        "ten.invitation.accept.v1"
       ],
       "queries": [
         "ten.account.get.v1",
         "ten.members.list.v1",
         "ten.permissions.check.v1",
-        "ten.account_deletion_status.get.v1"
+        "ten.account_deletion_status.get.v1",
+        "ten.invitation.get.v1",
+        "ten.invitations.list.v1"
       ],
       "events": [
         "ten.account.changed.v1",
         "ten.membership.changed.v1",
         "ten.role.changed.v1",
-        "ten.team.changed.v1"
+        "ten.team.changed.v1",
+        "ten.invitation.changed.v1"
       ]
     },
     {
@@ -132,10 +145,12 @@
         "cus.contact.delete.v1",
         "cus.company.update.v1",
         "cus.label.manage.v1",
-        "cus.account_contacts.anonymize.v1"
+        "cus.account_contacts.anonymize.v1",
+        "cus.automation.label.resolve.v1"
       ],
       "queries": [
         "cus.contact.get.v1",
+        "cus.automation.number_definition.get.v1",
         "cus.company.get.v1",
         "cus.label.get.v1",
         "cus.identity.resolve.v1",
@@ -180,13 +195,16 @@
         "con.status.change.v1",
         "con.priority.change.v1",
         "con.participant.manage.v1",
-        "con.account_conversations.anonymize.v1"
+        "con.account_conversations.anonymize.v1",
+        "con.automation.apply.v1",
+        "con.automation.message.prepare.v1"
       ],
       "queries": [
         "con.conversation.get.v1",
         "con.conversations.list.v1",
         "con.status_history.get.v1",
-        "con.account_deletion_status.get.v1"
+        "con.account_deletion_status.get.v1",
+        "con.automation.message_authorization.get.v1"
       ],
       "events": [
         "con.conversation.created.v1",
@@ -199,12 +217,14 @@
       "name": "MSG",
       "commands": [
         "msg.message.create.v1",
+        "msg.message.create_from_canned_preview.v1",
         "msg.message.update.v1",
         "msg.provider_status.update.v1",
         "msg.message.retry.v1",
         "msg.read_position.update.v1",
         "msg.email.send.v1",
-        "msg.account_messages.anonymize.v1"
+        "msg.account_messages.anonymize.v1",
+        "msg.automation.message.create.v1"
       ],
       "queries": [
         "msg.messages.list.v1",
@@ -410,12 +430,15 @@
         "ops.campaign.pause.v1",
         "ops.campaign.cancel.v1",
         "ops.canned_response.manage.v1",
+        "ops.canned_response.prepare_send.v1",
+        "ops.canned_response.send.v1",
         "ops.account_campaigns.cancel.v1"
       ],
       "queries": [
         "ops.macro.get.v1",
         "ops.campaign.get.v1",
         "ops.canned_response.get.v1",
+        "ops.canned_response.preview.v1",
         "ops.recipient_status.get.v1",
         "ops.account_deletion_status.get.v1"
       ],

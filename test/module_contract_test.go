@@ -67,7 +67,9 @@ func TestModuleContractRegistryIsCompleteAndFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedSHA = "cd93e0bfb4e03917b569edb9e5ba48535474f3455552265d29ec89ed4181476a"
+	// ARCH-04 remains REOPENED. Phase68 adds the reviewed OPS prepare/send
+	// local orchestration commands; no full runtime or OPS acceptance is implied.
+	const approvedSHA = "69e93cc823207e9406e90f49a509c9f64aa796e05973d344b4b3d8233d2e959e"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedSHA {
 		t.Fatalf("module contracts changed (%s); reopen ARCH-04 and approve a new fingerprint", got)
 	}
@@ -239,6 +241,11 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 		ProviderBindings                                   []binding                                                                                `json:"providerBindings"`
 		ComponentBindings                                  []struct{ Symbol, Provider, ReadQuery, WriteCommand, ReplicaEvent string }               `json:"componentBindings"`
 		EdgeBindings                                       []struct{ Consumer, Provider, File, Symbol, Method, Use, Contract, ReplicaEvent string } `json:"edgeBindings"`
+		LocalFirebaseConfigOwnerPortBindings               []architectureLocalFirebaseConfigOwnerPort                                               `json:"localFirebaseConfigOwnerPortBindings"`
+		LocalTextOwnerPortBindings                         []architectureLocalTextOwnerPort                                                         `json:"localTextOwnerPortBindings"`
+		LocalOwnerPortBindings                             []architectureLocalOwnerPort                                                             `json:"localOwnerPortBindings"`
+		LocalSummaryOwnerPortBindings                      []architectureLocalCountOwnerPort                                                        `json:"localSummaryOwnerPortBindings"`
+		LocalCountOwnerPortBindings                        []architectureLocalCountOwnerPort                                                        `json:"localCountOwnerPortBindings"`
 	}
 	raw, err := os.ReadFile("../architecture/collaboration_contracts.json")
 	if err != nil {
@@ -247,8 +254,29 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(raw, &collaboration); err != nil {
 		t.Fatal(err)
 	}
-	// ARCH-04 remains REOPENED; the next ARCH-08 evidence records custom tool order reads through BIL.
-	const approvedCollaborationSHA = "166ba30f70139538c3036687c042874f82118023858b74fb8be9dbf89b504c66"
+	// Confirmation adds exact IAM proof activation and MSG configuration-check bindings.
+	// ARCH-04 remains REOPENED. Invitations add API-owned IAM/TEN/mail saga
+	// facade bindings and remove tenant-handler global identity writes.
+	// Phase9 adds explicit creation/reopen owner workflow facade bindings.
+	// Phase14 changes only the account history AUT read adapters: paged list and explicit logical view.
+	// Phase16 adds the permissioned account saved-rule AUT read adapter; no module contract changes.
+	// Phase18 names the explicit accepted-retry facade; the existing MSG retry/status contracts remain owned.
+	// Outbound text registers MSG transport orchestration and its split API/RTM entry methods under existing contracts.
+	// Phase25 names the owner-scoped REST compatibility writers explicitly:
+	// CreateLegacy binds identity/version; UpdateLegacy and DeleteLegacy fence
+	// versioned SRH rows. Existing SRH owner/capability/event bindings stay intact.
+	// Call metadata GETs compose current owner facts under existing read contracts.
+	// Local template endpoints use the existing CHN summary read for owner validation.
+	// Account transcript preparation exposes MSG sender-provenance/render reads under existing owner contracts.
+	// Phase41 registers the explicit MSG-to-CHN local SMTP capability separately from remote contracts.
+	// Phase44 registers bounded RPT-to-CON/MSG local count capabilities without remote contract aliases.
+	// Phase45 separately registers the optional-bound MSG summary count capability.
+	// Phase47 generalizes the same local count capabilities with an explicit UTC grouping enum.
+	// Phase48 separates the local MSG-to-CHN text capability from provider credentials and remote contracts.
+	// Phase51 registers the private local NTF-to-SYS Firebase pair without a remote credential contract.
+	// Phase60 maps the single scoped NTF state writer instead of five obsolete handler calls.
+	// Phase61 adds checked SLA results without changing any method key or owned contract.
+	const approvedCollaborationSHA = "b48301515a3601ead48a10da3d9979c6060cbfba544357c66b1e9591abd03588"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedCollaborationSHA {
 		t.Fatalf("collaboration contracts changed (%s); reopen ARCH-04", got)
 	}
@@ -305,6 +333,23 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	if err := json.Unmarshal(depRaw, &sources); err != nil {
 		t.Fatal(err)
 	}
+	// These are local capabilities, not public remote query/command aliases. Their
+	// exact source/owner/composition edge is verified by the dependency guard.
+	if !reflect.DeepEqual(collaboration.LocalOwnerPortBindings, sources.LocalOwnerPorts) {
+		t.Fatal("local owner-port collaboration differs from dependency sources")
+	}
+	if !reflect.DeepEqual(collaboration.LocalSummaryOwnerPortBindings, sources.LocalSummaryOwnerPorts) {
+		t.Fatal("summary owner-port collaboration inventory differs from dependency sources")
+	}
+	if !reflect.DeepEqual(collaboration.LocalCountOwnerPortBindings, sources.LocalCountOwnerPorts) {
+		t.Fatal("local count owner-port collaboration differs from dependency sources")
+	}
+	if !reflect.DeepEqual(collaboration.LocalTextOwnerPortBindings, sources.LocalTextOwnerPorts) {
+		t.Fatal("local text owner-port collaboration differs from dependency sources")
+	}
+	if !reflect.DeepEqual(collaboration.LocalFirebaseConfigOwnerPortBindings, sources.LocalFirebaseConfigOwnerPorts) {
+		t.Fatal("Firebase configuration owner-port collaboration differs from dependency sources")
+	}
 	observedKeys, resolvedKeys, usedComponents := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, edge := range sources.ObservedCode {
 		if edge.Provider == "L0" {
@@ -323,13 +368,32 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 		t.Fatal("observed source keys and resolved contract keys differ")
 	}
 	sourceMethodKeys := map[string]bool{}
-	fieldPattern := regexp.MustCompile(`(?m)^\s*([a-zA-Z]\w*)\s+\*?(?:(?:repository|service)\.)?([A-Z]\w*(?:Repository|Service))\b`)
+	fieldPattern := regexp.MustCompile(`(?m)^\s*([a-zA-Z]\w*)\s+\*?(?:(?:repository|service)\.)?([A-Z]\w*(?:Repository|Service|Coordinator))\b`)
+	// Split handler methods still use fields declared in their receiver's
+	// companion file. Include those fields so moving a method cannot silently
+	// remove a real cross-owner edge from the source inventory.
+	structPattern := regexp.MustCompile(`(?ms)^type ([A-Z]\w*) struct \{(.*?)^\}`)
+	receiverPattern := regexp.MustCompile(`func \(\s*\w+\s+\*?([A-Z]\w*)\s*\)\s+[A-Z]\w*\s*\(`)
+	receiverFields := map[string][][]string{}
 	for _, scope := range sources.ScanScopes {
 		code, err := os.ReadFile("../" + scope.File)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, field := range fieldPattern.FindAllStringSubmatch(string(code), -1) {
+		for _, typ := range structPattern.FindAllStringSubmatch(string(code), -1) {
+			receiverFields[typ[1]] = fieldPattern.FindAllStringSubmatch(typ[2], -1)
+		}
+	}
+	for _, scope := range sources.ScanScopes {
+		code, err := os.ReadFile("../" + scope.File)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields := fieldPattern.FindAllStringSubmatch(string(code), -1)
+		for _, receiver := range receiverPattern.FindAllStringSubmatch(string(code), -1) {
+			fields = append(fields, receiverFields[receiver[1]]...)
+		}
+		for _, field := range fields {
 			fieldName, symbol := field[1], field[2]
 			provider, ok := sources.RepositoryOwners[symbol]
 			if !ok || provider == "L0" || provider == scope.Consumer {
@@ -348,15 +412,30 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 	}
 	bindingMethodKeys := map[string]bool{}
 	semanticContracts := map[string][3]string{
-		"ContactRepository.FindOrCreateContactInbox": {"write", "cus.contact.create.v1", "cus.contact.created.v1"},
-		"LabelRepository.FindOrCreateByTitle":        {"write", "cus.label.manage.v1", "cus.label.changed.v1"},
-		"IntegrationRepository.Disable":              {"write", "ext.plugin.disable.v1", "ext.plugin.disabled.v1"},
-		"OrderRepository.Update":                     {"write", "bil.order.update.v1", "bil.order.changed.v1"},
-		"MessageRepository.SaveDraft":                {"write", "msg.message.update.v1", "msg.message.changed.v1"},
-		"MessageRepository.DeleteDraft":              {"write", "msg.message.update.v1", "msg.message.deleted.v1"},
-		"MessageRepository.UpdateContentAttributes":  {"write", "msg.message.update.v1", "msg.message.changed.v1"},
+		"SLAService.GetConversationSLADeadlines":         {"read", "rpt.sla.get.v1", "rpt.sla.applied.v1"},
+		"SLAService.EvaluateConversation":                {"write", "rpt.sla.apply.v1", "rpt.sla.applied.v1"},
+		"SLAService.EvaluateAccountSLAs":                 {"write", "rpt.sla.apply.v1", "rpt.sla.applied.v1"},
+		"ConversationRepository.UpdateSLATiming":         {"write", "con.conversation.update.v1", "con.conversation.changed.v1"},
+		"NotificationRepository.UpdateState":             {"write", "ntf.notification.update.v1", "ntf.notification.created.v1"},
+		"ChannelIAMRepository.ConfirmUserByToken":        {"write", "iam.user.manage.v1", "iam.identity.changed.v1"},
+		"ChannelIAMRepository.GenerateConfirmationToken": {"write", "iam.user.manage.v1", "iam.identity.changed.v1"},
+		"ChannelIAMRepository.ActivateConfirmationToken": {"write", "iam.user.manage.v1", "iam.identity.changed.v1"},
+		"ContactRepository.FindOrCreateContactInbox":     {"write", "cus.contact.create.v1", "cus.contact.created.v1"},
+		"LabelRepository.FindOrCreateByTitle":            {"write", "cus.label.manage.v1", "cus.label.changed.v1"},
+		"IntegrationRepository.Disable":                  {"write", "ext.plugin.disable.v1", "ext.plugin.disabled.v1"},
+		"OrderRepository.Update":                         {"write", "bil.order.update.v1", "bil.order.changed.v1"},
+		"MessageRepository.RetryMessageAccepted":         {"write", "msg.message.retry.v1", "msg.message_status.changed.v1"},
+		"MessageRepository.SaveDraft":                    {"write", "msg.message.update.v1", "msg.message.changed.v1"},
+		"MessageRepository.DeleteDraft":                  {"write", "msg.message.update.v1", "msg.message.deleted.v1"},
+		"MessageRepository.UpdateContentAttributes":      {"write", "msg.message.update.v1", "msg.message.changed.v1"},
 	}
 	for _, edge := range collaboration.EdgeBindings {
+		if edge.Method == "FirebasePushConfiguration" {
+			t.Fatal("private Firebase configuration capability must not be aliased to a remote contract")
+		}
+		if edge.Method == "CountReportBuckets" || edge.Method == "CountReportDaily" {
+			t.Fatal("local count capability must not be aliased to a remote query contract")
+		}
 		key := strings.Join([]string{edge.Consumer, edge.Provider, edge.File, edge.Symbol, edge.Method}, "|")
 		if bindingMethodKeys[key] {
 			t.Fatalf("duplicate method edge binding %s", key)
@@ -390,6 +469,11 @@ func TestSourceCollaborationsResolveToOwnedContracts(t *testing.T) {
 
 func TestOwnerRepositoriesDoNotQueryForeignAggregates(t *testing.T) {
 	for file, forbidden := range map[string][]string{
+		"../internal/repository/conversation_report_count.go":        {"domain.Message", "\"messages\"", ".Raw(", ".Model(", ".Table(", ".Preload(", ".Joins("},
+		"../internal/repository/message_report_count.go":             {"domain.Conversation", "\"conversations\"", ".Raw(", ".Model(", ".Table(", ".Preload(", ".Joins("},
+		"../internal/service/report_count_series.go":                 {"s.db", "ListForReport", "loadAccountConversations", "loadMessagesForConversations"},
+		"../internal/repository/message_retry.go":                    {"domain.Conversation{", "Model(&domain.Conversation", "JOIN conversations", "Table(\"conversations\")", "domain.AutomationRuleExecution"},
+		"../internal/repository/conversation_retry_activity.go":      {"domain.Message{", "Model(&domain.Message", "JOIN messages", "Table(\"messages\")", "domain.AutomationRuleExecution", "Model(&domain.Contact"},
 		"../internal/repository/assignment_policy_repository.go":     {"domain.Inbox", "Preload(\"FallbackAssignee\")", "Preload(\"FallbackTeam\")"},
 		"../internal/repository/agent_capacity_policy_repository.go": {"domain.AccountUser", "domain.User", "domain.Inbox{", "Preload(\"Inbox"},
 		"../internal/repository/csat_extension_repository.go":        {"Preload(\"Conversation", "Preload(\"AssignedAgent", "Preload(\"Reviewer", "JOIN conversations", "JOIN users", "Model(&domain.Conversation", "Model(&domain.User", "Model(&domain.Inbox", "Model(&domain.Contact"},

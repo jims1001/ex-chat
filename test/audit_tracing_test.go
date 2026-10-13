@@ -3,7 +3,6 @@ package test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuditTracing_FullLifecycle(t *testing.T) {
@@ -238,69 +238,70 @@ func TestAuditTracing_FullLifecycle(t *testing.T) {
 		t.Fatalf("expected 200 for security audit logs, got %d: %s", wSecAudit.Code, wSecAudit.Body.String())
 	}
 
-	// 10. Test POST /api/v1/accounts/1/audit_exports & GET /audit_exports/:id (LOG-05 Async Export)
-	exportReqBody, _ := json.Marshal(map[string]string{
-		"format":  "json",
-		"purpose": "gdpr_compliance_audit",
-	})
-	wExport := httptest.NewRecorder()
-	reqExport, _ := http.NewRequest("POST", "/api/v1/accounts/1/audit_exports", bytes.NewBuffer(exportReqBody))
-	reqExport.Header.Set("Authorization", "Bearer "+token)
-	reqExport.Header.Set("Content-Type", "application/json")
-	engine.ServeHTTP(wExport, reqExport)
-
-	if wExport.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 for audit export, got %d: %s", wExport.Code, wExport.Body.String())
+	// 10. An export cannot be accepted without a generator or artifact store.
+	counts := func() map[string]int64 {
+		result := map[string]int64{}
+		for _, table := range []string{"audit_exports", "integrity_verifications", "access_logs", "audit_logs", "local_change_journals"} {
+			var count int64
+			require.NoError(t, db.Table(table).Count(&count).Error)
+			result[table] = count
+		}
+		return result
+	}
+	requestAudit := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/api/v1/accounts/1"+path, bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		out := httptest.NewRecorder()
+		engine.ServeHTTP(out, req)
+		return out
+	}
+	before := counts()
+	for _, tc := range []struct{ path, body, message string }{
+		{"/audit_exports", `{"format":"json","purpose":"gdpr_compliance_audit"}`, "Audit export generation is not implemented"},
+		{"/audit_integrity/verifications", `{"partition_id":"account-1-partition","purpose":"quarterly_regulatory_proof"}`, "Audit integrity verification is not implemented"},
+	} {
+		out := requestAudit(http.MethodPost, tc.path, tc.body)
+		require.Equal(t, http.StatusNotImplemented, out.Code, out.Body.String())
+		var result map[string]any
+		require.NoError(t, json.Unmarshal(out.Body.Bytes(), &result))
+		require.Equal(t, map[string]any{"success": false, "error": tc.message}, result)
+		require.Equal(t, before, counts(), "unsupported work must leave no job or success audit event")
 	}
 
-	var exportRes struct {
-		Data struct {
-			ExportID string `json:"export_id"`
-		} `json:"data"`
+	// 11. Historical stored claims remain readable, with explicit qualification.
+	export := domain.AuditExport{AccountID: 1, ExportID: "historical-export", Status: "completed", RecordCount: 10, DownloadURL: "/historical-download-claim"}
+	verification := domain.IntegrityVerification{AccountID: 1, VerificationID: "historical-verification", Verified: true, Status: "completed"}
+	require.NoError(t, db.Create(&export).Error)
+	require.NoError(t, db.Create(&verification).Error)
+	before = counts()
+	for _, tc := range []struct {
+		path   string
+		export bool
+	}{
+		{"/audit_exports/historical-export", true},
+		{"/audit_integrity/verifications/historical-verification", false},
+	} {
+		out := requestAudit(http.MethodGet, tc.path, "")
+		require.Equal(t, http.StatusOK, out.Code, out.Body.String())
+		var result struct {
+			Success bool           `json:"success"`
+			Data    map[string]any `json:"data"`
+			Meta    map[string]any `json:"meta"`
+		}
+		require.NoError(t, json.Unmarshal(out.Body.Bytes(), &result))
+		require.True(t, result.Success)
+		require.Equal(t, "completed", result.Data["status"])
+		require.Equal(t, "historical_unverified_claim", result.Meta["record_semantics"])
+		require.Equal(t, false, result.Meta["execution_available"])
+		require.Equal(t, false, result.Meta["execution_proven"])
+		if tc.export {
+			require.Equal(t, export.ExportID, result.Data["export_id"])
+			require.Equal(t, false, result.Meta["artifact_available"])
+		} else {
+			require.Equal(t, verification.VerificationID, result.Data["verification_id"])
+			require.Equal(t, true, result.Data["verified"])
+		}
 	}
-	_ = json.Unmarshal(wExport.Body.Bytes(), &exportRes)
-
-	wGetExport := httptest.NewRecorder()
-	reqGetExport, _ := http.NewRequest("GET", fmt.Sprintf("/api/v1/accounts/1/audit_exports/%s", exportRes.Data.ExportID), nil)
-	reqGetExport.Header.Set("Authorization", "Bearer "+token)
-	engine.ServeHTTP(wGetExport, reqGetExport)
-
-	if wGetExport.Code != http.StatusOK {
-		t.Fatalf("expected 200 for get audit export, got %d: %s", wGetExport.Code, wGetExport.Body.String())
-	}
-
-	// 11. Test POST /api/v1/accounts/1/audit_integrity/verifications & GET (LOG-04, LOG-07 Integrity Verification)
-	verifReqBody, _ := json.Marshal(map[string]string{
-		"partition_id": "account-1-partition",
-		"purpose":      "quarterly_regulatory_proof",
-	})
-	wVerif := httptest.NewRecorder()
-	reqVerif, _ := http.NewRequest("POST", "/api/v1/accounts/1/audit_integrity/verifications", bytes.NewBuffer(verifReqBody))
-	reqVerif.Header.Set("Authorization", "Bearer "+token)
-	reqVerif.Header.Set("Content-Type", "application/json")
-	engine.ServeHTTP(wVerif, reqVerif)
-
-	if wVerif.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for integrity verification, got %d: %s", wVerif.Code, wVerif.Body.String())
-	}
-
-	var verifRes struct {
-		Data struct {
-			VerificationID string `json:"verification_id"`
-			Verified       bool   `json:"verified"`
-		} `json:"data"`
-	}
-	_ = json.Unmarshal(wVerif.Body.Bytes(), &verifRes)
-	if !verifRes.Data.Verified {
-		t.Fatalf("expected ledger verification to be verified=true")
-	}
-
-	wGetVerif := httptest.NewRecorder()
-	reqGetVerif, _ := http.NewRequest("GET", fmt.Sprintf("/api/v1/accounts/1/audit_integrity/verifications/%s", verifRes.Data.VerificationID), nil)
-	reqGetVerif.Header.Set("Authorization", "Bearer "+token)
-	engine.ServeHTTP(wGetVerif, reqGetVerif)
-
-	if wGetVerif.Code != http.StatusOK {
-		t.Fatalf("expected 200 for get verification, got %d: %s", wGetVerif.Code, wGetVerif.Body.String())
-	}
+	require.Equal(t, before, counts())
 }

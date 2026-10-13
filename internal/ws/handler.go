@@ -27,6 +27,7 @@ func ServeWS(
 	accountRepo *repository.AccountRepository,
 	inboxRepo *repository.InboxRepository,
 	convRepo *repository.ConversationRepository,
+	contactRepo *repository.ContactRepository,
 	optionalEnterpriseRepo ...repository.ChannelIAMRepository,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -41,7 +42,12 @@ func ServeWS(
 
 		if token != "" {
 			if len(optionalEnterpriseRepo) > 0 && optionalEnterpriseRepo[0] != nil {
-				if revoked, err := optionalEnterpriseRepo[0].IsTokenRevoked(token); err == nil && revoked {
+				revoked, err := optionalEnterpriseRepo[0].IsTokenRevoked(token)
+				if err != nil {
+					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "authentication unavailable"})
+					return
+				}
+				if revoked {
 					log.Warn("websocket agent auth failed: token revoked", "client_ip", c.ClientIP())
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
 					return
@@ -52,6 +58,15 @@ func ServeWS(
 			if err != nil {
 				log.Warn("websocket agent auth failed", "error", err.Error(), "client_ip", c.ClientIP())
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+				return
+			}
+			if userRepo == nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "authentication unavailable"})
+				return
+			}
+			user, err := userRepo.FindByID(claims.UserID)
+			if err != nil || !auth.ClaimsMatchUser(claims, user) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user no longer exists"})
 				return
 			}
 			isAgent = true
@@ -101,43 +116,76 @@ func ServeWS(
 			isAgent = false
 			accountID = inbox.AccountID
 
-			if cStr := c.Query("conversation_id"); cStr != "" {
-				if id, err := strconv.ParseUint(cStr, 10, 64); err == nil {
-					targetConvID := uint(id)
-					// Verify conversation belongs to this inbox and account
-					conv, err := convRepo.FindForInbox(inbox.AccountID, inbox.ID, targetConvID)
-					if err != nil || conv == nil {
-						log.Warn("websocket visitor auth failed: conversation does not belong to inbox",
-							"conversation_id", targetConvID,
-							"inbox_id", inbox.ID,
-							"client_ip", c.ClientIP(),
-						)
-						c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "conversation not found for this inbox"})
-						return
+			// Visitor subscriptions always require a session credential. Upload
+			// capabilities and legacy source IDs are not subscription credentials.
+			visToken := ""
+			found := false
+			for _, name := range []string{"visitor_session", "visitor_token"} {
+				if values, exists := c.Request.URL.Query()[name]; exists {
+					found = true
+					if len(values) > 0 {
+						visToken = values[0]
 					}
-
-					// Verify visitor token or contact token ownership if provided
-					visToken := c.Query("visitor_token")
-					if visToken == "" {
-						visToken = c.Query("contact_token")
-					}
-					if visToken != "" {
-						claims, err := auth.ParseVisitorToken(visToken, cfg.JWTSecret)
-						if err == nil && claims != nil {
-							if claims.InboxID != inbox.ID || (claims.ContactID > 0 && claims.ContactID != conv.ContactID) {
-								log.Warn("websocket visitor auth failed: visitor token mismatch",
-									"conv_contact_id", conv.ContactID,
-									"token_contact_id", claims.ContactID,
-									"client_ip", c.ClientIP(),
-								)
-								c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: visitor token mismatch"})
-								return
-							}
-						}
-					}
-
-					conversationID = targetConvID
+					break
 				}
+			}
+			if !found {
+				for _, name := range []string{"X-Visitor-Session", "X-Visitor-Token"} {
+					if values, exists := c.Request.Header[http.CanonicalHeaderKey(name)]; exists {
+						found = true
+						if len(values) > 0 {
+							visToken = values[0]
+						}
+						break
+					}
+				}
+			}
+			if !found {
+				visToken = c.Query("contact_token")
+			}
+
+			claims, err := auth.ParseVisitorToken(visToken, cfg.JWTSecret)
+			if err != nil || claims.InboxID != inbox.ID {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "valid visitor session required"})
+				return
+			}
+
+			if contactRepo == nil || len(optionalEnterpriseRepo) == 0 || optionalEnterpriseRepo[0] == nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "visitor authentication unavailable"})
+				return
+			}
+			revoked, err := optionalEnterpriseRepo[0].IsTokenRevoked(visToken)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "visitor authentication unavailable"})
+				return
+			}
+			if revoked {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "visitor session revoked"})
+				return
+			}
+			contact, err := contactRepo.FindContactBySourceID(inbox.ID, claims.SourceID)
+			if err != nil || contact == nil || contact.ID != claims.ContactID || contact.AccountID != inbox.AccountID {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "visitor session does not match current contact"})
+				return
+			}
+
+			if cStr := c.Query("conversation_id"); cStr != "" {
+				id, err := strconv.ParseUint(cStr, 10, 64)
+				if err != nil || id == 0 || uint64(uint(id)) != id {
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+					return
+				}
+				targetConvID := uint(id)
+				conv, err := convRepo.FindForInbox(inbox.AccountID, inbox.ID, targetConvID)
+				if err != nil || conv == nil {
+					c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "conversation not found for this inbox"})
+					return
+				}
+				if claims.ContactID != conv.ContactID {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: visitor token mismatch"})
+					return
+				}
+				conversationID = targetConvID
 			}
 		} else {
 			log.Warn("websocket connection rejected: token or website_token required", "client_ip", c.ClientIP())

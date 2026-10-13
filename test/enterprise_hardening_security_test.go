@@ -146,7 +146,13 @@ func TestEnterpriseHardeningSecurity(t *testing.T) {
 	// -------------------------------------------------------------------------
 	t.Run("Item2_PublicCSAT_UnifiedAuthAndLock", func(t *testing.T) {
 		contact := domain.Contact{AccountID: accountID, Name: "CSAT客户张三"}
-		_ = db.Create(&contact)
+		if err := db.Create(&contact).Error; err != nil {
+			t.Fatal(err)
+		}
+		const sourceID = "src_csat_1"
+		if err := db.Create(&domain.ContactInbox{InboxID: inbox.ID, ContactID: contact.ID, SourceID: sourceID}).Error; err != nil {
+			t.Fatal(err)
+		}
 
 		conv := domain.Conversation{
 			AccountID: accountID,
@@ -190,8 +196,18 @@ func TestEnterpriseHardeningSecurity(t *testing.T) {
 			t.Fatalf("expected 403 Forbidden for forged JWT, got %d body=%s", wForged.Code, wForged.Body.String())
 		}
 
-		// 2.2 Accessing with signed visitor token succeeds (200)
-		visToken, _ := auth.GenerateVisitorToken(inbox.ID, contact.ID, "src_csat_1", jwtSecret, 2*time.Hour)
+		// A persisted source ID is a public identifier, never a survey credential.
+		for _, parameter := range []string{"source_id", "token", "visitor_token"} {
+			wRawSource := httptest.NewRecorder()
+			reqRawSource := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/csat_survey/%d?%s=%s", conv.ID, parameter, sourceID), nil)
+			engine.ServeHTTP(wRawSource, reqRawSource)
+			if wRawSource.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 for raw source ID through %s, got %d body=%s", parameter, wRawSource.Code, wRawSource.Body.String())
+			}
+		}
+
+		// 2.2 A signed session with a matching persisted contact/inbox/source succeeds.
+		visToken := signWidgetVisitorSession(t, inbox.ID, contact.ID, sourceID, jwtSecret)
 		wAuth := httptest.NewRecorder()
 		reqAuth, _ := http.NewRequest("GET", fmt.Sprintf("/public/api/v1/csat_survey/%d?visitor_token=%s", conv.ID, visToken), nil)
 		engine.ServeHTTP(wAuth, reqAuth)

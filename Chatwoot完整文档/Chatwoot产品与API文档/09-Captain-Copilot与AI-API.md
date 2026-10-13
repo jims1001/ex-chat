@@ -135,6 +135,8 @@ Task 失败通常表现为业务校验错误，使用方应展示 error，不应
 
 inbox_assistant 响应字段为 assistant；已绑定时包含 id 和 name，未绑定时为 null。
 
+当前实现：此标准路径返回 HTTP 200 和 `{"assistant":{"id":17,"name":"Support"}}`，未绑定返回 `{"assistant":null}`。旧 `/conversations/{id}/assistant` 和 `/inboxes/{id}/assistant` 路径保留 `success/data` 外层和未绑定 404，但成功的 data 现在仅包含 id、name；依赖旧版配置、提示词或 Inbox 等完整对象字段的客户端需调整。会话当前引用的 Inbox 不存在或不属于当前账户时返回 404，即使遗留 AIC 绑定仍存在。重复绑定、悬空或跨账户 Assistant 引用及存储异常会显式失败，不当作未绑定。该只读结果不代表 Assistant 可用、已激活或具备生成权限；详见 [AIC 绑定摘要契约](../../architecture/aic-bound-assistant-read.md)。
+
 ## 6. Scenario API
 
 | 方法 | 路径 | 功能 |

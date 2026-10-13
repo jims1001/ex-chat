@@ -9,11 +9,34 @@ import (
 
 // AttachmentRepository manages message attachments
 type AttachmentRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
+	messages      attachmentMessageOwner
+	conversations attachmentConversationOwner
+	contacts      attachmentContactOwner
+	inboxes       attachmentInboxOwner
+}
+
+type attachmentMessageOwner interface {
+	FindByID(uint, uint) (*domain.Message, error)
+}
+type attachmentConversationOwner interface {
+	FindSummaryByID(uint, uint) (*domain.Conversation, error)
+}
+type attachmentContactOwner interface {
+	FindSummaryByID(uint, uint) (*domain.Contact, error)
+	FindUploadIdentity(context.Context, uint, uint, string) (*domain.ContactInbox, error)
+}
+type attachmentInboxOwner interface {
+	FindByGlobalID(uint) (*domain.Inbox, error)
+	FindSummaryByID(uint, uint) (*domain.Inbox, error)
 }
 
 func NewAttachmentRepository(db *gorm.DB) *AttachmentRepository {
-	return &AttachmentRepository{db: db}
+	return NewAttachmentRepositoryWithOwnerPorts(db, &MessageRepository{db: db}, &ConversationRepository{db: db}, &ContactRepository{db: db}, &InboxRepository{db: db})
+}
+
+func NewAttachmentRepositoryWithOwnerPorts(db *gorm.DB, messages attachmentMessageOwner, conversations attachmentConversationOwner, contacts attachmentContactOwner, inboxes attachmentInboxOwner) *AttachmentRepository {
+	return &AttachmentRepository{db: db, messages: messages, conversations: conversations, contacts: contacts, inboxes: inboxes}
 }
 
 func (r *AttachmentRepository) Create(ctx context.Context, att *domain.Attachment) error {
@@ -25,6 +48,9 @@ func (r *AttachmentRepository) Create(ctx context.Context, att *domain.Attachmen
 	}
 	if messageCount != 1 {
 		return gorm.ErrRecordNotFound
+	}
+	if err := r.validateLocalAttachment(ctx, att); err != nil {
+		return err
 	}
 	return r.db.WithContext(ctx).Create(att).Error
 }

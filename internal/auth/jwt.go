@@ -16,11 +16,19 @@ var (
 	ErrInvalidToken = errors.New("invalid or expired authentication token")
 )
 
+const (
+	TokenPurposeAccess = "access"
+	TokenPurposeMFA    = "mfa"
+	MFAChallengeTTL    = 5 * time.Minute
+)
+
 type Claims struct {
-	UserID uint   `json:"user_id"`
-	Email  string `json:"email"`
-	Role   string `json:"role"`
-	Type   string `json:"type,omitempty"`
+	UserID      uint   `json:"user_id"`
+	Email       string `json:"email"`
+	Role        string `json:"role"`
+	Type        string `json:"type,omitempty"`
+	Purpose     string `json:"purpose"`
+	AuthVersion int64  `json:"auth_version"`
 	jwt.RegisteredClaims
 }
 
@@ -35,21 +43,37 @@ func CheckPasswordHash(password, hash string) bool {
 }
 
 func GenerateToken(user *domain.User, secret string, expirationHours int) (string, error) {
-	expirationTime := time.Now().Add(time.Duration(expirationHours) * time.Hour)
+	return generateToken(user, secret, TokenPurposeAccess, time.Duration(expirationHours)*time.Hour)
+}
+
+// GenerateMFAToken creates a short-lived challenge that cannot authenticate API requests.
+func GenerateMFAToken(user *domain.User, secret string) (string, error) {
+	return generateToken(user, secret, TokenPurposeMFA, MFAChallengeTTL)
+}
+
+func generateToken(user *domain.User, secret, purpose string, ttl time.Duration) (string, error) {
+	now := time.Now()
+	expirationTime := now.Add(ttl)
 	jtiBytes := make([]byte, 16)
-	_, _ = rand.Read(jtiBytes)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", err
+	}
 
 	claims := &Claims{
-		UserID: user.ID,
-		Email:  user.Email,
-		Role:   user.Role,
-		Type:   user.Type,
+		UserID:      user.ID,
+		Purpose:     purpose,
+		AuthVersion: user.AuthVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        hex.EncodeToString(jtiBytes),
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Subject:   user.Email,
+			IssuedAt:  jwt.NewNumericDate(now),
 		},
+	}
+	if purpose == TokenPurposeAccess {
+		claims.Email = user.Email
+		claims.Role = user.Role
+		claims.Type = user.Type
+		claims.Subject = user.Email
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -73,16 +97,35 @@ func GenerateToken(user *domain.User, secret string, expirationHours int) (strin
 	return signed, nil
 }
 
+// ValidateToken accepts only access tokens. Legacy untyped tokens are intentionally
+// rejected: before purpose separation, MFA challenges were indistinguishable from them.
 func ValidateToken(tokenString string, secret string) (*Claims, error) {
+	return validateTokenPurpose(tokenString, secret, TokenPurposeAccess)
+}
+
+// ValidateMFAToken accepts only short-lived MFA challenges, never access tokens.
+func ValidateMFAToken(tokenString string, secret string) (*Claims, error) {
+	claims, err := validateTokenPurpose(tokenString, secret, TokenPurposeMFA)
+	if err != nil {
+		return nil, err
+	}
+	if claims.ID == "" || claims.IssuedAt == nil || !claims.ExpiresAt.After(claims.IssuedAt.Time) ||
+		claims.ExpiresAt.Sub(claims.IssuedAt.Time) > MFAChallengeTTL {
+		return nil, ErrInvalidToken
+	}
+	return claims, nil
+}
+
+func validateTokenPurpose(tokenString, secret, purpose string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if token.Method != jwt.SigningMethodHS256 {
 			logger.WithComponent("jwt").Warn("unexpected jwt signing method",
 				"alg", token.Header["alg"],
 			)
 			return nil, ErrInvalidToken
 		}
 		return []byte(secret), nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
 
 	if err != nil {
 		logger.WithComponent("jwt").Warn("jwt token validation failed",
@@ -91,10 +134,17 @@ func ValidateToken(tokenString string, secret string) (*Claims, error) {
 		return nil, err
 	}
 
-	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+	if claims, ok := token.Claims.(*Claims); ok && token.Valid && claims.Purpose == purpose && claims.UserID > 0 {
 		return claims, nil
 	}
 
 	logger.WithComponent("jwt").Warn("jwt claims invalid or expired")
 	return nil, ErrInvalidToken
+}
+
+// ClaimsMatchUser rejects access and MFA credentials issued before an atomic
+// password reset advanced the persisted user's authentication version.
+func ClaimsMatchUser(claims *Claims, user *domain.User) bool {
+	return claims != nil && user != nil && claims.UserID == user.ID && user.ID != 0 &&
+		claims.AuthVersion >= 0 && claims.AuthVersion == user.AuthVersion
 }

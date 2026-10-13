@@ -25,6 +25,7 @@ type ContactHandler struct {
 	inboxRepo   *repository.InboxRepository
 	labelRepo   *repository.LabelRepository
 	companyRepo *repository.CompanyRepository
+	jwtSecret   string
 }
 
 func NewContactHandler(contactRepo *repository.ContactRepository, inboxRepo *repository.InboxRepository) *ContactHandler {
@@ -33,6 +34,8 @@ func NewContactHandler(contactRepo *repository.ContactRepository, inboxRepo *rep
 		inboxRepo:   inboxRepo,
 	}
 }
+
+func (h *ContactHandler) SetJWTSecret(secret string) { h.jwtSecret = secret }
 
 func (h *ContactHandler) SetExtraRepos(labelRepo *repository.LabelRepository, companyRepo *repository.CompanyRepository) {
 	h.labelRepo = labelRepo
@@ -65,11 +68,12 @@ type MergeContactRequest struct {
 }
 
 type WidgetContactRequest struct {
-	SourceID         string `json:"source_id" binding:"required"`
+	SourceID         string `json:"source_id"`
 	Name             string `json:"name"`
 	Email            string `json:"email"`
 	PhoneNumber      string `json:"phone_number"`
 	Identifier       string `json:"identifier"`
+	IdentifierHash   string `json:"identifier_hash"`
 	CustomAttributes any    `json:"custom_attributes"`
 }
 
@@ -126,7 +130,7 @@ func (h *ContactHandler) CreateContact(c *gin.Context) {
 	accountID := rawAccountID.(uint)
 
 	var req CreateContactRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
@@ -227,7 +231,7 @@ func (h *ContactHandler) UpdateContact(c *gin.Context) {
 	}
 
 	var req UpdateContactRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
@@ -349,6 +353,10 @@ func (h *ContactHandler) MergeContact(c *gin.Context) {
 	}
 
 	if err := h.contactRepo.MergeContacts(accountID, req.BaseContactID, req.MergeeContactID); err != nil {
+		if errors.Is(err, repository.ErrChannelContactMergeUnsupported) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Merging verified channel contacts is not supported"})
+			return
+		}
 		logger.WithComponent("contact").Error("failed to merge contacts",
 			"account_id", accountID,
 			"base_contact_id", req.BaseContactID,
@@ -380,63 +388,50 @@ func (h *ContactHandler) WidgetIdentify(c *gin.Context) {
 		websiteToken = c.GetHeader("X-Auth-Token")
 	}
 
+	if websiteToken == "" {
+		websiteToken = c.GetHeader("X-Website-Token")
+	}
+
 	inbox, err := h.inboxRepo.FindByWebsiteToken(websiteToken)
 	if err != nil || inbox == nil {
 		response.NotFound(c, "Invalid website token")
 		return
 	}
 
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return
+	}
 	var req WidgetContactRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
-
-	contact, err := h.contactRepo.FindContactBySourceID(inbox.ID, req.SourceID)
-	if err != nil {
-		response.InternalError(c, "Error looking up contact")
+	contact := identity.contact
+	if !validateWidgetIdentifierProof(c, inbox, req.Identifier, req.IdentifierHash) {
 		return
 	}
-
-	if contact == nil {
-		newContact := domain.Contact{
-			AccountID:        inbox.AccountID,
-			Name:             req.Name,
-			Email:            strings.ToLower(strings.TrimSpace(req.Email)),
-			PhoneNumber:      req.PhoneNumber,
-			Identifier:       req.Identifier,
-			CustomAttributes: normalizeCustomAttributes(req.CustomAttributes),
-		}
-		if newContact.Name == "" {
-			newContact.Name = "Visitor " + req.SourceID[:min(8, len(req.SourceID))]
-		}
-		if err := h.contactRepo.Create(&newContact); err != nil {
-			response.InternalError(c, "Failed to create visitor contact")
-			return
-		}
-		_, _ = h.contactRepo.FindOrCreateContactInbox(newContact.ID, inbox.ID, req.SourceID)
-		contact = &newContact
-	} else {
-		updated := false
-		if req.Name != "" && contact.Name != req.Name {
-			contact.Name = req.Name
-			updated = true
-		}
-		if req.Email != "" && contact.Email != req.Email {
-			contact.Email = strings.ToLower(strings.TrimSpace(req.Email))
-			updated = true
-		}
-		if req.PhoneNumber != "" && contact.PhoneNumber != req.PhoneNumber {
-			contact.PhoneNumber = req.PhoneNumber
-			updated = true
-		}
-		if customAttributes := normalizeCustomAttributes(req.CustomAttributes); customAttributes != "" {
-			contact.CustomAttributes = customAttributes
-			updated = true
-		}
-		if updated {
-			_ = h.contactRepo.Update(contact)
-		}
+	if !validateVisitorIdentityUpdate(c, h.contactRepo, contact, req.Identifier, req.Email) {
+		return
+	}
+	if req.Name != "" {
+		contact.Name = req.Name
+	}
+	if req.Email != "" {
+		contact.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	}
+	if req.PhoneNumber != "" {
+		contact.PhoneNumber = req.PhoneNumber
+	}
+	if req.Identifier != "" {
+		contact.Identifier = strings.TrimSpace(req.Identifier)
+	}
+	if customAttributes := normalizeCustomAttributes(req.CustomAttributes); customAttributes != "" {
+		contact.CustomAttributes = customAttributes
+	}
+	if err := h.contactRepo.Update(contact); err != nil {
+		response.InternalError(c, "Failed to update visitor profile")
+		return
 	}
 
 	response.Success(c, contact)
@@ -721,11 +716,12 @@ func (h *ContactHandler) SearchContacts(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", c.DefaultQuery("limit", "25")))
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 25
+	const pageSize = 15
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		response.Error(c, http.StatusUnprocessableEntity, "q is required")
+		return
 	}
-	query := strings.TrimSpace(c.DefaultQuery("q", c.Query("search")))
 
 	contacts, total, err := h.contactRepo.Search(accountID, query, page, pageSize)
 	if err != nil {
@@ -733,10 +729,21 @@ func (h *ContactHandler) SearchContacts(c *gin.Context) {
 		return
 	}
 
+	// Search reads one extra candidate without changing the page offset.
+	hasMore := len(contacts) > pageSize
+	if hasMore {
+		contacts = contacts[:pageSize]
+	}
+	if contacts == nil {
+		contacts = []domain.Contact{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"payload": contacts,
-		"data":    contacts,
+		"success":        true,
+		"has_more":       hasMore,
+		"contacts_count": len(contacts),
+		"payload":        contacts,
+		"data":           contacts,
 		"meta": gin.H{
 			"count":        total,
 			"current_page": page,

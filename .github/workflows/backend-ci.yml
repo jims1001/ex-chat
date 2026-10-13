@@ -1,0 +1,85 @@
+name: Backend CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: '1'
+  GOTOOLCHAIN: local
+  CI_GO_PARALLELISM: '2'
+  CI_TEST_PARALLELISM: '4'
+  GOMAXPROCS: '4'
+
+jobs:
+  core:
+    name: Vet, build, ordinary and race tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install declared Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Verify backend and staged module isolation
+        run: make ci
+
+  postgres:
+    name: Required PostgreSQL regressions and Redis readiness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.15-alpine3.24
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: ex_chat_ci
+          # Public fixture password for this job's disposable service only.
+          POSTGRES_PASSWORD: ex-chat-ci-disposable-only
+        ports:
+          - 127.0.0.1:55433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ex_chat_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7.4.11-alpine3.21
+        ports:
+          - 127.0.0.1:6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install declared Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+          check-latest: false
+      - name: Require real PostgreSQL tests without skips
+        env:
+          EX_CHAT_CI_DISPOSABLE_DB: '1'
+          DB_DSN: host=127.0.0.1 port=55433 user=postgres password=ex-chat-ci-disposable-only dbname=ex_chat_ci sslmode=disable connect_timeout=5
+          REDIS_ADDR: 127.0.0.1:6380
+        run: make ci-postgres

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,25 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
+
+// Background application workers keep logging while assertions reset/read the
+// captured output. Serialize all three operations without changing any log assertions.
+type synchronizedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+func (b *synchronizedLogBuffer) Reset() { b.mu.Lock(); defer b.mu.Unlock(); b.buffer.Reset() }
+func (b *synchronizedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
 
 type logRecord map[string]any
 
@@ -55,7 +75,7 @@ func findLogByComponent(records []logRecord, component string) []logRecord {
 func TestSystemLoggingObservability(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	logBuf := &bytes.Buffer{}
+	logBuf := &synchronizedLogBuffer{}
 	logger.SetOutput(logBuf, slog.LevelDebug, "json")
 
 	cfg := &config.Config{
@@ -402,4 +422,21 @@ func TestSystemLoggingObservability(t *testing.T) {
 			t.Errorf("expected sql in log, got %v", gormLogs[0]["sql"])
 		}
 	})
+}
+
+func TestStructuredLogRecorderConcurrentResetAndRead(t *testing.T) {
+	var captured synchronizedLogBuffer
+	var writes sync.WaitGroup
+	writes.Add(1)
+	go func() {
+		defer writes.Done()
+		for i := 0; i < 1000; i++ {
+			_, _ = captured.Write([]byte("{}\n"))
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		captured.Reset()
+		_ = captured.String()
+	}
+	writes.Wait()
 }

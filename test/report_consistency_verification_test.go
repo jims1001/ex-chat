@@ -122,7 +122,7 @@ func TestReport_Consistency_Verification(t *testing.T) {
 	db.Create(&contact)
 
 	// 4. Seed 5 Conversations across different dates, business hours, and dimensions:
-	// Target testing window: 2026-09-02 00:00:00 to 2026-09-08 23:59:59 UTC (7 days)
+	// Date-only end includes all of September 8; its exclusive instant is September 9 UTC.
 	tWedOpen := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)  // Wed 10:00 (In Business Hours)
 	tThuOpen := time.Date(2026, 9, 3, 14, 0, 0, 0, time.UTC)  // Thu 14:00 (In Business Hours)
 	tFriOff := time.Date(2026, 9, 4, 21, 0, 0, 0, time.UTC)   // Fri 21:00 (Outside Business Hours for Inbox1)
@@ -179,23 +179,51 @@ func TestReport_Consistency_Verification(t *testing.T) {
 	// 1. 测试时间范围一致性 (Time Range Consistency)
 	// -------------------------------------------------------------
 	t.Run("1_Time_Range_Consistency", func(t *testing.T) {
+		// A fractional terminal-second row must be included by both equivalent windows.
+		terminal := domain.Conversation{
+			AccountID: account.ID, InboxID: inbox1.ID, ContactID: contact.ID,
+			Status:    domain.ConversationStatusOpen,
+			CreatedAt: time.Date(2026, 9, 8, 23, 59, 59, 500000000, time.UTC),
+		}
+		if err := db.Create(&terminal).Error; err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := db.Delete(&terminal).Error; err != nil {
+				t.Fatal(err)
+			}
+		})
 		resSum := doReq(http.MethodGet, fmt.Sprintf("/api/v2/accounts/%s/reports/summary?%s", accStr, timeWindowQuery))
-		var sumResp struct{ Data service.AccountSummaryReport `json:"data"` }
-		_ = json.Unmarshal(resSum.Body.Bytes(), &sumResp)
+		var sumResp struct {
+			Data service.AccountSummaryReport `json:"data"`
+		}
+		if resSum.Code != http.StatusOK {
+			t.Fatalf("date report expected 200, got %d: %s", resSum.Code, resSum.Body.String())
+		}
+		if err := json.Unmarshal(resSum.Body.Bytes(), &sumResp); err != nil {
+			t.Fatal(err)
+		}
 
-		// Conversations 1, 2, 3, 4 fall in window; conv 5 is outside. Total must be 4.
-		if sumResp.Data.TotalConversations != 4 {
-			t.Fatalf("expected 4 conversations in time window, got %d", sumResp.Data.TotalConversations)
+		// Conversations 1–4 and the terminal fraction fall in the window; conv 5 is outside.
+		if sumResp.Data.TotalConversations != 5 {
+			t.Fatalf("expected 5 conversations in time window, got %d", sumResp.Data.TotalConversations)
 		}
 
 		// Also check with unix timestamp
 		sinceSec := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Unix()
-		untilSec := time.Date(2026, 9, 8, 23, 59, 59, 0, time.UTC).Unix()
+		untilSec := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC).Unix()
 		resUnix := doReq(http.MethodGet, fmt.Sprintf("/api/v2/accounts/%s/reports/summary?since=%d&until=%d", accStr, sinceSec, untilSec))
-		var unixResp struct{ Data service.AccountSummaryReport `json:"data"` }
-		_ = json.Unmarshal(resUnix.Body.Bytes(), &unixResp)
-		if unixResp.Data.TotalConversations != 4 {
-			t.Fatalf("expected 4 conversations with unix timestamp filter, got %d", unixResp.Data.TotalConversations)
+		var unixResp struct {
+			Data service.AccountSummaryReport `json:"data"`
+		}
+		if resUnix.Code != http.StatusOK {
+			t.Fatalf("Unix report expected 200, got %d: %s", resUnix.Code, resUnix.Body.String())
+		}
+		if err := json.Unmarshal(resUnix.Body.Bytes(), &unixResp); err != nil {
+			t.Fatal(err)
+		}
+		if unixResp.Data != sumResp.Data {
+			t.Fatalf("equivalent date and Unix windows disagree: date=%+v Unix=%+v", sumResp.Data, unixResp.Data)
 		}
 	})
 

@@ -740,6 +740,11 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	})
 	t.Run("TEN_account_members_hydrate_IAM_and_only_save_membership", func(t *testing.T) {
 		tenDB, iamDB := openStore("TEN"), openStore("IAM")
+		// Membership writers serialize on their real TEN-owned account row.
+		// An isolation fixture must not create an orphan membership.
+		if err := tenDB.Create(&domain.Account{ID: 1, Name: "Isolated account"}).Error; err != nil {
+			t.Fatal(err)
+		}
 		user := domain.User{Name: "Account agent"}
 		if err := iamDB.Create(&user).Error; err != nil {
 			t.Fatal(err)
@@ -774,6 +779,11 @@ func TestModuleIsolationAcceptance(t *testing.T) {
 	})
 	t.Run("CHN_members_and_fallback_use_TEN_IAM_stores", func(t *testing.T) {
 		chnDB, tenDB, iamDB := openStore("CHN"), openStore("TEN"), openStore("IAM")
+		// Membership writers serialize on their real TEN-owned account row.
+		// An isolation fixture must not create an orphan membership.
+		if err := tenDB.Create(&domain.Account{ID: 1, Name: "Isolated account"}).Error; err != nil {
+			t.Fatal(err)
+		}
 		user := domain.User{Name: "Agent"}
 		if err := iamDB.Create(&user).Error; err != nil {
 			t.Fatal(err)
@@ -1132,7 +1142,10 @@ func testSLAServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.DB) 
 	}
 	service := service.NewSLAService(rptDB, repository.NewConversationRepository(conDB))
 	service.SetOwnerRepositories(repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB), repository.NewAccountRepository(tenDB))
-	frt, _, _, breached, _, _, selected := service.GetConversationSLADeadlines(&conversation)
+	frt, _, _, breached, _, _, selected, deadlineErr := service.GetConversationSLADeadlines(&conversation)
+	if deadlineErr != nil {
+		t.Fatalf("SLA deadlines failed: %v", deadlineErr)
+	}
 	if frt == nil || !breached || selected == nil || selected.ID != policy.ID || conversation.Inbox == nil || conversation.Inbox.ID != inbox.ID {
 		t.Fatalf("SLA owner composition failed: frt=%v breached=%v policy=%+v inbox=%+v", frt, breached, selected, conversation.Inbox)
 	}
@@ -1174,7 +1187,11 @@ func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	if err := tenDB.Create(&domain.TeamMember{TeamID: team.ID, UserID: user.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := extDB.Create(&domain.AgentBotInbox{AccountID: 192, AgentBotID: 1, InboxID: inbox.ID}).Error; err != nil {
+	bot := domain.AgentBot{AccountID: 192, Name: "Report Bot"}
+	if err := extDB.Create(&bot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := extDB.Create(&domain.AgentBotInbox{AccountID: 192, AgentBotID: bot.ID, InboxID: inbox.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 	createdAt := time.Now().UTC().Add(-time.Hour)
@@ -1193,6 +1210,7 @@ func testReportServiceOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	}
 	reports := service.NewReportService(rptDB)
 	reports.SetOwnerRepositories(repository.NewConversationRepository(conDB), repository.NewInboxRepository(chnDB), repository.NewMessageRepository(msgDB), repository.NewContactRepository(cusDB), repository.NewLabelRepositoryWithConversationPort(cusDB, repository.NewConversationRepository(conDB)))
+	reports.SetSummaryMessageOwner(repository.NewMessageRepository(msgDB))
 	userRepo := repository.NewUserRepository(iamDB)
 	reports.SetWorkforceRepositories(repository.NewAccountRepositoryWithUserPort(tenDB, userRepo), repository.NewTeamRepositoryWithUserPort(tenDB, userRepo), userRepo)
 	reports.SetBotOwner(repository.NewAgentBotRepository(extDB))
@@ -1979,28 +1997,28 @@ func testAdvancedCustomFilterOwnerBoundary(t *testing.T, openStore func(string) 
 	shared := domain.CustomFilter{AccountID: 761, UserID: 0, Name: "Shared", FilterType: "conversation", Query: `{"status":"pending"}`}
 	foreign := domain.CustomFilter{AccountID: 762, UserID: 11, Name: "Foreign", FilterType: "conversation", Query: `{}`}
 	for _, filter := range []*domain.CustomFilter{&personal, &shared, &foreign} {
-		if err := filters.Create(ctx, filter); err != nil {
+		if err := srhDB.Create(filter).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 	listed, err := filters.List(ctx, 761, 11, "conversation")
-	if err != nil || len(listed) != 2 {
+	if err != nil || len(listed) != 1 || listed[0].ID != personal.ID {
 		t.Fatalf("SRH custom filter list failed: filters=%+v err=%v", listed, err)
 	}
-	if found, err := filters.Find(ctx, 762, personal.ID); !errors.Is(err, gorm.ErrRecordNotFound) || found != nil {
+	if found, err := filters.Find(ctx, 762, 11, personal.ID); !errors.Is(err, gorm.ErrRecordNotFound) || found != nil {
 		t.Fatalf("SRH exposed cross-account filter: filter=%+v err=%v", found, err)
 	}
 	personal.Name = "Updated"
-	if err := filters.Save(ctx, 761, &personal); err != nil {
+	if _, err := filters.UpdateLegacy(ctx, 761, 11, personal.ID, repository.CustomFilterPatch{Name: &personal.Name}); err != nil {
 		t.Fatal(err)
 	}
-	if found, err := filters.Find(ctx, 761, personal.ID); err != nil || found.Name != "Updated" {
+	if found, err := filters.Find(ctx, 761, 11, personal.ID); err != nil || found.Name != "Updated" {
 		t.Fatalf("SRH custom filter update failed: filter=%+v err=%v", found, err)
 	}
-	if deleted, err := filters.Delete(ctx, 761, foreign.ID); err != nil || deleted {
+	if deleted, err := filters.DeleteLegacy(ctx, 761, 11, foreign.ID); err != nil || deleted {
 		t.Fatalf("SRH accepted cross-account delete: deleted=%t err=%v", deleted, err)
 	}
-	if deleted, err := filters.Delete(ctx, 761, personal.ID); err != nil || !deleted {
+	if deleted, err := filters.DeleteLegacy(ctx, 761, 11, personal.ID); err != nil || !deleted {
 		t.Fatalf("SRH custom filter delete failed: deleted=%t err=%v", deleted, err)
 	}
 	if srhDB.Migrator().HasTable(&domain.Conversation{}) || srhDB.Migrator().HasTable(&domain.Contact{}) {

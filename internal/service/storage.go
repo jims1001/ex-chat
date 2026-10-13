@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/uploadpath"
 )
 
 var (
@@ -44,9 +46,6 @@ func NewLocalStorageService(baseDir string, secret string) *LocalStorageService 
 	if baseDir == "" {
 		baseDir = "uploads"
 	}
-	if secret == "" {
-		secret = "ex-chat-storage-secret-key-2026"
-	}
 	return &LocalStorageService{
 		baseDir: baseDir,
 		secret:  secret,
@@ -55,9 +54,9 @@ func NewLocalStorageService(baseDir string, secret string) *LocalStorageService 
 
 // Upload writes reader contents to the specified key in the baseDir
 func (s *LocalStorageService) Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) (string, error) {
-	cleanKey := filepath.Clean(key)
-	if strings.HasPrefix(cleanKey, "..") {
-		return "", errors.New("invalid storage key path traversal")
+	cleanKey, err := uploadpath.CanonicalKey(key)
+	if err != nil {
+		return "", err
 	}
 
 	destPath := filepath.Join(s.baseDir, cleanKey)
@@ -78,15 +77,15 @@ func (s *LocalStorageService) Upload(ctx context.Context, key string, r io.Reade
 		return "", fmt.Errorf("failed to write storage content: %w", err)
 	}
 
-	urlPath := "/" + filepath.ToSlash(destPath)
-	return urlPath, nil
+	urlPath := url.URL{Path: "/" + strings.TrimPrefix(filepath.ToSlash(destPath), "/")}
+	return urlPath.String(), nil
 }
 
 // Delete removes the specified key
 func (s *LocalStorageService) Delete(ctx context.Context, key string) error {
-	cleanKey := filepath.Clean(key)
-	if strings.HasPrefix(cleanKey, "..") {
-		return errors.New("invalid storage key path traversal")
+	cleanKey, err := uploadpath.CanonicalKey(key)
+	if err != nil {
+		return err
 	}
 	filePath := filepath.Join(s.baseDir, cleanKey)
 	return os.Remove(filePath)
@@ -94,47 +93,52 @@ func (s *LocalStorageService) Delete(ctx context.Context, key string) error {
 
 // GetSignedURL generates an HMAC-SHA256 signed access URL with expiration
 func (s *LocalStorageService) GetSignedURL(ctx context.Context, key string, expire time.Duration) (string, error) {
+	if s.secret == "" {
+		return "", ErrInvalidSignature
+	}
 	if expire <= 0 {
-		expire = 1 * time.Hour
+		expire = time.Hour
+	}
+	// Accept the canonical stored URL or a relative key, but reject traversal
+	// before signing. Verification takes only exact relative keys, never aliases.
+	relKey := key
+	base := strings.TrimSuffix(filepath.ToSlash(s.baseDir), "/")
+	if strings.HasPrefix(key, "/"+strings.TrimPrefix(base, "/")+"/") {
+		relKey = strings.TrimPrefix(key, "/"+strings.TrimPrefix(base, "/")+"/")
+	} else if strings.HasPrefix(key, base+"/") {
+		relKey = strings.TrimPrefix(key, base+"/")
+	}
+	relKey, err := uploadpath.CanonicalKey(relKey)
+	if err != nil {
+		return "", err
 	}
 	expiresAt := time.Now().Add(expire).Unix()
-
-	relKey := strings.TrimPrefix(filepath.Clean(key), "/")
-	if strings.HasPrefix(relKey, s.baseDir+"/") {
-		relKey = strings.TrimPrefix(relKey, s.baseDir+"/")
-	}
-
 	mac := hmac.New(sha256.New, []byte(s.secret))
 	mac.Write([]byte(fmt.Sprintf("%s:%d", relKey, expiresAt)))
 	signature := hex.EncodeToString(mac.Sum(nil))
-
-	cleanPath := "/" + filepath.ToSlash(filepath.Join(s.baseDir, relKey))
-	return fmt.Sprintf("%s?expires=%d&sig=%s", cleanPath, expiresAt, signature), nil
+	path := "/" + strings.TrimPrefix(filepath.ToSlash(filepath.Join(s.baseDir, relKey)), "/")
+	signed := url.URL{Path: path}
+	query := url.Values{"expires": {fmt.Sprint(expiresAt)}, "sig": {signature}}
+	signed.RawQuery = query.Encode()
+	return signed.String(), nil
 }
 
-// VerifySignedURL validates signature and expiry of a signed access request
+// VerifySignedURL accepts only the exact storage-relative key the router opens.
+// Prefix stripping here would make a signature for x also authorize uploads/x.
 func (s *LocalStorageService) VerifySignedURL(ctx context.Context, key string, expiresAt int64, signature string) bool {
-	if expiresAt < time.Now().Unix() {
+	if s.secret == "" || expiresAt <= time.Now().Unix() {
 		return false
 	}
-
-	relKey := strings.TrimPrefix(filepath.Clean(key), "/")
-	if strings.HasPrefix(relKey, s.baseDir+"/") {
-		relKey = strings.TrimPrefix(relKey, s.baseDir+"/")
+	if _, err := uploadpath.CanonicalKey(key); err != nil {
+		return false
 	}
-
+	decoded, err := hex.DecodeString(signature)
+	if err != nil || len(decoded) != sha256.Size {
+		return false
+	}
 	mac := hmac.New(sha256.New, []byte(s.secret))
-	mac.Write([]byte(fmt.Sprintf("%s:%d", relKey, expiresAt)))
-	expectedSig := hex.EncodeToString(mac.Sum(nil))
-
-	if hmac.Equal([]byte(signature), []byte(expectedSig)) {
-		return true
-	}
-
-	// Also check against raw key for backward compatibility
-	macRaw := hmac.New(sha256.New, []byte(s.secret))
-	macRaw.Write([]byte(fmt.Sprintf("%s:%d", key, expiresAt)))
-	return hmac.Equal([]byte(signature), []byte(hex.EncodeToString(macRaw.Sum(nil))))
+	mac.Write([]byte(fmt.Sprintf("%s:%d", key, expiresAt)))
+	return hmac.Equal(decoded, mac.Sum(nil))
 }
 
 // ScanVirus scans data for known malicious patterns and signatures

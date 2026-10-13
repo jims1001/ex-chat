@@ -73,7 +73,10 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 				ProcessedRecords: 0,
 				ErrorsJSON:       fmt.Sprintf(`[{"error": "Invalid JSON: %s"}]`, err.Error()),
 			}
-			_ = h.migRepo.CreateDataImport(imp)
+			if err := h.migRepo.CreateDataImport(imp); err != nil {
+				response.InternalError(c, "Failed to create import task")
+				return
+			}
 			response.BadRequest(c, "Invalid JSON data: "+err.Error())
 			return
 		}
@@ -87,17 +90,19 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 		autoStart = false
 	}
 
-	// Direct count completion when no raw data is provided but total_records is set
+	// A submitted count estimates work; without source data, only register a pending task.
 	if autoStart && trimmed == "" && req.TotalRecords > 0 {
 		imp := &domain.DataImport{
-			AccountID:        uint(accountID),
-			SourceProvider:   provider,
-			ImportType:       importType,
-			Status:           "completed",
-			TotalRecords:     req.TotalRecords,
-			ProcessedRecords: req.TotalRecords,
+			AccountID:      uint(accountID),
+			SourceProvider: provider,
+			ImportType:     importType,
+			Status:         "pending",
+			TotalRecords:   req.TotalRecords,
 		}
-		_ = h.migRepo.CreateDataImport(imp)
+		if err := h.migRepo.CreateDataImport(imp); err != nil {
+			response.InternalError(c, "Failed to create import task")
+			return
+		}
 		response.Created(c, imp)
 		return
 	}
@@ -129,7 +134,10 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 		}
 	}
 
-	_ = h.migRepo.CreateDataImport(imp)
+	if err := h.migRepo.CreateDataImport(imp); err != nil {
+		response.InternalError(c, "Failed to create import task")
+		return
+	}
 
 	logger.WithComponent("data_import").Info("data import task registered",
 		"import_id", imp.ID,
@@ -145,8 +153,14 @@ func (h *AuthEnterpriseHandler) CreateDataImport(c *gin.Context) {
 	}
 
 	// Immediate execution (AutoStart = true)
-	_ = h.dataImportService.ExecuteImport(c.Request.Context(), uint(accountID), imp)
-	_ = h.migRepo.UpdateDataImport(imp)
+	if err := h.dataImportService.ExecuteImport(c.Request.Context(), uint(accountID), imp); err != nil {
+		response.InternalError(c, "Failed to execute import")
+		return
+	}
+	if err := h.migRepo.UpdateDataImport(imp); err != nil {
+		response.InternalError(c, "Failed to update import task")
+		return
+	}
 	response.Created(c, imp)
 }
 
@@ -195,7 +209,10 @@ func (h *AuthEnterpriseHandler) PrevalidateDataImport(c *gin.Context) {
 		if valRes.Valid {
 			imp.Status = "validated"
 		}
-		_ = h.migRepo.UpdateDataImport(imp)
+		if err := h.migRepo.UpdateDataImport(imp); err != nil {
+			response.InternalError(c, "Failed to update import task")
+			return
+		}
 
 		response.Success(c, valRes)
 		return
@@ -271,11 +288,14 @@ func (h *AuthEnterpriseHandler) StartDataImport(c *gin.Context) {
 	}
 
 	if err := h.dataImportService.ExecuteImport(c.Request.Context(), uint(accountID), imp); err != nil {
-		response.InternalError(c, "Failed to execute import: "+err.Error())
+		response.InternalError(c, "Failed to execute import")
 		return
 	}
 
-	_ = h.migRepo.UpdateDataImport(imp)
+	if err := h.migRepo.UpdateDataImport(imp); err != nil {
+		response.InternalError(c, "Failed to update import task")
+		return
+	}
 	response.Success(c, imp)
 }
 
@@ -305,7 +325,10 @@ func (h *AuthEnterpriseHandler) CancelDataImport(c *gin.Context) {
 	}
 
 	imp.Status = "discarded"
-	_ = h.migRepo.UpdateDataImport(imp)
+	if err := h.migRepo.UpdateDataImport(imp); err != nil {
+		response.InternalError(c, "Failed to update import task")
+		return
+	}
 
 	logger.WithComponent("data_import").Info("data import task discarded",
 		"import_id", imp.ID,

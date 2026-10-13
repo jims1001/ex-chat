@@ -65,3 +65,15 @@ build:
 
 run:
 	go run ./cmd/server/main.go
+
+# Static Go analysis (the previously declared lint target had no recipe).
+lint:
+	go vet ./cmd/... ./internal/... ./pkg/... ./test/...
+
+# Reproducible local/CI gates. PostgreSQL requires explicit disposable targets.
+.PHONY: ci ci-postgres
+ci:
+	./scripts/ci.sh core
+
+ci-postgres:
+	./scripts/ci.sh postgres

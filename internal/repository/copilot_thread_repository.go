@@ -75,7 +75,7 @@ func (r *CopilotThreadRepository) CreateThread(thread *domain.CopilotThread) err
 // GetThread retrieves a single CopilotThread with associations
 func (r *CopilotThreadRepository) GetThread(accountID, threadID uint) (*domain.CopilotThread, error) {
 	var thread domain.CopilotThread
-	err := r.db.Where("account_id = ? AND id = ?", accountID, threadID).Preload("Assistant").First(&thread).Error
+	err := r.db.Where("account_id = ? AND id = ?", accountID, threadID).Preload("Assistant", "account_id = ?", accountID).First(&thread).Error
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +86,10 @@ func (r *CopilotThreadRepository) GetThread(accountID, threadID uint) (*domain.C
 }
 
 func (r *CopilotThreadRepository) hydrateOwnerReferences(thread *domain.CopilotThread) error {
+	// Provider credentials must never be returned with thread associations.
+	if thread.Assistant != nil {
+		thread.Assistant.Config = ""
+	}
 	if r.users == nil || (thread.ConversationID != nil && r.conversations == nil) {
 		return gorm.ErrInvalidData
 	}
@@ -121,6 +125,10 @@ func (r *CopilotThreadRepository) UpdateThread(thread *domain.CopilotThread) err
 // DeleteThread cascades deletions for a thread and its messages
 func (r *CopilotThreadRepository) DeleteThread(accountID, threadID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockCopilotThread(tx, accountID, threadID); err != nil {
+			return err
+		}
+
 		// Verify thread exists
 		var thread domain.CopilotThread
 		if err := tx.Where("account_id = ? AND id = ?", accountID, threadID).First(&thread).Error; err != nil {
@@ -176,7 +184,7 @@ func (r *CopilotThreadRepository) ListThreads(accountID uint, filter CopilotThre
 	}
 	offset := (page - 1) * pageSize
 
-	err := q.Preload("Assistant").
+	err := q.Preload("Assistant", "account_id = ?", accountID).
 		Order("COALESCE(last_message_at, updated_at) DESC").
 		Limit(pageSize).
 		Offset(offset).
@@ -203,6 +211,10 @@ func (r *CopilotThreadRepository) AddMessage(msg *domain.CopilotThreadMessage) e
 	msg.UpdatedAt = now
 
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockCopilotThread(tx, msg.AccountID, msg.ThreadID); err != nil {
+			return err
+		}
+
 		// 1. Insert message
 		if err := tx.Create(msg).Error; err != nil {
 			return err
@@ -290,6 +302,10 @@ func (r *CopilotThreadRepository) GetRecentThreadContext(accountID, threadID uin
 // DeleteMessage deletes a single message and decrements the thread's message count
 func (r *CopilotThreadRepository) DeleteMessage(accountID, threadID, messageID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockCopilotThread(tx, accountID, threadID); err != nil {
+			return err
+		}
+
 		var msg domain.CopilotThreadMessage
 		if err := tx.Where("account_id = ? AND thread_id = ? AND id = ?", accountID, threadID, messageID).First(&msg).Error; err != nil {
 			return err
@@ -301,13 +317,17 @@ func (r *CopilotThreadRepository) DeleteMessage(accountID, threadID, messageID u
 
 		return tx.Model(&domain.CopilotThread{}).
 			Where("account_id = ? AND id = ? AND message_count > 0", accountID, threadID).
-			Update("message_count", gorm.Expr("message_count - 1")).Error
+			Updates(map[string]any{"message_count": gorm.Expr("message_count - 1"), "total_tokens": gorm.Expr("total_tokens - ?", msg.TokenCount)}).Error
 	})
 }
 
 // ClearMessages deletes all messages for a thread and resets message stats
 func (r *CopilotThreadRepository) ClearMessages(accountID, threadID uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockCopilotThread(tx, accountID, threadID); err != nil {
+			return err
+		}
+
 		if err := tx.Where("account_id = ? AND thread_id = ?", accountID, threadID).
 			Delete(&domain.CopilotThreadMessage{}).Error; err != nil {
 			return err
@@ -398,4 +418,17 @@ func (r *CopilotThreadRepository) GetThreadMetrics(accountID uint) (*CopilotThre
 	)
 
 	return metrics, nil
+}
+
+// Every child mutation takes the parent write lock first. Besides serializing
+// PostgreSQL clear/append/delete, changing updated_at invalidates in-flight context.
+func lockCopilotThread(tx *gorm.DB, accountID, threadID uint) error {
+	result := tx.Model(&domain.CopilotThread{}).Where("account_id = ? AND id = ?", accountID, threadID).UpdateColumn("updated_at", time.Now().UTC())
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }

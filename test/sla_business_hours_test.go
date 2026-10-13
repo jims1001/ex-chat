@@ -282,11 +282,11 @@ func TestSLA_AccountEvaluation_BusinessHours_BreachAndNoBreach(t *testing.T) {
 
 	// SLA Policy: 2 hours First Response (7200s), 8 hours Resolution (28800s)
 	slaPolicy := domain.SLAPolicy{
-		AccountID:                   account.ID,
-		Name:                        "Standard Business Hours SLA",
+		AccountID:                  account.ID,
+		Name:                       "Standard Business Hours SLA",
 		FirstResponseTimeThreshold: 7200,
 		ResolutionTimeThreshold:    28800,
-		OnlyDuringBusinessHours:     true,
+		OnlyDuringBusinessHours:    true,
 	}
 	_ = db.Create(&slaPolicy).Error
 
@@ -311,7 +311,10 @@ func TestSLA_AccountEvaluation_BusinessHours_BreachAndNoBreach(t *testing.T) {
 	_ = db.Model(&convA).Update("created_at", friday1630).Error
 
 	// Verify deadline calculation for convA
-	frtDue, _, resDue, isFRT, _, isRes, p := slaService.GetConversationSLADeadlines(&convA)
+	frtDue, _, resDue, isFRT, _, isRes, p, deadlineErr := slaService.GetConversationSLADeadlines(&convA)
+	if deadlineErr != nil {
+		t.Fatalf("SLA deadlines failed: %v", deadlineErr)
+	}
 	if p == nil || p.ID != slaPolicy.ID {
 		t.Fatalf("expected resolved policy to match %d", slaPolicy.ID)
 	}
@@ -438,7 +441,7 @@ func TestSLA_APIEndpoints(t *testing.T) {
 	createSLAPayload := map[string]any{
 		"name":                          "Enterprise Standard SLA",
 		"first_response_time_threshold": 1800,
-		"resolution_time_threshold":    7200,
+		"resolution_time_threshold":     7200,
 		"only_during_business_hours":    true,
 	}
 	createSLABody, _ := json.Marshal(createSLAPayload)

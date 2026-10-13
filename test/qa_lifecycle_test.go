@@ -55,7 +55,7 @@ func TestQALifecycle(t *testing.T) {
 
 	var authResp struct {
 		Data struct {
-			Token string `json:"token"`
+			Token    string `json:"token"`
 			Accounts []struct {
 				ID uint `json:"id"`
 			} `json:"accounts"`
@@ -69,36 +69,10 @@ func TestQALifecycle(t *testing.T) {
 	accountID := authResp.Data.Accounts[0].ID
 	inspectorID := authResp.Data.User.ID
 
-	// Create a secondary agent user (agent being reviewed)
-	addAgentBody, _ := json.Marshal(map[string]string{
-		"name":     "一线客服小陈",
-		"email":    "agent.chen@example.com",
-		"password": "Password123!",
-		"role":     "agent",
-	})
-	wAddAgent := httptest.NewRecorder()
-	reqAddAgent, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", accountID), bytes.NewBuffer(addAgentBody))
-	reqAddAgent.Header.Set("Content-Type", "application/json")
-	reqAddAgent.Header.Set("Authorization", "Bearer "+token)
-	engine.ServeHTTP(wAddAgent, reqAddAgent)
-	var addAgentResp struct {
-		Data domain.User `json:"data"`
-	}
-	_ = json.Unmarshal(wAddAgent.Body.Bytes(), &addAgentResp)
-	agentUserID := addAgentResp.Data.ID
-
-	// Create a tertiary user (independent supervisor for appeal review)
-	addLeadBody, _ := json.Marshal(map[string]string{
-		"name":     "服务复核总监",
-		"email":    "lead.director@example.com",
-		"password": "Password123!",
-		"role":     "administrator",
-	})
-	wAddLead := httptest.NewRecorder()
-	reqAddLead, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", accountID), bytes.NewBuffer(addLeadBody))
-	reqAddLead.Header.Set("Content-Type", "application/json")
-	reqAddLead.Header.Set("Authorization", "Bearer "+token)
-	engine.ServeHTTP(wAddLead, reqAddLead)
+	// Provision verified fixtures for the agent under review and independent reviewer.
+	agent := createAccountMemberFixture(t, db, accountID, "一线客服小陈", "agent.chen@example.com", "Password123!", domain.RoleAgent, nil)
+	agentUserID := agent.ID
+	createAccountMemberFixture(t, db, accountID, "服务复核总监", "lead.director@example.com", "Password123!", domain.RoleAdministrator, nil)
 
 	// 1. Scenario 1: Scorecard & Criteria Management
 	var scorecardID uint
@@ -309,11 +283,11 @@ func TestQALifecycle(t *testing.T) {
 	t.Run("Scenario 4: Fatal Error Veto Evaluation", func(t *testing.T) {
 		// Create a new task
 		createTaskBody, _ := json.Marshal(map[string]interface{}{
-			"target_type": "conversation",
-			"target_id":   10899,
-			"target_ref":  "会话 #10899",
+			"target_type":  "conversation",
+			"target_id":    10899,
+			"target_ref":   "会话 #10899",
 			"scorecard_id": scorecardID,
-			"agent_id":    agentUserID,
+			"agent_id":     agentUserID,
 		})
 		wCreate := httptest.NewRecorder()
 		reqCreate, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/qa/tasks", accountID), bytes.NewBuffer(createTaskBody))
@@ -334,10 +308,10 @@ func TestQALifecycle(t *testing.T) {
 			"feedback": "触碰合规红线：客服要求客户通过聊天发送明文数据库密码",
 			"evaluations": []map[string]interface{}{
 				{
-					"criterion_id":     criteriaList[0].ID,
-					"criterion_title":  criteriaList[0].Title,
-					"max_score":        30,
-					"score":            30,
+					"criterion_id":    criteriaList[0].ID,
+					"criterion_title": criteriaList[0].Title,
+					"max_score":       30,
+					"score":           30,
 				},
 				{
 					"criterion_id":       criteriaList[3].ID, // Fatal item

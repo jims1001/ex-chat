@@ -5,6 +5,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // DeviceRepository manages push notification subscriptions (FCM, APNs, Browser)
@@ -45,4 +46,10 @@ func (r *DeviceRepository) ListSubscriptions(ctx context.Context, userID, accoun
 		Where("user_id = ? AND account_id = ?", userID, accountID).
 		Find(&subs).Error
 	return subs, err
+}
+
+// DeleteAttemptedSubscription removes only the exact identity and version that
+// was attempted. A replacement token, refreshed row, or other account survives.
+func (r *DeviceRepository) DeleteAttemptedSubscription(ctx context.Context, attempted domain.NotificationSubscription) error {
+	return r.db.WithContext(ctx).Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).Where("id = ? AND account_id = ? AND user_id = ? AND subscription_type = ? AND push_token = ? AND updated_at = ?", attempted.ID, attempted.AccountID, attempted.UserID, attempted.SubscriptionType, attempted.PushToken, attempted.UpdatedAt).Delete(&domain.NotificationSubscription{}).Error
 }

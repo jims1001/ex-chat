@@ -30,10 +30,27 @@ type architectureDependencyModule struct {
 	Startup     []string `json:"startup"`
 }
 
+// Local owner capabilities are intentionally distinct from the remote contract
+// registry. Register the real call, owner adapter and composition so a typed port
+// cannot silently bypass the source/dependency guard or imply a credential API.
+type architectureLocalOwnerPort struct {
+	Consumer, Provider, Kind                                string
+	Port, Method, DefinitionFile                            string
+	ConsumerFieldFile, ConsumerField, ConsumerFile          string
+	ProviderFile, ProviderFactory                           string
+	ProviderRepository, ProviderRepositoryMethod            string
+	ProviderRepositoryFile, CompositionFile, StandaloneFile string
+}
+
 type architectureDependencySources struct {
-	RepositoryOwners map[string]string `json:"repositoryOwners"`
-	ScopePolicy      string            `json:"scopePolicy"`
-	ScanScopes       []struct {
+	LocalFirebaseConfigOwnerPorts []architectureLocalFirebaseConfigOwnerPort `json:"localFirebaseConfigOwnerPorts"`
+	LocalTextOwnerPorts           []architectureLocalTextOwnerPort           `json:"localTextOwnerPorts"`
+	LocalSummaryOwnerPorts        []architectureLocalCountOwnerPort          `json:"localSummaryOwnerPorts"`
+	RepositoryOwners              map[string]string                          `json:"repositoryOwners"`
+	LocalOwnerPorts               []architectureLocalOwnerPort               `json:"localOwnerPorts"`
+	LocalCountOwnerPorts          []architectureLocalCountOwnerPort          `json:"localCountOwnerPorts"`
+	ScopePolicy                   string                                     `json:"scopePolicy"`
+	ScanScopes                    []struct {
 		Consumer string `json:"consumer"`
 		File     string `json:"file"`
 	} `json:"scanScopes"`
@@ -103,8 +120,8 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// E-ARCH-08-v75 registers the MSG email branding read from ENT.
-	const approvedManifestSHA256 = "0ead677bd70ffdf2830af74964f01858962531956481727c96a4ff76d834c499"
+	// Phase51 registers only the local NTF-to-SYS private Firebase pair read.
+	const approvedManifestSHA256 = "71238c4a692d91fea561afd0ec135cad8417318873694d3325dc1fc650f9e1f7"
 	if actual := fmt.Sprintf("%x", sha256.Sum256(raw)); actual != approvedManifestSHA256 {
 		t.Fatalf("dependency manifest changed (%s); reopen ARCH-03 and approve a new fingerprint", actual)
 	}
@@ -214,6 +231,11 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 	if err := json.Unmarshal(sourceRaw, &sources); err != nil {
 		t.Fatal(err)
 	}
+	validateArchitectureLocalOwnerPorts(t, sources, byName)
+	validateArchitectureTextOwnerPorts(t, sources, byName)
+	validateArchitectureFirebaseConfigOwnerPort(t, sources, byName)
+	validateArchitectureReportCountOwnerPorts(t, sources, byName)
+	validateArchitectureReportSummaryOwnerPort(t, sources, byName)
 	if len(sources.Modules) != len(manifest.Modules) {
 		t.Fatalf("dependency source module count=%d, want %d", len(sources.Modules), len(manifest.Modules))
 	}
@@ -289,7 +311,7 @@ func TestArchitectureDependencyGraphIsCompleteAndAcyclic(t *testing.T) {
 		observedEdges[strings.Join([]string{observed.Consumer, observed.Provider, observed.Kind}, "|")] = true
 	}
 
-	repositoryPattern := regexp.MustCompile(`\b(?:New)?([A-Z][A-Za-z0-9]*Repository)\b`)
+	repositoryPattern := regexp.MustCompile(`\b(?:New)?([A-Z][A-Za-z0-9]*(?:Repository|Coordinator))\b`)
 	servicePattern := regexp.MustCompile(`\bservice\.(?:New)?([A-Z][A-Za-z0-9]*Service)\b`)
 	dependencyMatches := func(code string) [][]string {
 		return append(repositoryPattern.FindAllStringSubmatch(code, -1), servicePattern.FindAllStringSubmatch(code, -1)...)
@@ -447,5 +469,86 @@ func TestArchitectureDependencyCycleDetectorRejectsMutations(t *testing.T) {
 				t.Fatalf("mutated graph unexpectedly sorted all %d modules", got)
 			}
 		})
+	}
+}
+
+// Keep this under the existing graph root so the native gate still covers the
+// full guard. The source inventory is exact, including standalone non-composition.
+func validateArchitectureLocalOwnerPorts(t *testing.T, sources architectureDependencySources, modules map[string]architectureDependencyModule) {
+	t.Helper()
+	want := []architectureLocalOwnerPort{{
+		Consumer: "MSG", Provider: "CHN", Kind: "synchronous",
+		Port: "domain.InboxTranscriptSMTP", Method: "SendInboxTranscript",
+		DefinitionFile:    "internal/domain/inbox_transcript_smtp.go",
+		ConsumerFieldFile: "internal/modruntime/runtime.go", ConsumerField: "InboxTranscriptSMTP",
+		ConsumerFile: "internal/modruntime/ordinary_email.go",
+		ProviderFile: "internal/service/inbox_transcript_smtp.go", ProviderFactory: "NewInboxTranscriptSMTP",
+		ProviderRepository: "InboxTranscriptSMTPRepository", ProviderRepositoryMethod: "FindInboxSMTP",
+		ProviderRepositoryFile: "internal/repository/inbox_repository.go",
+		CompositionFile:        "cmd/server/main.go", StandaloneFile: "cmd/module-server/main.go",
+	}}
+	if !reflect.DeepEqual(sources.LocalOwnerPorts, want) {
+		t.Fatalf("local owner-port inventory changed: got %+v, want %+v", sources.LocalOwnerPorts, want)
+	}
+	read := func(path string) string {
+		t.Helper()
+		data, err := os.ReadFile("../" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	mustMatch := func(path, pattern string) {
+		t.Helper()
+		if !regexp.MustCompile(pattern).MatchString(read(path)) {
+			t.Fatalf("local owner-port source %s no longer matches %s", path, pattern)
+		}
+	}
+	for _, port := range sources.LocalOwnerPorts {
+		allowed := false
+		for _, provider := range modules[port.Consumer].Synchronous {
+			allowed = allowed || provider == port.Provider
+		}
+		if !allowed || port.Kind != "synchronous" || sources.RepositoryOwners[port.ProviderRepository] != port.Provider {
+			t.Fatalf("local owner port %s has no matching owner/dependency", port.Port)
+		}
+		ownerScope := false
+		for _, scope := range sources.ScanScopes {
+			ownerScope = ownerScope || (scope.File == port.ProviderFile && scope.Consumer == port.Provider)
+		}
+		if !ownerScope {
+			t.Fatalf("local owner adapter %s has no %s source scope", port.ProviderFile, port.Provider)
+		}
+		mustMatch(port.DefinitionFile, `(?s)type\s+InboxTranscriptSMTP\s+interface\s*\{\s*SendInboxTranscript\(`)
+		mustMatch(port.ConsumerFieldFile, `\bInboxTranscriptSMTP\s+domain\.InboxTranscriptSMTP\b`)
+		mustMatch(port.ConsumerFile, `\.InboxTranscriptSMTP\.SendInboxTranscript\(`)
+		mustMatch(port.ProviderFile, `func\s+NewInboxTranscriptSMTP\([^)]*InboxTranscriptSMTPRepository[^)]*\)\s+domain\.InboxTranscriptSMTP`)
+		mustMatch(port.ProviderFile, `\.repo\.FindInboxSMTP\(`)
+		mustMatch(port.ProviderRepositoryFile, `func\s*\([^)]*\*InboxRepository\)\s+FindInboxSMTP\(`)
+		mustMatch(port.CompositionFile, `InboxTranscriptSMTP:\s*service\.NewInboxTranscriptSMTP\(repository\.NewInboxRepository\(`)
+		if strings.Contains(read(port.StandaloneFile), "InboxTranscriptSMTP") {
+			t.Fatal("standalone module-server must not compose an Inbox SMTP capability without a registered owner adapter")
+		}
+		// Inventory every production call to the capability and credential-bearing
+		// repository port. Moving/adding calls must not hide a new owner edge.
+		for _, glob := range []string{"../internal/*/*.go", "../cmd/*/*.go"} {
+			files, err := filepath.Glob(glob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				if strings.HasSuffix(file, "_test.go") {
+					continue
+				}
+				path := strings.TrimPrefix(file, "../")
+				code := read(path)
+				if regexp.MustCompile(`\.InboxTranscriptSMTP\.SendInboxTranscript\(`).MatchString(code) && path != port.ConsumerFile {
+					t.Fatalf("unregistered local Inbox SMTP capability call in %s", path)
+				}
+				if regexp.MustCompile(`\.FindInboxSMTP\(`).MatchString(code) && path != port.ProviderFile {
+					t.Fatalf("credential-bearing Inbox SMTP read outside CHN adapter in %s", path)
+				}
+			}
+		}
 	}
 }

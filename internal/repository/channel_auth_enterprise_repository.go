@@ -16,15 +16,18 @@ type ChannelIAMRepository interface {
 	ListSessions(uint) ([]domain.UserSession, error)
 	DeleteSession(uint, uint) error
 	CreatePasswordResetToken(*domain.PasswordResetToken) error
-	GetValidPasswordResetToken(string) (*domain.PasswordResetToken, error)
-	MarkPasswordResetTokenUsed(uint) error
+	ActivatePasswordResetToken(uint) error
+	ConsumePasswordResetToken(string, string) error
 	GetMFAProfile(uint) (*domain.MFAProfile, error)
 	SaveMFAProfile(*domain.MFAProfile) error
 	GenerateMFABackupCodes(uint) ([]string, error)
+	ManageMFA(uint, string, string, string) (*domain.MFAProfile, []string, error)
+	VerifyMFALogin(uint, string, string, time.Time) error
 	RevokeToken(string, uint, time.Time) error
 	IsTokenRevoked(string) (bool, error)
 	ConfirmUserByToken(string) (*domain.User, error)
-	GenerateConfirmationToken(uint) (string, error)
+	GenerateConfirmationToken(uint) (*domain.User, string, error)
+	ActivateConfirmationToken(uint, string) error
 }
 
 type ChannelRTMRepository interface {
@@ -32,6 +35,7 @@ type ChannelRTMRepository interface {
 	ListCalls(uint) ([]domain.Call, error)
 	GetCall(uint, uint) (*domain.Call, error)
 	UpdateCall(*domain.Call) error
+	UpdateCallRecording(accountID, callID uint, recordingURL, recordingSID string, duration *int) error
 	CreateConference(*domain.Conference) error
 	GetConference(uint, uint) (*domain.Conference, error)
 	GetConferenceByID(uint, uint) (*domain.Conference, error)
@@ -88,6 +92,7 @@ type ChannelAuthEnterpriseRepository interface {
 	ListCalls(accountID uint) ([]domain.Call, error)
 	GetCall(accountID uint, id uint) (*domain.Call, error)
 	UpdateCall(call *domain.Call) error
+	UpdateCallRecording(accountID, callID uint, recordingURL, recordingSID string, duration *int) error
 	CreateConference(conf *domain.Conference) error
 	GetConference(accountID uint, inboxID uint) (*domain.Conference, error)
 	GetConferenceByID(accountID uint, id uint) (*domain.Conference, error)
@@ -106,11 +111,13 @@ type ChannelAuthEnterpriseRepository interface {
 	ListSessions(userID uint) ([]domain.UserSession, error)
 	DeleteSession(userID uint, sessionID uint) error
 	CreatePasswordResetToken(token *domain.PasswordResetToken) error
-	GetValidPasswordResetToken(tokenStr string) (*domain.PasswordResetToken, error)
-	MarkPasswordResetTokenUsed(tokenID uint) error
+	ActivatePasswordResetToken(tokenID uint) error
+	ConsumePasswordResetToken(rawToken, passwordHash string) error
 	GetMFAProfile(userID uint) (*domain.MFAProfile, error)
 	SaveMFAProfile(profile *domain.MFAProfile) error
 	GenerateMFABackupCodes(userID uint) ([]string, error)
+	ManageMFA(userID uint, currentPassword, action, code string) (*domain.MFAProfile, []string, error)
+	VerifyMFALogin(userID uint, code, challengeID string, challengeExpiresAt time.Time) error
 
 	// Token Revocation
 	RevokeToken(token string, userID uint, expiresAt time.Time) error
@@ -118,7 +125,8 @@ type ChannelAuthEnterpriseRepository interface {
 
 	// Email Confirmation
 	ConfirmUserByToken(tokenStr string) (*domain.User, error)
-	GenerateConfirmationToken(userID uint) (string, error)
+	GenerateConfirmationToken(userID uint) (*domain.User, string, error)
+	ActivateConfirmationToken(userID uint, rawToken string) error
 
 	// Data Imports & Migrations
 	CreateDataImport(imp *domain.DataImport) error

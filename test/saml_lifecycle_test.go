@@ -165,14 +165,12 @@ func TestSAMLLifecycle_Full(t *testing.T) {
 			t.Errorf("expected SAML setting to be disabled")
 		}
 
-		// Verify SAML Login rejects login when disabled
+		// Login stays unavailable without trusted verification, even with settings disabled.
 		loginRes := makeReq(http.MethodPost, "/api/v1/auth/saml_login", map[string]any{
 			"email":      "admin@enterprise.com",
 			"account_id": account.ID,
 		})
-		if loginRes.Code != http.StatusBadRequest {
-			t.Errorf("expected 400 when SAML is disabled, got %d", loginRes.Code)
-		}
+		assertSSOLoginRejected(t, loginRes, http.StatusServiceUnavailable)
 	})
 
 	// 5. Re-enable SAML Settings via enable endpoint

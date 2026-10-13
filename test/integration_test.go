@@ -7,13 +7,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
+	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
@@ -125,13 +129,16 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 		t.Fatalf("widget config failed: %d", wConfig.Code)
 	}
 
+	visitorSourceID, visitorSession, _ := bootstrapWidgetVisitor(t, engine, websiteToken)
+
 	// Step 5: Customer starts a conversation via widget
 	convBody, _ := json.Marshal(map[string]string{
-		"source_id": "customer_session_42",
+		"source_id": visitorSourceID,
 		"message":   "I would like to enquire about enterprise plans.",
 	})
 	wConv := httptest.NewRecorder()
 	reqConv, _ := http.NewRequest("POST", "/api/v1/widget/conversations?website_token="+websiteToken, bytes.NewBuffer(convBody))
+	reqConv.Header.Set("X-Visitor-Session", visitorSession)
 	reqConv.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(wConv, reqConv)
 
@@ -253,4 +260,33 @@ func TestEndToEndCustomerSupportWorkflow(t *testing.T) {
 
 	_ = inboxID
 	_ = accountID
+}
+
+// createAccountMemberFixture provisions an already-verified identity for tests of
+// unrelated account features. It is deliberately test-only: production callers
+// must invite a recipient and wait for their identity proof before adding them.
+func createAccountMemberFixture(t *testing.T, db *gorm.DB, accountID uint, name, email, password, role string, customRoleID *uint) domain.User {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash fixture password: %v", err)
+	}
+	confirmedAt := time.Now().UTC()
+	user := domain.User{
+		Name: name, Email: email, PasswordHash: hash,
+		Role: domain.RoleAgent, Type: domain.UserTypeUser,
+		Availability: domain.AvailabilityOnline, ConfirmedAt: &confirmedAt,
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return tx.Create(&domain.AccountUser{
+			AccountID: accountID, UserID: user.ID, Role: role,
+			Availability: domain.AvailabilityOnline, CustomRoleID: customRoleID,
+		}).Error
+	}); err != nil {
+		t.Fatalf("create account member fixture: %v", err)
+	}
+	return user
 }

@@ -58,7 +58,22 @@ func CalculateResponseDuration(startTime, endTime time.Time, inbox *domain.Inbox
 	return sec
 }
 
-// CalculateConversationFRT computes the First Response Time (in seconds) for a single conversation
+// isReportHumanReply preserves legacy sender compatibility while excluding the
+// known bot identities from human response durations. Counts and bot/FCR metrics
+// have separate contracts and must not use this predicate.
+func isReportHumanReply(message *domain.Message) bool {
+	if message.MessageType != domain.MessageTypeOutgoing || message.Private {
+		return false
+	}
+	switch message.SenderType {
+	case "AgentBot", "CaptainAssistant", "Captain::Assistant":
+		return false
+	default:
+		return true
+	}
+}
+
+// CalculateConversationFRT computes the first human response duration in seconds.
 func CalculateConversationFRT(conv domain.Conversation, messages []domain.Message, inbox *domain.Inbox, useBusinessHours bool) (float64, bool) {
 	var firstIn *domain.Message
 	for i := range messages {
@@ -74,7 +89,7 @@ func CalculateConversationFRT(conv domain.Conversation, messages []domain.Messag
 	var firstOut *domain.Message
 	for i := range messages {
 		m := &messages[i]
-		if m.MessageType == domain.MessageTypeOutgoing && !m.Private && !m.CreatedAt.Before(firstIn.CreatedAt) {
+		if isReportHumanReply(m) && !m.CreatedAt.Before(firstIn.CreatedAt) {
 			firstOut = m
 			break
 		}
@@ -100,7 +115,7 @@ func CalculateConversationResolutionTime(conv domain.Conversation, inbox *domain
 	return dur, true
 }
 
-// CalculateConversationReplyTimes calculates the reply durations across messages in a conversation
+// CalculateConversationReplyTimes calculates human reply durations across messages.
 func CalculateConversationReplyTimes(messages []domain.Message, inbox *domain.Inbox, useBusinessHours bool) []float64 {
 	var durations []float64
 	var pendingIn *domain.Message
@@ -111,7 +126,7 @@ func CalculateConversationReplyTimes(messages []domain.Message, inbox *domain.In
 			if pendingIn == nil {
 				pendingIn = m
 			}
-		} else if m.MessageType == domain.MessageTypeOutgoing && !m.Private {
+		} else if isReportHumanReply(m) {
 			if pendingIn != nil {
 				dur := CalculateResponseDuration(pendingIn.CreatedAt, m.CreatedAt, inbox, useBusinessHours)
 				durations = append(durations, dur)

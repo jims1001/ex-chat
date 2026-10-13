@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
+	"github.com/OracleBetX-Projects/ex-chat/internal/billingportal"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -20,6 +21,7 @@ import (
 
 func TestEnterpriseBillingFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("BILLING_STRIPE_MODE", "")
 
 	cfg := &config.Config{
 		Environment:        "test",
@@ -35,7 +37,7 @@ func TestEnterpriseBillingFlow(t *testing.T) {
 	}
 
 	hub := ws.NewHub()
-	r := router.SetupRouter(cfg, db, hub)
+	r := router.SetupRouterWithOptions(cfg, db, hub, router.Options{BillingPortalConfig: &billingportal.Config{AllowedCurrencies: []string{"eur", "usd"}}})
 
 	// Create test user & account
 	account := &domain.Account{
@@ -89,23 +91,36 @@ func TestEnterpriseBillingFlow(t *testing.T) {
 
 	// 1. Checkout session generation
 	t.Run("1_Checkout", func(t *testing.T) {
-		// Test on enterprise route
-		res1 := makeReq(http.MethodPost, entBase+"/checkout", nil)
-		if res1.Code != http.StatusOK {
-			t.Fatalf("expected 200 on enterprise checkout, got %d: %s", res1.Code, res1.Body.String())
+		for _, path := range []string{entBase + "/checkout", v1Base + "/checkout"} {
+			result := makeReq(http.MethodPost, path, nil)
+			if result.Code != http.StatusServiceUnavailable {
+				t.Fatalf("unconfigured hosted billing portal must be explicit503: %d %s", result.Code, result.Body.String())
+			}
+			if strings.Contains(result.Body.String(), "cs_live_") {
+				t.Fatal("fabricated checkout URL")
+			}
 		}
-		var data1 struct {
-			RedirectURL string `json:"redirect_url"`
-		}
-		_ = json.Unmarshal(res1.Body.Bytes(), &data1)
-		if !strings.Contains(data1.RedirectURL, "https://billing.stripe.com/session/") {
-			t.Errorf("expected stripe redirect_url, got %s", data1.RedirectURL)
-		}
+	})
 
-		// Test on standard v1 route
-		res2 := makeReq(http.MethodPost, v1Base+"/checkout", nil)
-		if res2.Code != http.StatusOK {
-			t.Fatalf("expected 200 on v1 checkout, got %d: %s", res2.Code, res2.Body.String())
+	t.Run("2a_RejectUnconfiguredAndUnsupportedCurrency", func(t *testing.T) {
+		out := makeReq(http.MethodPost, entBase+"/select_billing_currency", map[string]string{"currency": "JPY"})
+		if out.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("unsupported currency accepted: %d %s", out.Code, out.Body.String())
+		}
+		unconfigured := router.SetupRouterWithOptions(cfg, db, hub, router.Options{BillingPortalConfig: &billingportal.Config{}})
+		req := httptest.NewRequest(http.MethodPost, entBase+"/select_billing_currency", strings.NewReader(`{"currency":"EUR"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		out = httptest.NewRecorder()
+		unconfigured.ServeHTTP(out, req)
+		if out.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("unconfigured currency accepted: %d %s", out.Code, out.Body.String())
+		}
+		for _, model := range []any{&domain.BillingCustomer{}, &domain.AccountSubscription{}, &domain.AccountBilling{}, &domain.PaymentCheckoutIntent{}} {
+			var n int64
+			if err := db.Model(model).Count(&n).Error; err != nil || n != 0 {
+				t.Fatalf("rejected currency changed %T: count=%d err=%v", model, n, err)
+			}
 		}
 	})
 
@@ -214,36 +229,17 @@ func TestEnterpriseBillingFlow(t *testing.T) {
 			t.Errorf("expected 422 on zero credits, got %d", badRes.Code)
 		}
 
-		// Test valid topup checkout
-		res := makeReq(http.MethodPost, entBase+"/topup_checkout", map[string]any{
-			"credits": 1000,
-		})
-		if res.Code != http.StatusOK {
-			t.Fatalf("expected 200 on topup_checkout, got %d: %s", res.Code, res.Body.String())
-		}
-		var data struct {
-			Credits     int     `json:"credits"`
-			Amount      float64 `json:"amount"`
-			Currency    string  `json:"currency"`
-			RedirectURL string  `json:"redirect_url"`
-		}
-		_ = json.Unmarshal(res.Body.Bytes(), &data)
-		if data.Credits != 1000 {
-			t.Errorf("expected credits 1000, got %d", data.Credits)
-		}
-		if data.Amount <= 0 {
-			t.Errorf("expected positive amount, got %f", data.Amount)
-		}
-		if !strings.Contains(data.RedirectURL, "https://checkout.stripe.com/pay/") {
-			t.Errorf("expected stripe topup redirect URL, got %s", data.RedirectURL)
+		// No provider is configured in this fixture: never fabricate a session
+		// or grant credits. Positive real-adapter protocol cases have their own tests.
+		for _, path := range []string{entBase + "/topup_checkout", v1Base + "/topup_checkout"} {
+			result := makeReq(http.MethodPost, path, map[string]any{"credits": 1000})
+			if result.Code != http.StatusServiceUnavailable {
+				t.Fatalf("unconfigured topup must be503: %d %s", result.Code, result.Body.String())
+			}
+			if strings.Contains(result.Body.String(), "cs_topup_") {
+				t.Fatal("fabricated topup URL")
+			}
 		}
 
-		// Also check v1 route
-		resV1 := makeReq(http.MethodPost, v1Base+"/topup_checkout", map[string]any{
-			"credits": 5000,
-		})
-		if resV1.Code != http.StatusOK {
-			t.Fatalf("expected 200 on v1 topup_checkout, got %d: %s", resV1.Code, resV1.Body.String())
-		}
 	})
 }

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
@@ -13,6 +15,7 @@ import (
 )
 
 type EmailLogHandler struct {
+	queue      domain.AccountTranscriptQueue
 	repository *repository.EmailLogRepository
 	service    *service.EmailService
 }
@@ -92,4 +95,38 @@ func emailLogError(c *gin.Context, err error) {
 		return
 	}
 	response.InternalError(c, err.Error())
+}
+
+// Detail projects the existing MSG status contract under the same account
+// membership authority as List. It grants no new conversation/inbox permission.
+func (h *EmailLogHandler) SetDeliveryQueue(queue domain.AccountTranscriptQueue) { h.queue = queue }
+func (h *EmailLogHandler) Detail(c *gin.Context) {
+	accountID, logID, ok := emailLogIDs(c)
+	if !ok {
+		return
+	}
+	if h.queue == nil {
+		accountTranscriptError(c, domain.ErrAccountTranscriptUnavailable)
+		return
+	}
+	raw, _ := c.Get(middleware.ContextUserID)
+	userID, _ := raw.(uint)
+	result, err := h.queue.Status(c.Request.Context(), accountID, userID, logID)
+	if err != nil {
+		accountTranscriptError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+func accountTranscriptError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, domain.ErrAccountTranscriptInvalid):
+		response.BadRequest(c, err.Error())
+	case errors.Is(err, domain.ErrAccountTranscriptConflict):
+		response.Error(c, http.StatusConflict, err.Error())
+	case errors.Is(err, domain.ErrAccountTranscriptNotFound):
+		response.NotFound(c, err.Error())
+	default:
+		response.Error(c, http.StatusServiceUnavailable, domain.ErrAccountTranscriptUnavailable.Error())
+	}
 }

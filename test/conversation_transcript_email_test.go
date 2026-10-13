@@ -90,14 +90,17 @@ func TestConversationTranscriptEmailDeliveryAndAudit(t *testing.T) {
 	inboxID := inboxResp.Data.ID
 	websiteToken := inboxResp.Data.WebsiteToken
 
+	sourceID, visitorSession, _ := bootstrapWidgetVisitor(t, r, websiteToken)
+
 	// 3. Create Contact via Widget
 	contactPayload := map[string]any{
-		"source_id": "src_alice_12345",
+		"source_id": sourceID,
 		"name":      "Alice Customer",
 		"email":     "alice.customer@example.org",
 	}
 	body, _ = json.Marshal(contactPayload)
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/contact?website_token=%s", websiteToken), bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -140,12 +143,13 @@ func TestConversationTranscriptEmailDeliveryAndAudit(t *testing.T) {
 	// 5. Create Messages: incoming message, outgoing agent message, and private note
 	// 5.1 Incoming message
 	msg1Payload := map[string]any{
-		"source_id":       "src_alice_12345",
+		"source_id":       sourceID,
 		"conversation_id": convID,
 		"content":         "Hello, I need help with my invoice #INV-9021!",
 	}
 	body, _ = json.Marshal(msg1Payload)
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/messages?website_token=%s", websiteToken), bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -250,6 +254,7 @@ func TestConversationTranscriptEmailDeliveryAndAudit(t *testing.T) {
 		}
 		body, _ := json.Marshal(widgetPayload)
 		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/transcript?website_token=%s", websiteToken), bytes.NewReader(body))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)

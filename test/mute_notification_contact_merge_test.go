@@ -203,6 +203,8 @@ func TestConversationMuteAndNotificationSettings(t *testing.T) {
 			SourceID:  "src_john_123",
 		})
 
+		visitorSession := signWidgetVisitorSession(t, inbox.ID, contact.ID, "src_john_123", cfg.JWTSecret)
+
 		// C. Create a Conversation
 		conv := domain.Conversation{
 			AccountID:  accountID,
@@ -260,6 +262,7 @@ func TestConversationMuteAndNotificationSettings(t *testing.T) {
 			"source_id":       "src_john_123",
 		})
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/widget/messages", bytes.NewReader(widgetMsgBody))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Auth-Token", inbox.WebsiteToken)
 		w = httptest.NewRecorder()

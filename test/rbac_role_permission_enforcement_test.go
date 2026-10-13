@@ -12,12 +12,16 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
 )
 
 func TestRBACRolePermissionEnforcement(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("AGENT_INVITATIONS_ENABLED", "true")
+	t.Setenv("FRONTEND_URL", "https://app.example.test")
+	t.Setenv("MAILER_SENDER_EMAIL", "support@example.test")
 
 	cfg := &config.Config{
 		Environment:        "test",
@@ -33,7 +37,8 @@ func TestRBACRolePermissionEnforcement(t *testing.T) {
 	}
 
 	hub := ws.NewHub()
-	r := router.SetupRouter(cfg, db, hub)
+	mail := service.NewMockEmailSender()
+	r := router.SetupRouterWithOptions(cfg, db, hub, router.Options{EmailSender: mail})
 
 	// 1. Sign up Administrator
 	adminSignUp, _ := json.Marshal(map[string]string{
@@ -78,16 +83,8 @@ func TestRBACRolePermissionEnforcement(t *testing.T) {
 		return rec
 	}
 
-	// 2. Add an Agent under the account using Admin token
-	addAgentRec := makeAuthReq(adminToken, http.MethodPost, "/api/v1/accounts/"+accStr+"/agents", map[string]string{
-		"name":     "Plain Agent",
-		"email":    "plain_agent@example.com",
-		"password": "AgentPassword123!",
-		"role":     "agent",
-	})
-	if addAgentRec.Code != http.StatusCreated {
-		t.Fatalf("failed to add plain agent: code=%d, body=%s", addAgentRec.Code, addAgentRec.Body.String())
-	}
+	// 2. Provision a verified plain agent to exercise authorization independently.
+	plainAgent := createAccountMemberFixture(t, db, accID, "Plain Agent", "plain_agent@example.com", "AgentPassword123!", domain.RoleAgent, nil)
 
 	// Sign in as Plain Agent to obtain agent token
 	agentSignIn, _ := json.Marshal(map[string]string{
@@ -120,6 +117,18 @@ func TestRBACRolePermissionEnforcement(t *testing.T) {
 			path   string
 			body   any
 		}{
+			{
+				name:   "Authorize WhatsApp Channel",
+				method: http.MethodPost,
+				path:   "/api/v1/accounts/" + accStr + "/whatsapp/authorization",
+				body:   map[string]any{"code": "mock-code"},
+			},
+			{
+				name:   "Create Twilio Channel",
+				method: http.MethodPost,
+				path:   "/api/v1/accounts/" + accStr + "/channels/twilio_channel",
+				body:   map[string]any{"inbox_name": "Unauthorized", "account_sid": "mock-sid", "auth_token": "mock-token", "phone_number": "+15551234567"},
+			},
 			{
 				name:   "Account Settings Update",
 				method: http.MethodPut,
@@ -255,17 +264,8 @@ func TestRBACRolePermissionEnforcement(t *testing.T) {
 		_ = json.Unmarshal(recRole.Body.Bytes(), &roleResp)
 		customRoleID := roleResp.Data.ID
 
-		// Admin adds a specialized agent with this custom role
-		recSpecialAgent := makeAuthReq(adminToken, http.MethodPost, "/api/v1/accounts/"+accStr+"/agents", map[string]any{
-			"name":           "Team Leader Bob",
-			"email":          "teamlead_bob@example.com",
-			"password":       "BobPassword123!",
-			"role":           "agent",
-			"custom_role_id": customRoleID,
-		})
-		if recSpecialAgent.Code != http.StatusCreated {
-			t.Fatalf("failed to add team lead agent: %d (body: %s)", recSpecialAgent.Code, recSpecialAgent.Body.String())
-		}
+		// Provision an accepted member carrying this account-scoped custom role.
+		createAccountMemberFixture(t, db, accID, "Team Leader Bob", "teamlead_bob@example.com", "BobPassword123!", domain.RoleAgent, &customRoleID)
 
 		// Sign in as Team Leader Bob
 		leaderSignIn, _ := json.Marshal(map[string]string{
@@ -287,15 +287,62 @@ func TestRBACRolePermissionEnforcement(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &leaderAuthResp)
 		leaderToken := leaderAuthResp.Data.Token
 
-		// A. Verify Bob CAN add an agent (granted by agent_manage)
+		// A. agent_manage authorizes an invitation, never immediate user/membership creation.
+		var membersBefore int64
+		if err := db.Model(&domain.AccountUser{}).Where("account_id = ?", accID).Count(&membersBefore).Error; err != nil {
+			t.Fatal(err)
+		}
+		emailsBefore := len(mail.GetSentEmails())
 		recAddByBob := makeAuthReq(leaderToken, http.MethodPost, "/api/v1/accounts/"+accStr+"/agents", map[string]any{
-			"name":     "Junior Agent",
-			"email":    "junior@example.com",
-			"password": "JuniorPassword123!",
-			"role":     "agent",
+			"email": "junior@example.com", "role": "agent",
 		})
-		if recAddByBob.Code != http.StatusCreated {
-			t.Errorf("expected 201 Created for Team Lead on POST /agents, got %d (body: %s)", recAddByBob.Code, recAddByBob.Body.String())
+		if recAddByBob.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted for Team Lead invitation, got %d (body: %s)", recAddByBob.Code, recAddByBob.Body.String())
+		}
+		var users, membersAfter int64
+		if err := db.Model(&domain.User{}).Where("email = ?", "junior@example.com").Count(&users).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Model(&domain.AccountUser{}).Where("account_id = ?", accID).Count(&membersAfter).Error; err != nil {
+			t.Fatal(err)
+		}
+		if users != 0 || membersAfter != membersBefore {
+			t.Fatalf("invitation created user or membership before recipient proof: users=%d members=%d (before=%d)", users, membersAfter, membersBefore)
+		}
+		sent := mail.GetSentEmails()
+		if len(sent) != emailsBefore+1 || sent[len(sent)-1].To != "junior@example.com" {
+			t.Fatal("expected one invitation delivered only to the invitee")
+		}
+
+		// A delegated manager cannot grant administrative or custom-role authority.
+		for _, grant := range []map[string]any{
+			{"email": "escalated@example.com", "role": domain.RoleAdministrator},
+			{"email": "escalated@example.com", "role": domain.RoleAgent, "custom_role_id": customRoleID},
+		} {
+			rec := makeAuthReq(leaderToken, http.MethodPost, "/api/v1/accounts/"+accStr+"/agents", grant)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected 403 for manager privilege grant, got %d: %s", rec.Code, rec.Body.String())
+			}
+		}
+		plainAgentPath := "/api/v1/accounts/" + accStr + "/agents/" + strconv.FormatUint(uint64(plainAgent.ID), 10)
+		for _, grant := range []map[string]any{
+			{"role": domain.RoleAdministrator},
+			{"custom_role_id": customRoleID},
+		} {
+			rec := makeAuthReq(leaderToken, http.MethodPut, plainAgentPath, grant)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("expected 403 for manager membership privilege update, got %d: %s", rec.Code, rec.Body.String())
+			}
+		}
+		var plainMembership domain.AccountUser
+		if err := db.Where("account_id = ? AND user_id = ?", accID, plainAgent.ID).First(&plainMembership).Error; err != nil {
+			t.Fatal(err)
+		}
+		if plainMembership.Role != domain.RoleAgent || plainMembership.CustomRoleID != nil {
+			t.Fatalf("rejected privilege grant changed membership: %+v", plainMembership)
+		}
+		if len(mail.GetSentEmails()) != emailsBefore+1 {
+			t.Fatal("rejected privilege grants sent invitation emails")
 		}
 
 		// B. Verify Bob CAN view reports (granted by report_view)

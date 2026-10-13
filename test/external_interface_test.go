@@ -30,6 +30,7 @@ type externalInterfaceRegistry struct {
 		RequireIdempotency        bool
 		AliasesReuseHandlerAction bool
 	}
+	ReadOnlyPostQueries                map[string]string
 	VersionRules                       []string
 	EntrypointRule                     string
 	DirectInternalStorageAccessAllowed bool
@@ -44,7 +45,9 @@ func TestExternalInterfaceRegistryAndRuntimeAreFrozen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const approvedSHA = "f200c859504763d94c3900a7046935d7738245842f3f39b556dca5de3007f3e9"
+	// ARCH-06 remains reopened: explicit body-only invitation preview query;
+	// all write action/idempotency requirements remain unchanged.
+	const approvedSHA = "11be56b7f8ca40bd65442082d3b1a80e962385a4d20e11848df527ad4d607eab"
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != approvedSHA {
 		t.Fatalf("external interface registry changed (%s); reopen ARCH-06", got)
 	}
@@ -82,6 +85,9 @@ func TestExternalInterfaceRegistryAndRuntimeAreFrozen(t *testing.T) {
 	if !reflect.DeepEqual(runtimeLayers, registry.Layers) {
 		t.Fatalf("runtime error layers=%v declared=%v", runtimeLayers, registry.Layers)
 	}
+	if !reflect.DeepEqual(foundation.ExternalReadOnlyPostQueries, registry.ReadOnlyPostQueries) {
+		t.Fatal("read-only POST query inventory differs from runtime")
+	}
 	if !reflect.DeepEqual(foundation.ExternalVersionRules, registry.VersionRules) {
 		t.Fatalf("runtime version rules=%v declared=%v", foundation.ExternalVersionRules, registry.VersionRules)
 	}
@@ -101,6 +107,21 @@ func TestEveryRouterEntrypointIsClassifiedAndEveryWriteHasOneAction(t *testing.T
 		t.Fatalf("route inventory unexpectedly small: %d", len(routes))
 	}
 	registeredActions := loadRegisteredCommands(t)
+	queryRaw, err := os.ReadFile("../architecture/module_contracts.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contracts moduleContractRegistry
+	if err := json.Unmarshal(queryRaw, &contracts); err != nil {
+		t.Fatal(err)
+	}
+	registeredQueries := map[string]bool{}
+	for _, module := range contracts.Modules {
+		for _, query := range module.Queries {
+			registeredQueries[query] = true
+		}
+	}
+	usedReadOnlyPosts := map[string]bool{}
 	routerSource, err := os.ReadFile("../internal/router/router.go")
 	if err != nil || strings.Contains(string(routerSource), "db.") {
 		t.Fatal("router transport layer directly accesses the database")
@@ -118,6 +139,16 @@ func TestEveryRouterEntrypointIsClassifiedAndEveryWriteHasOneAction(t *testing.T
 		familyCounts[family]++
 		if strings.Contains(route.SourceLine, "db.") || strings.Contains(route.SourceLine, "Repo.") || strings.Contains(route.SourceLine, "repository.") {
 			t.Fatalf("external entrypoint directly accesses storage: %s", route.SourceLine)
+		}
+		if query, readOnly := registry.ReadOnlyPostQueries[route.Handler]; readOnly {
+			if route.Method != "POST" || !registeredQueries[query] {
+				t.Fatalf("invalid explicit read-only POST mapping for %s", route.Handler)
+			}
+			if _, writes := foundation.ExternalWriteDispatchOverrides[route.Handler]; writes {
+				t.Fatalf("read-only POST also has write mapping: %s", route.Handler)
+			}
+			usedReadOnlyPosts[route.Handler] = true
+			continue
 		}
 		if isWriteMethod(route.Method) {
 			if strings.Contains(route.SourceLine, "func(") {
@@ -158,6 +189,11 @@ func TestEveryRouterEntrypointIsClassifiedAndEveryWriteHasOneAction(t *testing.T
 	}
 	if len(writeActions) == 0 {
 		t.Fatal("no external writes discovered")
+	}
+	for handler := range registry.ReadOnlyPostQueries {
+		if !usedReadOnlyPosts[handler] {
+			t.Fatalf("stale read-only POST query override %s", handler)
+		}
 	}
 	for handler := range foundation.ExternalWriteDispatchOverrides {
 		if !usedOverrides[handler] {

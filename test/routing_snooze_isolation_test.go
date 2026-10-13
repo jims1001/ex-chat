@@ -29,7 +29,9 @@ func testRoutingSnoozeOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 		}
 	}
 
-	routing := service.NewRoutingService(rteDB, repository.NewConversationRepository(conDB), nil)
+	owner := repository.NewConversationRepository(conDB)
+	owner.SetAutomationCapture(true)
+	routing := service.NewRoutingService(rteDB, owner, nil)
 	resumed, err := routing.ResumeSnoozedConversations(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +56,23 @@ func testRoutingSnoozeOwnerBoundary(t *testing.T, openStore func(string) *gorm.D
 	}
 	if rteDB.Migrator().HasTable(&domain.Conversation{}) {
 		t.Fatal("RTE created the CON authority table")
+	}
+
+	facts, err := owner.PendingAutomationFacts(context.Background(), 100)
+	if err != nil || len(facts) != 2 {
+		t.Fatalf("CON expiry facts=%+v err=%v", facts, err)
+	}
+	for _, fact := range facts {
+		if fact.SourceModule != "CON" || fact.Payload["status_before"] != "snoozed" || fact.Payload["status_after"] != "open" {
+			t.Fatalf("invalid owner expiry transition: %+v", fact)
+		}
+	}
+	if rteDB.Migrator().HasTable(&domain.AutomationRuleExecution{}) {
+		t.Fatal("RTE created the AUT execution authority table")
+	}
+	var rteFacts int64
+	if err := rteDB.Model(&domain.LocalChangeJournal{}).Where("action = ?", "automation_trigger").Count(&rteFacts).Error; err != nil || rteFacts != 0 {
+		t.Fatalf("RTE must not capture CON expiry facts: count=%d err=%v", rteFacts, err)
 	}
 
 	conSQL, err := conDB.DB()

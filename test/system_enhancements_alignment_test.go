@@ -92,24 +92,8 @@ func TestSystemEnhancementsAlignment(t *testing.T) {
 			customRoleID = uint(data["id"].(float64))
 		}
 
-		// 1.2 创建普通测试坐席成员并分配该自定义角色
-		addMemberBody, _ := json.Marshal(map[string]interface{}{
-			"name":           "张敏客服",
-			"email":          "agent.zhang@example.com",
-			"role":           "初级客服主管",
-			"custom_role_id": customRoleID,
-		})
-		wMember := httptest.NewRecorder()
-		reqMember, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", accountID), bytes.NewBuffer(addMemberBody))
-		reqMember.Header.Set("Authorization", "Bearer "+adminToken)
-		reqMember.Header.Set("Content-Type", "application/json")
-		engine.ServeHTTP(wMember, reqMember)
-		if wMember.Code != http.StatusOK && wMember.Code != http.StatusCreated {
-			t.Fatalf("add member with custom role failed: code=%d body=%s", wMember.Code, wMember.Body.String())
-		}
-
-		var agentUser domain.User
-		db.Where("email = ?", "agent.zhang@example.com").First(&agentUser)
+		// 1.2 Provision a verified fixture with the frontend-format custom role.
+		agentUser := createAccountMemberFixture(t, db, accountID, "张敏客服", "agent.zhang@example.com", "ZhangFixturePassword123!", domain.RoleAgent, &customRoleID)
 
 		// 生成该坐席成员的 JWT Token
 		agentToken, err := auth.GenerateToken(&agentUser, cfg.JWTSecret, 24)
@@ -392,7 +376,7 @@ func TestSystemEnhancementsAlignment(t *testing.T) {
 			if templates[i].LastSyncAt == nil {
 				t.Fatalf("template %s has nil LastSyncAt", templates[i].Name)
 			}
-			if templates[i].SyncStatus != "synced" {
+			if templates[i].SyncStatus != "imported" {
 				t.Fatalf("template %s unexpected sync status: %s", templates[i].Name, templates[i].SyncStatus)
 			}
 		}
@@ -448,18 +432,8 @@ func TestSystemEnhancementsAlignment(t *testing.T) {
 		}
 
 		// 5.2 QA 质检主体限制：非被评分人且非主管，严禁冒充整改、发起申诉或提交证据
-		// 创建次要坐席 3 (非任务所属人)
-		addAgent3Body, _ := json.Marshal(map[string]string{
-			"name":     "局外坐席-小王",
-			"email":    "agent.wang@example.com",
-			"password": "Password123!",
-			"role":     "agent",
-		})
-		wAgent3 := httptest.NewRecorder()
-		reqAgent3, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", accountID), bytes.NewBuffer(addAgent3Body))
-		reqAgent3.Header.Set("Content-Type", "application/json")
-		reqAgent3.Header.Set("Authorization", "Bearer "+adminToken)
-		engine.ServeHTTP(wAgent3, reqAgent3)
+		// Provision the secondary agent fixture without relying on invitation creation.
+		createAccountMemberFixture(t, db, accountID, "局外坐席-小王", "agent.wang@example.com", "Password123!", domain.RoleAgent, nil)
 
 		loginAgent3Body, _ := json.Marshal(map[string]string{
 			"email":    "agent.wang@example.com",

@@ -3,24 +3,32 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/channel"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type ChannelDriverHandler struct {
-	repo        repository.ChannelRTMRepository
-	inboxRepo   *repository.InboxRepository
-	contactRepo *repository.ContactRepository
-	convRepo    *repository.ConversationRepository
-	messageRepo *repository.MessageRepository
+	callReads        *CallReadAuthorization
+	channelOutbound  *service.ChannelOutboundService
+	channelIngress   *service.ChannelIngressService
+	recordingStorage *service.LocalStorageService
+	repo             repository.ChannelRTMRepository
+	inboxRepo        *repository.InboxRepository
+	contactRepo      *repository.ContactRepository
+	convRepo         *repository.ConversationRepository
+	messageRepo      *repository.MessageRepository
 }
 
 func NewChannelDriverHandler(
@@ -31,407 +39,42 @@ func NewChannelDriverHandler(
 	messageRepo *repository.MessageRepository,
 ) *ChannelDriverHandler {
 	return &ChannelDriverHandler{
-		repo:        repo,
-		inboxRepo:   inboxRepo,
-		contactRepo: contactRepo,
-		convRepo:    convRepo,
-		messageRepo: messageRepo,
+		recordingStorage: service.NewLocalStorageService("uploads", ""),
+		channelIngress:   service.NewChannelIngressService(channel.ConfigFromEnvironment(), nil, inboxRepo, contactRepo, convRepo, messageRepo),
+		repo:             repo,
+		inboxRepo:        inboxRepo,
+		contactRepo:      contactRepo,
+		convRepo:         convRepo,
+		messageRepo:      messageRepo,
 	}
 }
 
 // ----------------- WhatsApp Cloud API -----------------
 
-func (h *ChannelDriverHandler) VerifyWhatsAppWebhook(c *gin.Context) {
-	mode := c.Query("hub.mode")
-	token := c.Query("hub.verify_token")
-	challenge := c.Query("hub.challenge")
-
-	if mode == "subscribe" && token != "" {
-		c.String(http.StatusOK, challenge)
-		return
-	}
-	response.Forbidden(c, "Invalid verify token or mode")
-}
-
-func (h *ChannelDriverHandler) HandleWhatsAppWebhook(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	logger.WithComponent("channel_whatsapp").Info("received whatsapp webhook",
-		"account_id", accountID,
-	)
-
-	var payload struct {
-		Object string `json:"object"`
-		Entry  []struct {
-			ID      string `json:"id"`
-			Changes []struct {
-				Value struct {
-					MessagingProduct string `json:"messaging_product"`
-					Metadata         struct {
-						DisplayPhoneNumber string `json:"display_phone_number"`
-						PhoneNumberID      string `json:"phone_number_id"`
-					} `json:"metadata"`
-					Contacts []struct {
-						Profile struct {
-							Name string `json:"name"`
-						} `json:"profile"`
-						WaID string `json:"wa_id"`
-					} `json:"contacts"`
-					Messages []struct {
-						From      string `json:"from"`
-						ID        string `json:"id"`
-						Timestamp string `json:"timestamp"`
-						Type      string `json:"type"`
-						Text      struct {
-							Body string `json:"body"`
-						} `json:"text"`
-					} `json:"messages"`
-					Statuses []struct {
-						ID          string `json:"id"`
-						Status      string `json:"status"` // sent, delivered, read, failed
-						RecipientID string `json:"recipient_id"`
-					} `json:"statuses"`
-				} `json:"value"`
-				Field string `json:"field"`
-			} `json:"changes"`
-		} `json:"entry"`
-	}
-
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		response.BadRequest(c, "Failed to parse webhook JSON")
-		return
-	}
-
-	// Process entries
-	var processedCount int
-	for _, entry := range payload.Entry {
-		for _, change := range entry.Changes {
-			val := change.Value
-			// Process incoming WhatsApp messages
-			for _, msg := range val.Messages {
-				senderName := msg.From
-				if len(val.Contacts) > 0 && val.Contacts[0].Profile.Name != "" {
-					senderName = val.Contacts[0].Profile.Name
-				}
-
-				// Find or create Contact
-				contact, err := h.contactRepo.FindByIdentifier(uint(accountID), msg.From)
-				if err != nil || contact == nil {
-					contact = &domain.Contact{
-						AccountID:   uint(accountID),
-						Identifier:  msg.From,
-						Name:        senderName,
-						PhoneNumber: msg.From,
-					}
-					_ = h.contactRepo.Create(contact)
-				}
-
-				// Find or create Conversation
-				conv := &domain.Conversation{
-					AccountID: uint(accountID),
-					InboxID:   1, // default whatsapp inbox
-					ContactID: contact.ID,
-					Status:    domain.ConversationStatusOpen,
-					Priority:  "medium",
-				}
-				_ = h.convRepo.Create(conv)
-
-				// Create Message
-				content := msg.Text.Body
-				if content == "" {
-					content = fmt.Sprintf("[%s message]", msg.Type)
-				}
-				inMsg := &domain.Message{
-					AccountID:      uint(accountID),
-					ConversationID: conv.ID,
-					SenderType:     "Contact",
-					SenderID:       contact.ID,
-					MessageType:    domain.MessageTypeIncoming,
-					ContentType:    domain.ContentTypeText,
-					Content:        content,
-					Status:         domain.MessageStatusSent,
-					EchoID:         msg.ID,
-				}
-				_ = h.messageRepo.Create(inMsg)
-				processedCount++
-			}
-		}
-	}
-
-	response.Success(c, gin.H{
-		"processed_messages": processedCount,
-		"status":             "success",
-	})
-}
-
-func (h *ChannelDriverHandler) WhatsAppAuthorization(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	var req struct {
-		Code          string `json:"code" binding:"required"`
-		BusinessID    string `json:"business_id"`
-		WabaID        string `json:"waba_id"`
-		PhoneNumberID string `json:"phone_number_id"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	response.Success(c, gin.H{
-		"account_id":      accountID,
-		"authorized":      true,
-		"waba_id":         req.WabaID,
-		"phone_number_id": req.PhoneNumberID,
-		"channel_type":    "whatsapp",
-	})
-}
-
+// WhatsApp CSAT provisioning has no implemented provider identity/review contract.
+// This account-level alias also has no inbox selector; never infer one or claim
+// that a local configuration save created an approved provider template.
 func (h *ChannelDriverHandler) SetWhatsAppCSATTemplate(c *gin.Context) {
-	accountID, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	inboxID, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-	if inboxID == 0 {
-		inboxID, _ = strconv.ParseUint(c.Param("inbox_id"), 10, 64)
-	}
+	whatsAppCSATUnavailable(c)
+}
 
-	var req struct {
-		Message    string `json:"message" binding:"required"`
-		ButtonText string `json:"button_text"`
-		Language   string `json:"language"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	response.Success(c, gin.H{
-		"account_id":  accountID,
-		"inbox_id":    inboxID,
-		"template":    req.Message,
-		"button_text": req.ButtonText,
-		"status":      "active",
-	})
+func whatsAppCSATUnavailable(c *gin.Context) {
+	response.Error(c, http.StatusServiceUnavailable, "WhatsApp CSAT template provisioning and provider status are currently unavailable")
 }
 
 // ----------------- Twilio Channel -----------------
 
-func (h *ChannelDriverHandler) CreateTwilioChannel(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	var req struct {
-		InboxName   string `json:"inbox_name" binding:"required"`
-		AccountSID  string `json:"account_sid" binding:"required"`
-		AuthToken   string `json:"auth_token" binding:"required"`
-		PhoneNumber string `json:"phone_number" binding:"required"`
-		Medium      string `json:"medium"` // sms, whatsapp
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	medium := req.Medium
-	if medium == "" {
-		medium = "sms"
-	}
-
-	inbox := &domain.Inbox{
-		AccountID:   uint(accountID),
-		Name:        req.InboxName,
-		ChannelType: "channel_twilio",
-	}
-	if err := h.inboxRepo.Create(inbox); err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	response.Created(c, gin.H{
-		"inbox":        inbox,
-		"phone_number": req.PhoneNumber,
-		"medium":       medium,
-	})
-}
-
-func (h *ChannelDriverHandler) HandleTwilioWebhook(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	from := c.PostForm("From")
-	to := c.PostForm("To")
-	body := c.PostForm("Body")
-	messageSID := c.PostForm("MessageSid")
-
-	if from == "" || body == "" {
-		response.BadRequest(c, "From and Body are required")
-		return
-	}
-
-	logger.WithComponent("channel_twilio").Info("received twilio webhook",
-		"account_id", accountID,
-		"from", from,
-		"to", to,
-		"message_sid", messageSID,
-	)
-
-	// Find or create Contact
-	contact, err := h.contactRepo.FindByIdentifier(uint(accountID), from)
-	if err != nil || contact == nil {
-		contact = &domain.Contact{
-			AccountID:   uint(accountID),
-			Identifier:  from,
-			Name:        from,
-			PhoneNumber: from,
-		}
-		_ = h.contactRepo.Create(contact)
-	}
-
-	conv := &domain.Conversation{
-		AccountID: uint(accountID),
-		InboxID:   1,
-		ContactID: contact.ID,
-		Status:    domain.ConversationStatusOpen,
-	}
-	_ = h.convRepo.Create(conv)
-
-	inMsg := &domain.Message{
-		AccountID:      uint(accountID),
-		ConversationID: conv.ID,
-		SenderType:     "Contact",
-		SenderID:       contact.ID,
-		MessageType:    domain.MessageTypeIncoming,
-		ContentType:    domain.ContentTypeText,
-		Content:        body,
-		Status:         domain.MessageStatusSent,
-		EchoID:         messageSID,
-	}
-	_ = h.messageRepo.Create(inMsg)
-
-	// Return TwiML response
-	c.Header("Content-Type", "application/xml")
-	c.String(http.StatusOK, "<Response></Response>")
-	_ = to
-}
-
 // ----------------- Facebook / Instagram Callbacks -----------------
 
+// Facebook/Instagram callbacks remain disabled until there is a verified
+// recipient binding and provider signature implementation. Never synthesize a
+// tenant or inbox from an unsigned payload.
 func (h *ChannelDriverHandler) VerifyFacebookWebhook(c *gin.Context) {
-	mode := c.Query("hub.mode")
-	challenge := c.Query("hub.challenge")
-	token := c.Query("hub.verify_token")
-
-	if mode == "subscribe" && token != "" {
-		c.String(http.StatusOK, challenge)
-		return
-	}
-	response.Forbidden(c, "Invalid verify token")
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Facebook/Instagram callbacks are not configured"})
 }
 
 func (h *ChannelDriverHandler) HandleFacebookWebhook(c *gin.Context) {
-	accountIDStr := c.Param("account_id")
-	if accountIDStr == "" {
-		accountIDStr = c.Query("account_id")
-	}
-	accountID, _ := strconv.ParseUint(accountIDStr, 10, 64)
-	if accountID == 0 {
-		accountID = 1
-	}
-
-	logger.WithComponent("channel_facebook").Info("received facebook webhook",
-		"account_id", accountID,
-	)
-
-	var payload struct {
-		Object string `json:"object"`
-		Entry  []struct {
-			ID        string `json:"id"`
-			Time      int64  `json:"time"`
-			Messaging []struct {
-				Sender struct {
-					ID string `json:"id"`
-				} `json:"sender"`
-				Recipient struct {
-					ID string `json:"id"`
-				} `json:"recipient"`
-				Message struct {
-					MID  string `json:"mid"`
-					Text string `json:"text"`
-				} `json:"message"`
-			} `json:"messaging"`
-		} `json:"entry"`
-	}
-
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	var processedCount int
-	for _, entry := range payload.Entry {
-		for _, msgItem := range entry.Messaging {
-			senderID := msgItem.Sender.ID
-			text := msgItem.Message.Text
-			if senderID == "" || text == "" {
-				continue
-			}
-
-			// Find or create Contact
-			contact, err := h.contactRepo.FindByIdentifier(uint(accountID), senderID)
-			if err != nil || contact == nil {
-				contact = &domain.Contact{
-					AccountID:  uint(accountID),
-					Identifier: senderID,
-					Name:       "Facebook User " + senderID,
-				}
-				_ = h.contactRepo.Create(contact)
-			}
-
-			// Find or create Conversation
-			conv := &domain.Conversation{
-				AccountID: uint(accountID),
-				InboxID:   1, // default facebook inbox
-				ContactID: contact.ID,
-				Status:    domain.ConversationStatusOpen,
-				Priority:  "medium",
-			}
-			_ = h.convRepo.Create(conv)
-
-			// Create Message
-			inMsg := &domain.Message{
-				AccountID:      uint(accountID),
-				ConversationID: conv.ID,
-				SenderType:     "Contact",
-				SenderID:       contact.ID,
-				MessageType:    domain.MessageTypeIncoming,
-				ContentType:    domain.ContentTypeText,
-				Content:        text,
-				Status:         domain.MessageStatusSent,
-				EchoID:         msgItem.Message.MID,
-			}
-			_ = h.messageRepo.Create(inMsg)
-			processedCount++
-		}
-	}
-
-	response.Success(c, gin.H{
-		"account_id":         accountID,
-		"processed_messages": processedCount,
-		"handled":            true,
-	})
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Facebook/Instagram callbacks are not configured"})
 }
 
 // ----------------- WebRTC Calls & Conferences -----------------
@@ -442,13 +85,27 @@ func (h *ChannelDriverHandler) ListCalls(c *gin.Context) {
 		response.BadRequest(c, "Account ID must be numeric")
 		return
 	}
-
-	calls, err := h.repo.ListCalls(uint(accountID))
-	if err != nil {
-		response.InternalError(c, err.Error())
+	actor, ok := h.callReadActor(c, uint(accountID))
+	if !ok {
 		return
 	}
-	response.Success(c, calls)
+	calls, err := h.repo.ListCalls(uint(accountID))
+	if err != nil {
+		response.InternalError(c, "Failed to load calls")
+		return
+	}
+	visible := make([]domain.Call, 0, len(calls))
+	for i := range calls {
+		allowed, err := h.callReads.canRead(actor, &calls[i])
+		if err != nil {
+			response.InternalError(c, "Failed to verify call access")
+			return
+		}
+		if allowed {
+			visible = append(visible, calls[i])
+		}
+	}
+	response.Success(c, visible)
 }
 
 func (h *ChannelDriverHandler) GetCall(c *gin.Context) {
@@ -457,19 +114,23 @@ func (h *ChannelDriverHandler) GetCall(c *gin.Context) {
 		response.BadRequest(c, "Account ID must be numeric")
 		return
 	}
-
 	callID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Call ID must be numeric")
 		return
 	}
-
-	call, err := h.repo.GetCall(uint(accountID), uint(callID))
-	if err != nil || call == nil {
-		response.NotFound(c, "Call not found")
+	actor, ok := h.callReadActor(c, uint(accountID))
+	if !ok {
 		return
 	}
-
+	call, err := h.repo.GetCall(uint(accountID), uint(callID))
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		response.InternalError(c, "Failed to load call")
+		return
+	}
+	if !h.allowCallRead(c, actor, call) {
+		return
+	}
 	response.Success(c, call)
 }
 
@@ -665,25 +326,33 @@ func (h *ChannelDriverHandler) AddCallCandidate(c *gin.Context) {
 }
 
 func (h *ChannelDriverHandler) ListCallCandidates(c *gin.Context) {
-	accountID, _ := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Account ID must be numeric")
+		return
+	}
 	callID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid call ID")
 		return
 	}
-
+	actor, ok := h.callReadActor(c, uint(accountID))
+	if !ok {
+		return
+	}
 	call, err := h.repo.GetCall(uint(accountID), uint(callID))
-	if err != nil || call == nil {
-		response.NotFound(c, "Call not found")
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		response.InternalError(c, "Failed to load call")
 		return
 	}
-
-	cands, err := h.repo.ListCallCandidates(uint(callID))
+	if !h.allowCallRead(c, actor, call) {
+		return
+	}
+	cands, err := h.repo.ListCallCandidates(call.ID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "Failed to load call candidates")
 		return
 	}
-
 	response.Success(c, cands)
 }
 
@@ -771,18 +440,27 @@ func (h *ChannelDriverHandler) GetWhatsAppCallDetail(c *gin.Context) {
 		response.BadRequest(c, "Account ID must be numeric")
 		return
 	}
-
+	actor, ok := h.callReadActor(c, uint(accountID))
+	if !ok {
+		return
+	}
 	idParam := c.Param("id")
 	var call *domain.Call
-	if callID, err := strconv.ParseUint(idParam, 10, 64); err == nil {
-		call, _ = h.repo.GetCall(uint(accountID), uint(callID))
+	if callID, parseErr := strconv.ParseUint(idParam, 10, 64); parseErr == nil {
+		call, err = h.repo.GetCall(uint(accountID), uint(callID))
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			response.InternalError(c, "Failed to load call")
+			return
+		}
 	}
 	if call == nil {
-		call, _ = h.repo.GetCallByProviderCallID(uint(accountID), idParam)
+		call, err = h.repo.GetCallByProviderCallID(uint(accountID), idParam)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			response.InternalError(c, "Failed to load call")
+			return
+		}
 	}
-
-	if call == nil {
-		response.NotFound(c, "WhatsApp call not found")
+	if !h.allowCallRead(c, actor, call) {
 		return
 	}
 
@@ -795,7 +473,7 @@ func (h *ChannelDriverHandler) GetWhatsAppCallDetail(c *gin.Context) {
 
 	caller := gin.H{}
 	if call.ContactID != 0 && h.contactRepo != nil {
-		if contact, err := h.contactRepo.FindByID(call.AccountID, call.ContactID); err == nil && contact != nil {
+		if contact, err := h.contactRepo.FindCallReadCaller(call.AccountID, call.ContactID); err == nil && contact != nil {
 			caller = gin.H{
 				"name":   contact.Name,
 				"phone":  contact.PhoneNumber,
@@ -834,81 +512,6 @@ func (h *ChannelDriverHandler) GetWhatsAppCallDetail(c *gin.Context) {
 			{"urls": "stun:stun.l.google.com:19302"},
 		},
 		"caller": caller,
-	})
-}
-
-// UploadCallRecording handles recording file upload or URL metadata update
-func (h *ChannelDriverHandler) UploadCallRecording(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	idParam := c.Param("id")
-	var call *domain.Call
-	if callID, err := strconv.ParseUint(idParam, 10, 64); err == nil {
-		call, _ = h.repo.GetCall(uint(accountID), uint(callID))
-	}
-	if call == nil {
-		call, _ = h.repo.GetCallByProviderCallID(uint(accountID), idParam)
-	}
-
-	if call == nil {
-		response.NotFound(c, "Call not found")
-		return
-	}
-
-	// 1. Check multipart file
-	file, fileErr := c.FormFile("recording")
-	if fileErr != nil {
-		file, fileErr = c.FormFile("file")
-	}
-
-	if fileErr == nil && file != nil {
-		call.RecordingURL = fmt.Sprintf("/uploads/recordings/%d_%s", call.ID, file.Filename)
-	}
-
-	// 2. Check JSON payload or form values
-	var req struct {
-		RecordingURL string `json:"recording_url" form:"recording_url"`
-		RecordingSID string `json:"recording_sid" form:"recording_sid"`
-		Duration     int    `json:"duration" form:"duration"`
-	}
-	if err := c.ShouldBind(&req); err == nil {
-		if req.RecordingURL != "" {
-			call.RecordingURL = req.RecordingURL
-		}
-		if req.RecordingSID != "" {
-			call.RecordingSID = req.RecordingSID
-		}
-		if req.Duration > 0 {
-			call.Duration = req.Duration
-		}
-	}
-
-	if call.RecordingURL == "" {
-		call.RecordingURL = fmt.Sprintf("/uploads/recordings/call_%d.mp4", call.ID)
-	}
-
-	call.UpdatedAt = time.Now()
-	if err := h.repo.UpdateCall(call); err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	logger.WithComponent("call").Info("call recording uploaded",
-		"call_id", call.ID,
-		"recording_url", call.RecordingURL,
-		"duration", call.Duration,
-	)
-
-	response.Success(c, gin.H{
-		"status":        "uploaded",
-		"call_id":       call.ID,
-		"recording_url": call.RecordingURL,
-		"recording_sid": call.RecordingSID,
-		"duration":      call.Duration,
 	})
 }
 

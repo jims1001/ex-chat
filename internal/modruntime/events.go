@@ -44,6 +44,21 @@ func (o *EventOutbox) MarkDelivered(eventID string) error {
 	return o.db.Model(&domain.LocalChangeJournal{}).Where("change_id = ? AND source_module = ? AND action = ?", eventID, o.moduleID, "event_outbox").Updates(map[string]any{"status": "delivered", "result": "applied"}).Error
 }
 
+// New canned-response changed events carry precise IDs and versions in their
+// payload. Preserve those JSON numbers during both direct and fanout delivery;
+// older event capabilities retain their established decoding semantics.
+func decodeOutboxEvent(raw string, event *foundation.EventEnvelope) error {
+	if err := json.Unmarshal([]byte(raw), event); err != nil {
+		return err
+	}
+	if event.EventType != cannedResponseChanged {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	return decoder.Decode(event)
+}
+
 type EventDispatcher struct {
 	outbox                    *EventOutbox
 	targetURL, token, version string
@@ -64,7 +79,7 @@ func (d *EventDispatcher) DeliverPending(ctx context.Context, limit int) (int, e
 	delivered := 0
 	for _, record := range records {
 		var event foundation.EventEnvelope
-		if err := json.Unmarshal([]byte(record.AfterState), &event); err != nil {
+		if err := decodeOutboxEvent(record.AfterState, &event); err != nil {
 			return delivered, err
 		}
 		if err := d.deliver(ctx, event); err != nil {
@@ -133,7 +148,7 @@ func (d *EventFanoutDispatcher) DeliverPending(ctx context.Context, limit int) (
 	delivered := 0
 	for _, record := range records {
 		var event foundation.EventEnvelope
-		if err := json.Unmarshal([]byte(record.AfterState), &event); err != nil {
+		if err := decodeOutboxEvent(record.AfterState, &event); err != nil {
 			return delivered, err
 		}
 		targetNames := make([]string, 0, len(d.targets))
@@ -237,7 +252,7 @@ func ReplayConsumedEvents(ctx context.Context, db *gorm.DB, moduleID string, app
 	}
 	for _, record := range records {
 		var event foundation.EventEnvelope
-		if record.AfterState == "" || json.Unmarshal([]byte(record.AfterState), &event) != nil || event.Validate() != nil {
+		if record.AfterState == "" || decodeOutboxEvent(record.AfterState, &event) != nil || event.Validate() != nil {
 			return errors.New("event inbox contains an invalid replay payload")
 		}
 		if err := apply(context.WithValue(ctx, transactionKey{}, db), event); err != nil {

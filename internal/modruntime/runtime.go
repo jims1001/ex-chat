@@ -23,6 +23,7 @@ import (
 const FoundationVersion = "foundation-v1"
 
 type Config struct {
+	OrdinaryEmail      OrdinaryEmailConfig
 	ModuleID           string
 	Address            string
 	DBDriver           string
@@ -45,6 +46,8 @@ type Config struct {
 type DependencyConfig struct {
 	URL   string `json:"url"`
 	Token string `json:"token"`
+	// LocalHandler is composition-only; it is never loaded from configuration.
+	LocalHandler http.Handler `json:"-"`
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -134,6 +137,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 		cfg.EventPollInterval = time.Duration(milliseconds) * time.Millisecond
 	}
+	var mailErr error
+	cfg.OrdinaryEmail, mailErr = LoadOrdinaryEmailConfig(getenv)
+	if mailErr != nil {
+		return Config{}, mailErr
+	}
 	if _, err := database.ModuleModels(cfg.ModuleID); err != nil {
 		return Config{}, err
 	}
@@ -216,10 +224,12 @@ func OpenDatabase(cfg Config) (*gorm.DB, error) {
 }
 
 type Runtime struct {
-	Config    Config
-	DB        *gorm.DB
-	Contracts *ContractRegistry
-	StartedAt time.Time
+	InboxTranscriptSMTP    domain.InboxTranscriptSMTP
+	OrdinaryEmailTransport OrdinaryEmailTransport
+	Config                 Config
+	DB                     *gorm.DB
+	Contracts              *ContractRegistry
+	StartedAt              time.Time
 }
 
 func (r Runtime) Readiness() error {

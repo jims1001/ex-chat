@@ -16,12 +16,15 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
 )
 
 func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("FRONTEND_URL", "https://chat.example.test")
+	t.Setenv("CHANNEL_CREDENTIAL_KEY", "")
 
 	cfg := &config.Config{
 		Environment:        "test",
@@ -37,7 +40,8 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	}
 
 	hub := ws.NewHub()
-	r := router.SetupRouter(cfg, db, hub)
+	mailSender := service.NewMockEmailSender()
+	r := router.SetupRouterWithOptions(cfg, db, hub, router.Options{EmailSender: mailSender})
 
 	// 1. Register Admin
 	signUpPayload := map[string]string{
@@ -59,11 +63,13 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 		Success bool `json:"success"`
 		Data    struct {
 			Token    string           `json:"token"`
+			User     domain.User      `json:"user"`
 			Accounts []domain.Account `json:"accounts"`
 		} `json:"data"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &authResp)
 	token := authResp.Data.Token
+	userID := authResp.Data.User.ID
 	accountID := authResp.Data.Accounts[0].ID
 	accStr := strconv.FormatUint(uint64(accountID), 10)
 
@@ -72,7 +78,7 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/accounts/"+accStr+"/whatsapp/callback?hub.mode=subscribe&hub.challenge=test_challenge_123&hub.verify_token=valid_token", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK || w.Body.String() != "test_challenge_123" {
+	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("whatsapp challenge failed: code=%d body=%s", w.Code, w.Body.String())
 	}
 
@@ -113,11 +119,11 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("whatsapp message ingestion failed: code=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// 2.3 WhatsApp Authorization & CSAT Template
+	// 2.3 WhatsApp Authorization
 	authReqBody, _ := json.Marshal(map[string]string{
 		"code":            "meta_oauth_auth_code",
 		"waba_id":         "waba_101",
@@ -128,22 +134,8 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("whatsapp auth failed: code=%d", w.Code)
-	}
-
-	csatTmplBody, _ := json.Marshal(map[string]string{
-		"message":     "How was your support experience?",
-		"button_text": "Rate Us",
-		"language":    "en",
-	})
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accStr+"/inboxes/1/csat_template", bytes.NewReader(csatTmplBody))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("whatsapp csat template failed: code=%d", w.Code)
 	}
 
 	// 3. Twilio SMS Channel & Inbound Webhook
@@ -159,7 +151,7 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("twilio channel creation failed: code=%d body=%s", w.Code, w.Body.String())
 	}
 
@@ -173,8 +165,50 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("twilio callback failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Unconfigured/unsigned integrations must not create any business rows.
+	for _, model := range []any{&domain.ChannelConnection{}, &domain.Inbox{}, &domain.Contact{}, &domain.Conversation{}, &domain.Message{}} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("unconfigured channel persisted data: %T count=%d err=%v", model, count, err)
+		}
+	}
+	// Signaling fixtures are created explicitly; insecure callbacks no longer
+	// synthesize default contact/inbox rows for unrelated scenarios.
+	if err := db.Create(&domain.Inbox{ID: 1, AccountID: accountID, Name: "Test signaling", WebsiteToken: "test-signaling-inbox"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.Contact{ID: 1, AccountID: accountID, Name: "Test signaling contact"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Local CSAT configuration needs a real inbox. It does not create a WhatsApp template.
+	csatTmplBody, _ := json.Marshal(map[string]string{
+		"message":     "How was your support experience?",
+		"button_text": "Rate Us",
+		"language":    "en",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accStr+"/inboxes/1/csat_template", bytes.NewReader(csatTmplBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("local csat configuration failed: code=%d", w.Code)
+	}
+
+	var savedCSATInbox domain.Inbox
+	if err := db.Where("account_id = ? AND id = ?", accountID, 1).First(&savedCSATInbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	var savedCSAT map[string]any
+	if err := json.Unmarshal([]byte(savedCSATInbox.CSATConfig), &savedCSAT); err != nil {
+		t.Fatal(err)
+	}
+	if savedCSAT["message"] != "How was your support experience?" || savedCSAT["button_text"] != "Rate Us" || savedCSAT["language"] != "en" {
+		t.Fatalf("local CSAT configuration was not persisted: %v", savedCSAT)
 	}
 
 	// 4. Calls & Conference Signaling
@@ -223,18 +257,14 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/omniauth/google_oauth2/callback?code=mock_code&email=hacker@evil.com", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected query bypass to fail with 401, got %d", w.Code)
-	}
+	assertSSOLoginRejected(t, w, http.StatusUnauthorized)
 
-	// 5b. Legitimate Google ID Token login succeeds
-	validGoogleToken := auth.GenerateMockGoogleIDToken("google_agent@example.com", "Google Agent")
-	req = httptest.NewRequest(http.MethodGet, "/omniauth/google_oauth2/callback?credential="+validGoogleToken, nil)
+	// 5b. A forged Google credential in a GET callback cannot authenticate.
+	forgedGoogleToken := auth.GenerateMockGoogleIDToken("google_agent@example.com", "Google Agent")
+	req = httptest.NewRequest(http.MethodGet, "/omniauth/google_oauth2/callback?credential="+forgedGoogleToken, nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("google oauth callback with valid credential failed: code=%d body=%s", w.Code, w.Body.String())
-	}
+	assertSSOLoginRejected(t, w, http.StatusUnauthorized)
 
 	// SAML configuration
 	samlBody, _ := json.Marshal(map[string]any{
@@ -251,17 +281,15 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 		t.Fatalf("save saml settings failed: code=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// SAML Login initiation
+	// SAML login initiation stays unavailable until trusted verification is configured.
 	samlLoginReq, _ := json.Marshal(map[string]string{"email": "saml_user@corp.com"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml_login", bytes.NewReader(samlLoginReq))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("initiate saml login failed: code=%d", w.Code)
-	}
+	assertSSOLoginRejected(t, w, http.StatusServiceUnavailable)
 
-	// SAML ACS Callback: Corrupted SAML is rejected
+	// SAML callbacks fail closed even when the supplied response is corrupted.
 	samlCallbackValues := url.Values{}
 	samlCallbackValues.Set("SAMLResponse", "corrupted_saml_value")
 	samlCallbackValues.Set("RelayState", "relay_token_123")
@@ -269,24 +297,22 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected corrupted saml callback to fail with 401, got %d", w.Code)
-	}
+	assertSSOLoginRejected(t, w, http.StatusServiceUnavailable)
 
-	// SAML ACS Callback: Valid SAML succeeds
-	validSAML := auth.GenerateMockSAMLResponse("saml_user@corp.com", "Saml", "User")
-	samlCallbackValues.Set("SAMLResponse", validSAML)
+	// Well-formed but unsigned SAML XML is not an authenticated identity.
+	unsignedSAML := auth.GenerateMockSAMLResponse("saml_user@corp.com", "Saml", "User")
+	samlCallbackValues.Set("SAMLResponse", unsignedSAML)
 	req = httptest.NewRequest(http.MethodPost, "/omniauth/saml/callback", strings.NewReader(samlCallbackValues.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("valid saml callback failed: code=%d body=%s", w.Code, w.Body.String())
-	}
+	assertSSOLoginRejected(t, w, http.StatusServiceUnavailable)
 
 	// 6. Profile MFA & Sessions & Password Reset
 	// MFA profile check & setup
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/profile/mfa", nil)
+	setupMFA, _ := json.Marshal(map[string]string{"current_password": "Secret123!"})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/profile/mfa/setup", bytes.NewReader(setupMFA))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -305,14 +331,14 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	}
 
 	// Incorrect TOTP code is rejected
-	badMfaBody, _ := json.Marshal(map[string]string{"otp_code": "000000"})
+	badMfaBody, _ := json.Marshal(map[string]string{"otp_code": "000000", "current_password": "Secret123!"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/profile/mfa", bytes.NewReader(badMfaBody))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected invalid totp to fail with 400, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected invalid totp to fail with 401, got %d", w.Code)
 	}
 
 	// Valid RFC 6238 TOTP code enables MFA
@@ -320,7 +346,7 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to calculate totp code: %v", err)
 	}
-	mfaEnableBody, _ := json.Marshal(map[string]string{"otp_code": validCode})
+	mfaEnableBody, _ := json.Marshal(map[string]string{"otp_code": validCode, "current_password": "Secret123!"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/profile/mfa", bytes.NewReader(mfaEnableBody))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -349,14 +375,23 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 		t.Fatalf("password reset request failed: code=%d", w.Code)
 	}
 
-	var pwdResetResp struct {
-		Success bool `json:"success"`
-		Data    struct {
-			ResetToken string `json:"reset_token"`
-		} `json:"data"`
+	if strings.Contains(w.Body.String(), "reset_token") {
+		t.Fatal("reset token must only be delivered through email")
 	}
-	_ = json.Unmarshal(w.Body.Bytes(), &pwdResetResp)
-	resetToken := pwdResetResp.Data.ResetToken
+	resetToken := ""
+	for _, mail := range mailSender.GetSentEmails() {
+		if mail.To != "owner@enterprise.corp" {
+			continue
+		}
+		for _, word := range strings.Fields(mail.TextBody) {
+			if link, err := url.Parse(word); err == nil && link.Query().Get("reset_password_token") != "" {
+				resetToken = link.Query().Get("reset_password_token")
+			}
+		}
+	}
+	if resetToken == "" {
+		t.Fatal("reset email did not contain a usable link")
+	}
 
 	// Perform reset
 	resetBody, _ := json.Marshal(map[string]string{
@@ -369,6 +404,44 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reset password failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Password reset invalidates the old session; use the new password and a
+	// still-valid second factor before continuing the unrelated business checks.
+	oldSessionReq := httptest.NewRequest(http.MethodGet, "/api/v1/profile", nil)
+	oldSessionReq.Header.Set("Authorization", "Bearer "+token)
+	oldSessionResult := httptest.NewRecorder()
+	r.ServeHTTP(oldSessionResult, oldSessionReq)
+	if oldSessionResult.Code != http.StatusUnauthorized {
+		t.Fatal("password reset did not revoke old session")
+	}
+	var enabledProfile domain.MFAProfile
+	if err := db.Where("user_id = ?", userID).First(&enabledProfile).Error; err != nil {
+		t.Fatal(err)
+	}
+	var recoveryCodes []string
+	if err := json.Unmarshal([]byte(enabledProfile.BackupCodes), &recoveryCodes); err != nil || len(recoveryCodes) == 0 {
+		t.Fatal("missing MFA recovery fixture")
+	}
+	loginAfterReset, _ := json.Marshal(map[string]string{"email": "owner@enterprise.corp", "password": "NewSecretPassword999!", "backup_code": recoveryCodes[0]})
+	req = httptest.NewRequest(http.MethodPost, "/auth/sign_in", bytes.NewReader(loginAfterReset))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("new password plus MFA login failed: %s", w.Body.String())
+	}
+	var newSession struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &newSession); err != nil {
+		t.Fatal(err)
+	}
+	token = newSession.Data.Token
+	if token == "" {
+		t.Fatal("missing new session")
 	}
 
 	// 7. Data Imports, Migration Jobs & Bulk Article Actions
@@ -488,8 +561,8 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("record billing failed: code=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin must not bypass verified topups with a manual deposit: code=%d body=%s", w.Code, w.Body.String())
 	}
 
 	// 10. Platform App Email Channel Migration
@@ -526,5 +599,28 @@ func TestChannels_SSO_Billing_And_Enterprise(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("assetlinks failed: code=%d", w.Code)
+	}
+}
+
+// assertSSOLoginRejected checks that an authentication failure cannot still issue
+// an application session or an MFA challenge for the unverified identity.
+func assertSSOLoginRejected(t *testing.T, res *httptest.ResponseRecorder, wantStatus int) {
+	t.Helper()
+	if res.Code != wantStatus {
+		t.Fatalf("expected SSO rejection status %d, got %d", wantStatus, res.Code)
+	}
+	var result struct {
+		Success bool   `json:"success"`
+		Token   string `json:"token"`
+		Data    struct {
+			Token    string `json:"token"`
+			MFAToken string `json:"mfa_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode SSO rejection response: %v", err)
+	}
+	if result.Success || result.Token != "" || result.Data.Token != "" || result.Data.MFAToken != "" {
+		t.Fatal("rejected SSO request returned success or an authentication token")
 	}
 }

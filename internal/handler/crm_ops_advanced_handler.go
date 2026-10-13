@@ -28,6 +28,7 @@ import (
 )
 
 type AdvancedHandler struct {
+	durableAutomation  bool
 	companyRepo        *repository.CompanyRepository
 	campaignRepo       *repository.CampaignRepository
 	slaRepo            *repository.SLARepository
@@ -80,6 +81,10 @@ func NewAdvancedHandler(
 		convRepo:           repository.NewConversationRepository(db),
 	}
 }
+
+// SetDurableAutomation is application composition, not a cross-owner data query.
+// Set once alongside AutomationService.SetDurableExecution before serving.
+func (h *AdvancedHandler) SetDurableAutomation(enabled bool) { h.durableAutomation = enabled }
 
 func (h *AdvancedHandler) SetHTTPClient(client *http.Client) {
 	h.httpClient = client
@@ -871,7 +876,11 @@ func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
 	}
 
 	conv, err := h.convRepo.FindByID(uint(accID), uint(convID))
-	if err != nil || conv == nil {
+	if err != nil {
+		response.InternalError(c, "Failed to load conversation")
+		return
+	}
+	if conv == nil {
 		response.NotFound(c, "Conversation not found")
 		return
 	}
@@ -884,7 +893,11 @@ func (h *AdvancedHandler) GetConversationSLA(c *gin.Context) {
 		return
 	}
 
-	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy := h.slaService.GetConversationSLADeadlines(conv)
+	frtDue, nrtDue, resDue, isFRTBreached, isNRTBreached, isResBreached, policy, err := h.slaService.GetConversationSLADeadlines(conv)
+	if err != nil {
+		response.InternalError(c, "Failed to load SLA deadlines")
+		return
+	}
 	now := time.Now().UTC()
 
 	var frtRemainingSec, nrtRemainingSec, resRemainingSec *int
@@ -1471,6 +1484,10 @@ func (h *AdvancedHandler) UploadAttachment(c *gin.Context) {
 	}
 
 	if err := h.attachmentRepo.Create(c.Request.Context(), &att); err != nil {
+		if errors.Is(err, repository.ErrUploadOwnership) {
+			response.Forbidden(c, "Attachment file does not belong to this contact and conversation")
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -2591,13 +2608,13 @@ func (h *AdvancedHandler) ProcessSLA(c *gin.Context) {
 	if h.slaService != nil {
 		breaches, err := h.slaService.EvaluateAccountSLAs(accID)
 		if err != nil {
-			response.InternalError(c, err.Error())
+			response.InternalError(c, "Failed to process SLAs")
 			return
 		}
 		response.Success(c, gin.H{"processed": true, "breaches": breaches})
 		return
 	}
-	response.Success(c, gin.H{"processed": true, "breaches": []any{}})
+	response.Error(c, http.StatusServiceUnavailable, "SLA service unavailable")
 }
 
 func (h *AdvancedHandler) ListSLABreaches(c *gin.Context) {

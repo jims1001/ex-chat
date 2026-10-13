@@ -16,6 +16,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // CSATHandler manages CSAT survey details, moderation, report generation and lifecycle
@@ -27,6 +28,8 @@ type CSATHandler struct {
 	contactRepo *repository.ContactRepository
 	accountRepo *repository.AccountRepository
 	jwtSecret   string
+	userRepo    *repository.UserRepository
+	authRepo    repository.ChannelIAMRepository
 }
 
 // NewCSATHandler creates a new handler instance
@@ -65,12 +68,18 @@ func (h *CSATHandler) resolvePublicContext(identifier string, accountID uint) (*
 			if surveyErr != nil {
 				return nil, surveyErr
 			}
+			if survey == nil {
+				return nil, fmt.Errorf("survey not found")
+			}
 			ctx.Survey, ctx.HasSurvey = *survey, true
 			conv, err = h.convRepo.FindGlobalByID(survey.ConversationID)
 		}
 	}
-	if err != nil || conv == nil {
+	if err != nil {
 		return nil, err
+	}
+	if conv == nil {
+		return nil, fmt.Errorf("conversation not found")
 	}
 	ctx.Conversation = *conv
 	if !ctx.HasSurvey {
@@ -90,6 +99,13 @@ func (h *CSATHandler) resolvePublicContext(identifier string, accountID uint) (*
 // SetJWTSecret sets the secret key used for signing visitor tokens
 func (h *CSATHandler) SetJWTSecret(secret string) {
 	h.jwtSecret = secret
+}
+
+// SetAuthRepositories configures live user and durable token-revocation checks
+// for public CSAT routes, including aliases without account middleware.
+func (h *CSATHandler) SetAuthRepositories(users *repository.UserRepository, authRepo repository.ChannelIAMRepository) {
+	h.userRepo = users
+	h.authRepo = authRepo
 }
 
 func (h *CSATHandler) getAccountID(c *gin.Context) uint {
@@ -616,90 +632,115 @@ func (h *CSATHandler) DeleteSurvey(c *gin.Context) {
 	response.Success(c, gin.H{"deleted": true, "survey_id": surveyID})
 }
 
-// verifyPublicCSATAccess verifies whether the requester has legitimate access to the conversation's CSAT survey.
-// When accessed via numeric ID, the caller MUST present valid proof of ownership:
-// 1. Logged-in user in context or Authorization Bearer JWT belonging to the conversation's account.
-// 2. Visitor credential matching the conversation:
-//   - query param: token, visitor_token, contact_token, uuid
-//   - header: X-Auth-Token, X-Contact-Token, X-Visitor-Token
-//     Matching:
-//   - conversation.UUID
-//   - inbox.WebsiteToken
-//   - contact.PubsubToken
-//   - contact_inbox.SourceID
+// publicCSATCapability is deliberately restricted to this survey boundary.
+// Only the unpredictable UUID generated for this exact conversation grants
+// survey access; source IDs, website tokens and pubsub tokens never do.
+func publicCSATCapability(token string, conv *domain.Conversation) bool {
+	if conv == nil || !strings.EqualFold(token, conv.UUID) {
+		return false
+	}
+	id, err := uuid.Parse(conv.UUID)
+	return err == nil && id.Version() == 4 && id.Variant() == uuid.RFC4122
+}
+
+func (h *CSATHandler) publicCSATTokenActive(token string) bool {
+	if token == "" || len(token) > 16384 || h.authRepo == nil {
+		return false
+	}
+	revoked, err := h.authRepo.IsTokenRevoked(token)
+	return err == nil && !revoked
+}
+
+func (h *CSATHandler) publicCSATVisitorOwns(token string, conv *domain.Conversation) bool {
+	if !h.publicCSATTokenActive(token) || h.contactRepo == nil || h.inboxRepo == nil {
+		return false
+	}
+	claims, err := auth.ParseVisitorToken(token, h.jwtSecret)
+	if err != nil || claims.InboxID != conv.InboxID || claims.ContactID != conv.ContactID {
+		return false
+	}
+	inbox, err := h.inboxRepo.FindByID(conv.AccountID, conv.InboxID)
+	if err != nil || inbox == nil {
+		return false
+	}
+	contact, err := h.contactRepo.FindContactBySourceID(inbox.ID, claims.SourceID)
+	return err == nil && contact != nil && contact.ID == claims.ContactID && contact.AccountID == conv.AccountID
+}
+
+func (h *CSATHandler) publicCSATAgentOwns(token string, conv *domain.Conversation) bool {
+	if !h.publicCSATTokenActive(token) || h.userRepo == nil || h.accountRepo == nil {
+		return false
+	}
+	claims, err := auth.ValidateToken(token, h.jwtSecret)
+	if err != nil {
+		return false
+	}
+	user, err := h.userRepo.FindByID(claims.UserID)
+	if err != nil || !auth.ClaimsMatchUser(claims, user) {
+		return false
+	}
+	membership, err := h.accountRepo.GetMembership(conv.AccountID, user.ID)
+	return err == nil && membership != nil
+}
+
+// verifyPublicCSATAccess accepts a current, scoped visitor session, a current
+// account member's access token, or the conversation's survey-only capability.
+// Explicit invalid credentials fail closed rather than falling back to a UUID
+// or a lower-priority alias, including on the standalone survey URL aliases.
 func (h *CSATHandler) verifyPublicCSATAccess(c *gin.Context, conv *domain.Conversation) bool {
 	if conv == nil || conv.ID == 0 {
 		return false
 	}
-
-	// 1. Check logged-in user in context
-	if uid := h.getUserID(c); uid > 0 {
-		if membership, _ := h.accountRepo.GetMembership(conv.AccountID, uid); membership != nil {
-			return true
-		}
-	}
-
-	// 2. Check Authorization header
-	authHeader := c.GetHeader("Authorization")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		if tokenStr != "" {
-			if claims, err := auth.ValidateToken(tokenStr, h.jwtSecret); err == nil && claims != nil {
-				if claims.UserID > 0 {
-					if membership, _ := h.accountRepo.GetMembership(conv.AccountID, claims.UserID); membership != nil {
-						return true
-					}
-				}
+	authorized := false
+	var sessionTokens []string
+	for _, key := range []string{"visitor_session", "visitor_token"} {
+		if values, exists := c.Request.URL.Query()[key]; exists {
+			if len(values) == 0 {
+				return false
 			}
+			sessionTokens = append(sessionTokens, values...)
 		}
 	}
-
-	// 3. Check visitor credentials from query or headers
-	visitorToken := strings.TrimSpace(c.Query("token"))
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.Query("visitor_token"))
-	}
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.Query("contact_token"))
-	}
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.Query("uuid"))
-	}
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.GetHeader("X-Auth-Token"))
-	}
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.GetHeader("X-Contact-Token"))
-	}
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.GetHeader("X-Visitor-Token"))
-	}
-	if visitorToken == "" {
-		visitorToken = strings.TrimSpace(c.GetHeader("X-Visitor-Session"))
-	}
-
-	if visitorToken != "" {
-		// A. Matches conversation UUID directly
-		if conv.UUID != "" && strings.EqualFold(visitorToken, conv.UUID) {
-			return true
-		}
-
-		// B. Validates signed visitor token
-		if h.jwtSecret != "" {
-			if claims, err := auth.ParseVisitorToken(visitorToken, h.jwtSecret); err == nil && claims != nil {
-				if claims.InboxID == conv.InboxID && (claims.ContactID == 0 || claims.ContactID == conv.ContactID) {
-					return true
-				}
+	for _, key := range []string{"X-Visitor-Session", "X-Visitor-Token"} {
+		if values, exists := c.Request.Header[http.CanonicalHeaderKey(key)]; exists {
+			if len(values) == 0 {
+				return false
 			}
-		}
-
-		// C. Matches contact pubsub_token or contact_inbox source_id belonging to this specific conversation
-		if conv.ContactID > 0 && h.contactRepo.VisitorTokenMatches(conv.AccountID, conv.ContactID, conv.InboxID, visitorToken) {
-			return true
+			sessionTokens = append(sessionTokens, values...)
 		}
 	}
-
-	return false
+	for _, token := range sessionTokens {
+		if !h.publicCSATVisitorOwns(token, conv) {
+			return false
+		}
+		authorized = true
+	}
+	if values, exists := c.Request.Header[http.CanonicalHeaderKey("Authorization")]; exists {
+		if len(values) != 1 {
+			return false
+		}
+		parts := strings.Fields(values[0])
+		if len(parts) != 2 || parts[0] != "Bearer" || !h.publicCSATAgentOwns(parts[1], conv) {
+			return false
+		}
+		authorized = true
+	}
+	// Retain legacy parameter spellings only for signed sessions or the
+	// narrowly scoped survey capability, never legacy identity strings.
+	var legacyTokens []string
+	for _, key := range []string{"token", "contact_token", "uuid"} {
+		legacyTokens = append(legacyTokens, c.QueryArray(key)...)
+	}
+	for _, key := range []string{"X-Auth-Token", "X-Contact-Token"} {
+		legacyTokens = append(legacyTokens, c.Request.Header.Values(key)...)
+	}
+	for _, token := range legacyTokens {
+		if !publicCSATCapability(token, conv) && !h.publicCSATVisitorOwns(token, conv) {
+			return false
+		}
+		authorized = true
+	}
+	return authorized || publicCSATCapability(c.Param("id"), conv)
 }
 
 // GetPublicCSATSurvey handles GET /public/api/v1/csat_survey/:id
@@ -711,7 +752,6 @@ func (h *CSATHandler) GetPublicCSATSurvey(c *gin.Context) {
 	}
 
 	// 1. Resolve conversation and its public CSAT projection through the owning repository.
-	isUUID := len(paramID) >= 32 && (strings.Contains(paramID, "-") || len(paramID) == 32)
 	publicCtx, err := h.resolvePublicContext(paramID, h.getAccountID(c))
 	if err != nil {
 		response.NotFound(c, "CSAT survey not found")
@@ -719,8 +759,8 @@ func (h *CSATHandler) GetPublicCSATSurvey(c *gin.Context) {
 	}
 	conv, survey, csatMsg := publicCtx.Conversation, publicCtx.Survey, publicCtx.Message
 
-	// Enforce visitor credential verification when accessing via numeric ID
-	if !isUUID && !h.verifyPublicCSATAccess(c, &conv) {
+	// Verify credentials on every alias, including capability-addressed routes.
+	if !h.verifyPublicCSATAccess(c, &conv) {
 		response.Forbidden(c, "Access denied: valid visitor token or account authentication required for numeric conversation ID")
 		return
 	}
@@ -861,7 +901,6 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 	}
 
 	// 1. Resolve conversation and its public CSAT projection through the owning repository.
-	isUUID := len(paramID) >= 32 && (strings.Contains(paramID, "-") || len(paramID) == 32)
 	publicCtx, err := h.resolvePublicContext(paramID, accID)
 	if err != nil {
 		response.NotFound(c, "Conversation or CSAT survey not found")
@@ -874,8 +913,8 @@ func (h *CSATHandler) UpdatePublicCSATSurvey(c *gin.Context) {
 		return
 	}
 
-	// Enforce visitor credential verification when accessing via numeric ID
-	if !isUUID && !h.verifyPublicCSATAccess(c, &conv) {
+	// Verify credentials on every alias, including capability-addressed routes.
+	if !h.verifyPublicCSATAccess(c, &conv) {
 		response.Forbidden(c, "Access denied: valid visitor token or account authentication required for numeric conversation ID")
 		return
 	}

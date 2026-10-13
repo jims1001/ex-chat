@@ -14,6 +14,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQAAppealLifecycle(t *testing.T) {
@@ -55,7 +56,7 @@ func TestQAAppealLifecycle(t *testing.T) {
 
 	var authResp struct {
 		Data struct {
-			Token string `json:"token"`
+			Token    string `json:"token"`
 			Accounts []struct {
 				ID uint `json:"id"`
 			} `json:"accounts"`
@@ -69,36 +70,10 @@ func TestQAAppealLifecycle(t *testing.T) {
 	inspectorID := authResp.Data.User.ID
 	accountID := authResp.Data.Accounts[0].ID
 
-	// Create Agent (ID=2)
-	addAgentBody, _ := json.Marshal(map[string]string{
-		"name":     "坐席-刘琳",
-		"email":    "agent.liu@example.com",
-		"password": "Password123!",
-		"role":     "agent",
-	})
-	wAddAgent := httptest.NewRecorder()
-	reqAddAgent, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", accountID), bytes.NewBuffer(addAgentBody))
-	reqAddAgent.Header.Set("Content-Type", "application/json")
-	reqAddAgent.Header.Set("Authorization", "Bearer "+inspectorToken)
-	engine.ServeHTTP(wAddAgent, reqAddAgent)
-	var addAgentResp struct {
-		Data domain.User `json:"data"`
-	}
-	_ = json.Unmarshal(wAddAgent.Body.Bytes(), &addAgentResp)
-	agentUserID := addAgentResp.Data.ID
-
-	// Create Independent Reviewer Lead (ID=3)
-	addLeadBody, _ := json.Marshal(map[string]string{
-		"name":     "复核主管-赵晨",
-		"email":    "reviewer.lead@example.com",
-		"password": "Password123!",
-		"role":     "administrator",
-	})
-	wAddLead := httptest.NewRecorder()
-	reqAddLead, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/agents", accountID), bytes.NewBuffer(addLeadBody))
-	reqAddLead.Header.Set("Content-Type", "application/json")
-	reqAddLead.Header.Set("Authorization", "Bearer "+inspectorToken)
-	engine.ServeHTTP(wAddLead, reqAddLead)
+	// Provision verified fixtures in the same order: agent ID=2, reviewer ID=3.
+	agent := createAccountMemberFixture(t, db, accountID, "坐席-刘琳", "agent.liu@example.com", "Password123!", domain.RoleAgent, nil)
+	agentUserID := agent.ID
+	createAccountMemberFixture(t, db, accountID, "复核主管-赵晨", "reviewer.lead@example.com", "Password123!", domain.RoleAdministrator, nil)
 
 	// Login as Independent Reviewer Lead to get leadToken
 	loginBody, _ := json.Marshal(map[string]string{
@@ -307,14 +282,21 @@ func TestQAAppealLifecycle(t *testing.T) {
 		}
 
 		var verifResp struct {
-			Data []domain.IntegrityVerification `json:"data"`
+			Data    []domain.IntegrityVerification `json:"data"`
+			Payload []domain.IntegrityVerification `json:"payload"`
+			Meta    map[string]any                 `json:"meta"`
 		}
-		_ = json.Unmarshal(w.Body.Bytes(), &verifResp)
-		if len(verifResp.Data) == 0 {
-			t.Fatalf("expected non-empty integrity verification list")
-		}
-		if !verifResp.Data[0].Verified {
-			t.Fatalf("expected verified=true")
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &verifResp))
+		require.NotNil(t, verifResp.Data)
+		require.Empty(t, verifResp.Data, "QA completion does not execute an audit verification")
+		require.NotNil(t, verifResp.Payload)
+		require.Empty(t, verifResp.Payload)
+		require.Equal(t, float64(0), verifResp.Meta["total"])
+		require.Equal(t, "historical_unverified_claim", verifResp.Meta["record_semantics"])
+		require.Equal(t, false, verifResp.Meta["execution_available"])
+		require.Equal(t, false, verifResp.Meta["execution_proven"])
+		var count int64
+		require.NoError(t, db.Model(&domain.IntegrityVerification{}).Count(&count).Error)
+		require.Zero(t, count, "reading an empty list must not create verification evidence")
 	})
 }

@@ -2,6 +2,8 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strconv"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
@@ -12,6 +14,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/security"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type WebhookHandler struct {
@@ -182,43 +185,51 @@ func (h *WebhookHandler) RetryDelivery(c *gin.Context) {
 	accountID := rawAccountID.(uint)
 
 	idStr := c.Param("id")
-	deliveryID, _ := strconv.ParseUint(idStr, 10, 64)
+	var deliveryID uint64
+	if idStr != "" {
+		var err error
+		deliveryID, err = strconv.ParseUint(idStr, 10, strconv.IntSize)
+		if err != nil || deliveryID == 0 {
+			response.BadRequest(c, "Invalid webhook delivery ID")
+			return
+		}
+	}
+	if h.service == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Webhook delivery service unavailable")
+		return
+	}
 
 	logger.WithComponent("webhook").Info("webhook delivery retry requested",
 		"account_id", accountID,
 		"delivery_id", uint(deliveryID),
 	)
 
-	if h.service != nil {
-		del, err := h.service.RetryDelivery(accountID, uint(deliveryID))
-		if err != nil {
-			logger.WithComponent("webhook").Warn("webhook delivery retry failed",
-				"account_id", accountID,
-				"delivery_id", uint(deliveryID),
-				"error", err.Error(),
-			)
+	del, err := h.service.RetryDelivery(accountID, uint(deliveryID))
+	if err != nil {
+		logger.WithComponent("webhook").Warn("webhook delivery retry failed",
+			"account_id", accountID,
+			"delivery_id", uint(deliveryID),
+			"error", err.Error(),
+		)
+		if idStr != "" {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				response.NotFound(c, "Webhook delivery not found")
+			} else {
+				response.InternalError(c, "Failed to read webhook delivery")
+			}
+		} else {
 			response.BadRequest(c, err.Error())
-			return
 		}
-		response.Success(c, gin.H{
-			"success":       del.Status == "delivered",
-			"delivery_id":   del.ID,
-			"account_id":    accountID,
-			"status":        del.Status,
-			"response_code": del.ResponseCode,
-			"attempts":      del.Attempts,
-			"message":       "Webhook delivery retry executed",
-		})
 		return
 	}
-
-	result := gin.H{
-		"success":     true,
-		"delivery_id": deliveryID,
-		"account_id":  accountID,
-		"status":      "delivered",
-		"attempt":     2,
-		"message":     "Webhook delivery re-sent successfully",
-	}
-	response.Success(c, result)
+	response.Success(c, gin.H{
+		"success":       del.Status == "delivered",
+		"delivery_id":   del.ID,
+		"account_id":    accountID,
+		"status":        del.Status,
+		"response_code": del.ResponseCode,
+		"attempts":      del.Attempts,
+		"message":       "Webhook delivery retry executed",
+	})
+	return
 }

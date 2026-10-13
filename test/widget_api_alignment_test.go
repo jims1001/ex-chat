@@ -103,6 +103,9 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		UserID:  agentUser.ID,
 	})
 
+	var visitorSourceID, visitorSession string
+	var visitorContactID uint
+
 	// 3. Test: POST /api/v1/widget/config (Widget 配置创建与初始化)
 	t.Run("POST /config initializes widget and creates visitor contact", func(t *testing.T) {
 		configReq := map[string]any{
@@ -123,6 +126,8 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		}
 
 		var confResp struct {
+			SourceID          string `json:"source_id"`
+			VisitorToken      string `json:"visitor_token"`
 			Success           bool   `json:"success"`
 			InboxID           uint   `json:"inbox_id"`
 			Name              string `json:"name"`
@@ -139,9 +144,13 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		if !confResp.Success || confResp.InboxID != inbox.ID {
 			t.Errorf("unexpected inbox config: %+v", confResp)
 		}
-		if confResp.Contact.Email != "visitor001@example.com" {
-			t.Errorf("expected contact email visitor001@example.com, got %s", confResp.Contact.Email)
+		if confResp.Contact.Email != "" {
+			t.Errorf("anonymous bootstrap must not claim a caller-supplied email, got %s", confResp.Contact.Email)
 		}
+		if confResp.SourceID == "" || confResp.SourceID == "visitor_initial_001" || confResp.VisitorToken == "" || confResp.Contact.ID == 0 {
+			t.Fatalf("bootstrap must issue a fresh signed anonymous identity: %+v", confResp)
+		}
+		visitorSourceID, visitorSession, visitorContactID = confResp.SourceID, confResp.VisitorToken, confResp.Contact.ID
 	})
 
 	// 4. Test: set_user (POST /api/v1/widget/contact/set_user & POST /api/v1/widget/set_user)
@@ -156,6 +165,7 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		}
 		b, _ := json.Marshal(invalidReq)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/widget/contact/set_user?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -182,6 +192,7 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		}
 		b, _ = json.Marshal(validReq)
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/widget/contact/set_user?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -211,6 +222,7 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 
 		// C. Also verify alias POST /api/v1/widget/set_user
 		reqAlias := httptest.NewRequest(http.MethodPost, "/api/v1/widget/set_user?website_token="+websiteToken, bytes.NewReader(b))
+		reqAlias.Header.Set("X-Visitor-Session", visitorSession)
 		reqAlias.Header.Set("Content-Type", "application/json")
 		wAlias := httptest.NewRecorder()
 		r.ServeHTTP(wAlias, reqAlias)
@@ -221,7 +233,8 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 
 	// 5. Test: GET /api/v1/widget/contact (Widget 联系人详情读取)
 	t.Run("GET /contact retrieves current visitor profile", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/contact?website_token=%s&source_id=customer_user_888", websiteToken), nil)
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/contact?website_token=%s&source_id=%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -252,7 +265,8 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 			"custom_attribute_keys": []string{"to_be_deleted"},
 		}
 		b, _ := json.Marshal(delPayload)
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/contact/destroy_custom_attributes?website_token=%s&source_id=customer_user_888", websiteToken), bytes.NewReader(b))
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/contact/destroy_custom_attributes?website_token=%s&source_id=%s", websiteToken, visitorSourceID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -273,7 +287,8 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		}
 
 		// Re-fetch contact to verify persistence
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/contact?website_token=%s&source_id=customer_user_888", websiteToken), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/contact?website_token=%s&source_id=%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		var verifyResp struct {
@@ -297,7 +312,8 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		part.Write([]byte("fake-png-image-content-data"))
 		writer.Close()
 
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&source_id=customer_user_888", websiteToken), bodyBuf)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&visitor_token=%s", websiteToken, visitorSession), bodyBuf)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -329,7 +345,8 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 			},
 		}
 		b, _ := json.Marshal(jsonBlobReq)
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&source_id=customer_user_888", websiteToken), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&visitor_token=%s", websiteToken, visitorSession), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -349,11 +366,12 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 	})
 
 	// 8. Test: PATCH /api/v1/widget/messages/:id (Widget 消息更新 / 表单交互)
-	t.Run("PATCH /messages/:id updates submitted values and content", func(t *testing.T) {
-		// Create a conversation and interactive message first
+	t.Run("PATCH /messages/:id only updates visitor-owned messages", func(t *testing.T) {
+		// Create an owned conversation and reject modifications to a system template
 		conv := domain.Conversation{
 			AccountID: accountID,
 			InboxID:   inbox.ID,
+			ContactID: visitorContactID,
 			Status:    domain.ConversationStatusOpen,
 		}
 		db.Create(&conv)
@@ -368,6 +386,29 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		}
 		db.Create(&msg)
 
+		forbiddenBody := bytes.NewBufferString(`{"content":"Forged template","submitted_values":{"csat_rating":5}}`)
+		forbiddenReq := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/widget/messages/%d?website_token=%s", msg.ID, websiteToken), forbiddenBody)
+		forbiddenReq.Header.Set("Content-Type", "application/json")
+		forbiddenReq.Header.Set("X-Visitor-Session", visitorSession)
+		forbiddenResponse := httptest.NewRecorder()
+		r.ServeHTTP(forbiddenResponse, forbiddenReq)
+		if forbiddenResponse.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 when rewriting a system template, got %d: %s", forbiddenResponse.Code, forbiddenResponse.Body.String())
+		}
+		var originalTemplate domain.Message
+		if err := db.First(&originalTemplate, msg.ID).Error; err != nil || originalTemplate.Content != "Please rate our service" {
+			t.Fatalf("template changed after forbidden edit: %+v (err=%v)", originalTemplate, err)
+		}
+
+		msg = domain.Message{
+			AccountID: accountID, ConversationID: conv.ID,
+			MessageType: domain.MessageTypeIncoming, SenderType: domain.SenderTypeContact,
+			SenderID: visitorContactID, Content: "My rating", ContentType: domain.ContentTypeText,
+		}
+		if err := db.Create(&msg).Error; err != nil {
+			t.Fatal(err)
+		}
+
 		updMsgPayload := map[string]any{
 			"content": "Rated 5 stars",
 			"submitted_values": map[string]any{
@@ -377,6 +418,7 @@ func TestWidgetAPI_FullAlignment(t *testing.T) {
 		}
 		b, _ := json.Marshal(updMsgPayload)
 		req := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/widget/messages/%d?website_token=%s", msg.ID, websiteToken), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)

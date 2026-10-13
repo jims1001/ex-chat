@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"database/sql"
 	"errors"
 	"math"
 	"strings"
@@ -374,10 +375,18 @@ func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, ag
 		RatingBreakdown: map[int]int64{1: 0, 2: 0, 3: 0, 4: 0, 5: 0},
 	}
 
-	_ = baseQuery().Count(&metrics.TotalResponses).Error
-	_ = baseQuery().Where("review_status = ?", "approved").Count(&metrics.ApprovedResponses).Error
-	_ = baseQuery().Where("review_status = ?", "pending").Count(&metrics.PendingReview).Error
-	_ = baseQuery().Where("review_status = ?", "rejected").Count(&metrics.RejectedResponses).Error
+	if err := baseQuery().Count(&metrics.TotalResponses).Error; err != nil {
+		return nil, err
+	}
+	if err := baseQuery().Where("review_status = ?", "approved").Count(&metrics.ApprovedResponses).Error; err != nil {
+		return nil, err
+	}
+	if err := baseQuery().Where("review_status = ?", "pending").Count(&metrics.PendingReview).Error; err != nil {
+		return nil, err
+	}
+	if err := baseQuery().Where("review_status = ?", "rejected").Count(&metrics.RejectedResponses).Error; err != nil {
+		return nil, err
+	}
 
 	metrics.ReviewStatusBreakdown = map[string]int64{
 		"approved": metrics.ApprovedResponses,
@@ -386,13 +395,21 @@ func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, ag
 	}
 
 	if metrics.TotalResponses > 0 {
-		var avg float64
-		row := baseQuery().Select("AVG(rating)").Row()
-		_ = row.Scan(&avg)
-		metrics.AverageRating = math.Round(avg*100) / 100
+		var avg sql.NullFloat64
+		avgQuery := baseQuery().Select("AVG(rating)")
+		row := avgQuery.Row()
+		if avgQuery.Error != nil {
+			return nil, avgQuery.Error
+		}
+		if err := row.Scan(&avg); err != nil {
+			return nil, err
+		}
+		metrics.AverageRating = math.Round(avg.Float64*100) / 100
 
 		var positiveCount int64
-		_ = baseQuery().Where("rating >= 4").Count(&positiveCount).Error
+		if err := baseQuery().Where("rating >= 4").Count(&positiveCount).Error; err != nil {
+			return nil, err
+		}
 		metrics.SatisfactionRate = math.Round((float64(positiveCount)/float64(metrics.TotalResponses))*10000) / 100
 	}
 
@@ -401,7 +418,9 @@ func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, ag
 		Count  int64 `gorm:"column:count"`
 	}
 	var distRows []DistRow
-	_ = baseQuery().Select("rating, COUNT(*) as count").Group("rating").Scan(&distRows).Error
+	if err := baseQuery().Select("rating, COUNT(*) as count").Group("rating").Scan(&distRows).Error; err != nil {
+		return nil, err
+	}
 	for _, dr := range distRows {
 		metrics.RatingBreakdown[dr.Rating] = dr.Count
 	}
@@ -421,25 +440,26 @@ func (r *CSATExtensionRepository) GetAdvancedMetrics(accountID uint, inboxID, ag
 		Group("csat_surveys.assigned_agent_id").
 		Scan(&agentRows).Error
 
-	if err == nil {
-		for _, ar := range agentRows {
-			agent, ownerErr := r.users.FindByID(ar.AgentID)
-			if ownerErr != nil {
-				return nil, ownerErr
-			}
-			satRate := 0.0
-			if ar.Total > 0 {
-				satRate = math.Round((float64(ar.PosCount)/float64(ar.Total))*10000) / 100
-			}
-			metrics.AgentMetrics = append(metrics.AgentMetrics, CSATAgentMetric{
-				AgentID:           ar.AgentID,
-				AgentName:         agent.Name,
-				TotalResponses:    ar.Total,
-				ApprovedResponses: ar.Approved,
-				AverageRating:     math.Round(ar.AvgRating*100) / 100,
-				SatisfactionRate:  satRate,
-			})
+	if err != nil {
+		return nil, err
+	}
+	for _, ar := range agentRows {
+		agent, ownerErr := r.users.FindByID(ar.AgentID)
+		if ownerErr != nil {
+			return nil, ownerErr
 		}
+		satRate := 0.0
+		if ar.Total > 0 {
+			satRate = math.Round((float64(ar.PosCount)/float64(ar.Total))*10000) / 100
+		}
+		metrics.AgentMetrics = append(metrics.AgentMetrics, CSATAgentMetric{
+			AgentID:           ar.AgentID,
+			AgentName:         agent.Name,
+			TotalResponses:    ar.Total,
+			ApprovedResponses: ar.Approved,
+			AverageRating:     math.Round(ar.AvgRating*100) / 100,
+			SatisfactionRate:  satRate,
+		})
 	}
 
 	return metrics, nil

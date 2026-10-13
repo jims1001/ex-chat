@@ -18,7 +18,7 @@ func NewEnterpriseHandler(repo *repository.EnterpriseRepository) *EnterpriseHand
 
 type SetFeatureRequest struct {
 	FeatureName string `json:"feature_name" binding:"required"`
-	Enabled     bool   `json:"enabled"`
+	Enabled     *bool  `json:"enabled" binding:"required"`
 }
 
 func (h *EnterpriseHandler) GetAccountFeatures(c *gin.Context) {
@@ -47,11 +47,11 @@ func (h *EnterpriseHandler) SetAccountFeature(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.SetAccountFeature(accountID, req.FeatureName, req.Enabled); err != nil {
+	if err := h.repo.SetAccountFeature(accountID, req.FeatureName, *req.Enabled); err != nil {
 		logger.WithComponent("enterprise").Error("failed to update account feature",
 			"account_id", accountID,
 			"feature_name", req.FeatureName,
-			"enabled", req.Enabled,
+			"enabled", *req.Enabled,
 			"error", err.Error(),
 		)
 		response.InternalError(c, "Failed to update account feature")
@@ -61,7 +61,7 @@ func (h *EnterpriseHandler) SetAccountFeature(c *gin.Context) {
 	logger.WithComponent("enterprise").Info("account feature updated",
 		"account_id", accountID,
 		"feature_name", req.FeatureName,
-		"enabled", req.Enabled,
+		"enabled", *req.Enabled,
 	)
 
 	features, _ := h.repo.GetAccountFeatures(accountID)

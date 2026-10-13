@@ -111,9 +111,11 @@ func (r *AgentBotRepository) ListInboxIDs(ctx context.Context, accountID, botID 
 
 func (r *AgentBotRepository) ListBoundInboxIDs(ctx context.Context, accountID uint) ([]uint, error) {
 	var ids []uint
+	// Both tables are EXT-owned. CHN inbox ownership is checked by the caller.
 	err := r.db.WithContext(ctx).Model(&domain.AgentBotInbox{}).
-		Where("account_id = ?", accountID).
-		Distinct().Order("inbox_id ASC").Pluck("inbox_id", &ids).Error
+		Joins("JOIN agent_bots ON agent_bots.id = agent_bot_inboxes.agent_bot_id AND agent_bots.account_id = agent_bot_inboxes.account_id").
+		Where("agent_bot_inboxes.account_id = ?", accountID).
+		Distinct().Order("agent_bot_inboxes.inbox_id ASC").Pluck("agent_bot_inboxes.inbox_id", &ids).Error
 	return ids, err
 }
 

@@ -1,13 +1,8 @@
 package auth
 
 import (
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -59,7 +54,7 @@ func stripXMLNamespaces(s string) string {
 	return re.ReplaceAllString(s, "$1")
 }
 
-// ParseSAMLResponse decodes and extracts claims from a standard SAML 2.0 response
+// ParseSAMLResponse extracts UNTRUSTED XML data only. Never use its output to authenticate.
 func ParseSAMLResponse(rawResponse string) (*SAMLUserClaims, error) {
 	if rawResponse == "" {
 		return nil, errors.New("empty SAML response")
@@ -142,114 +137,18 @@ func parseSAMLFallback(xmlContent string) (*SAMLUserClaims, error) {
 	return nil, errors.New("unable to extract valid identity from SAML payload")
 }
 
-// VerifySAMLSignature verifies RSA-SHA256 signature if certificate is supplied
+// ErrSAMLVerificationUnavailable is returned until a complete, trusted SAML
+// service provider verifies signatures, assertion references, audience, time,
+// recipient, request correlation, and replay protection. XML parsing is not auth.
+var ErrSAMLVerificationUnavailable = errors.New("SAML login unavailable: trusted assertion verification is not configured")
+
+// VerifySAMLSignature deliberately fails closed. Substring extraction of
+// SignedInfo does not implement XML DSig canonicalization or bind an assertion.
 func VerifySAMLSignature(xmlContent string, certPEM string) (bool, error) {
-	if certPEM == "" {
-		hasSig := strings.Contains(xmlContent, "SignatureValue") || strings.Contains(xmlContent, "ds:Signature")
-		return hasSig, nil
-	}
-
-	block, _ := pem.Decode([]byte(certPEM))
-	if block == nil {
-		return false, errors.New("failed to parse certificate PEM")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return false, fmt.Errorf("failed to parse x509 certificate: %w", err)
-	}
-
-	rsaPub, ok := cert.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return false, errors.New("certificate public key is not RSA")
-	}
-
-	startSig := strings.Index(xmlContent, "<SignatureValue")
-	if startSig == -1 {
-		return false, errors.New("SignatureValue not found in SAML response")
-	}
-	closeSig := strings.Index(xmlContent[startSig:], ">")
-	endSig := strings.Index(xmlContent[startSig+closeSig:], "</")
-	sigBase64 := strings.TrimSpace(xmlContent[startSig+closeSig+1 : startSig+closeSig+endSig])
-
-	sigBytes, err := base64.StdEncoding.DecodeString(sigBase64)
-	if err != nil {
-		return false, fmt.Errorf("invalid signature base64: %w", err)
-	}
-
-	startSI := strings.Index(xmlContent, "<SignedInfo")
-	if startSI == -1 {
-		return false, errors.New("SignedInfo not found in SAML response")
-	}
-	endSI := strings.Index(xmlContent[startSI:], "</SignedInfo>")
-	if endSI == -1 {
-		return false, errors.New("malformed SignedInfo in SAML response")
-	}
-	signedInfoXML := xmlContent[startSI : startSI+endSI+len("</SignedInfo>")]
-
-	h := sha256.New()
-	h.Write([]byte(signedInfoXML))
-	digest := h.Sum(nil)
-
-	err = rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, digest, sigBytes)
-	return err == nil, err
+	return false, ErrSAMLVerificationUnavailable
 }
 
-// ParseGoogleIDToken parses and validates a Google OAuth2 JWT ID token
-func ParseGoogleIDToken(tokenString string) (string, string, error) {
-	parts := strings.Split(tokenString, ".")
-	if len(parts) != 3 {
-		return "", "", errors.New("invalid jwt token format")
-	}
-
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return "", "", fmt.Errorf("failed to decode jwt header: %w", err)
-	}
-
-	var header struct {
-		Alg string `json:"alg"`
-		Typ string `json:"typ"`
-	}
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return "", "", fmt.Errorf("invalid jwt header: %w", err)
-	}
-
-	// Signature segment MUST not be empty
-	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(sigBytes) == 0 {
-		return "", "", errors.New("invalid or empty jwt signature")
-	}
-
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", "", fmt.Errorf("failed to decode jwt payload: %w", err)
-	}
-
-	var claims struct {
-		Email string `json:"email"`
-		Name  string `json:"name"`
-		Sub   string `json:"sub"`
-		Exp   int64  `json:"exp"`
-		Iss   string `json:"iss"`
-	}
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return "", "", fmt.Errorf("failed to unmarshal jwt claims: %w", err)
-	}
-
-	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
-		return "", "", errors.New("token expired")
-	}
-	if claims.Email == "" {
-		return "", "", errors.New("email claim missing in token")
-	}
-	if !strings.Contains(claims.Email, "@") {
-		return "", "", errors.New("malformed email in google token")
-	}
-
-	return claims.Email, claims.Name, nil
-}
-
-// GenerateMockGoogleIDToken generates a syntactically valid mock Google ID Token for testing
+// GenerateMockGoogleIDToken returns a FORGED token for negative tests; it cannot authenticate.
 func GenerateMockGoogleIDToken(email, name string) string {
 	header := `{"alg":"RS256","typ":"JWT"}`
 	payload, _ := json.Marshal(map[string]any{
@@ -265,7 +164,7 @@ func GenerateMockGoogleIDToken(email, name string) string {
 	return fmt.Sprintf("%s.%s.%s", hdrEnc, payEnc, sigEnc)
 }
 
-// GenerateMockSAMLResponse generates a valid base64-encoded SAML 2.0 response XML
+// GenerateMockSAMLResponse returns UNSIGNED XML for parsing/negative tests; it cannot authenticate.
 func GenerateMockSAMLResponse(email, firstName, lastName string) string {
 	xmlTemplate := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_resp123" Version="2.0" IssueInstant="%s">
@@ -283,4 +182,3 @@ func GenerateMockSAMLResponse(email, firstName, lastName string) string {
 </samlp:Response>`, time.Now().Format(time.RFC3339), email, email, firstName, lastName)
 	return base64.StdEncoding.EncodeToString([]byte(xmlTemplate))
 }
-

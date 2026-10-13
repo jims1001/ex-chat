@@ -10,16 +10,19 @@ import (
 )
 
 type ReportService struct {
-	db            *gorm.DB
-	conversations reportConversationPort
-	inboxes       reportInboxPort
-	messages      reportMessagePort
-	contacts      reportContactPort
-	labels        reportLabelPort
-	accounts      reportAccountPort
-	teams         reportTeamPort
-	users         reportUserPort
-	bots          reportAgentBotPort
+	db                   *gorm.DB
+	conversations        reportConversationPort
+	inboxes              reportInboxPort
+	messages             reportMessagePort
+	contacts             reportContactPort
+	labels               reportLabelPort
+	accounts             reportAccountPort
+	teams                reportTeamPort
+	users                reportUserPort
+	bots                 reportAgentBotPort
+	conversationCounts   ReportConversationCountPort
+	messageCounts        ReportMessageCountPort
+	summaryMessageCounts ReportMessageSummaryPort
 }
 
 type reportConversationPort interface {
@@ -52,7 +55,7 @@ type reportAgentBotPort interface {
 }
 
 func NewReportService(db *gorm.DB) *ReportService {
-	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db), accounts: repository.NewAccountRepository(db), teams: repository.NewTeamRepository(db), users: repository.NewUserRepository(db), bots: repository.NewAgentBotRepository(db)}
+	return &ReportService{db: db, conversations: repository.NewConversationRepository(db), inboxes: repository.NewInboxRepository(db), messages: repository.NewMessageRepository(db), contacts: repository.NewContactRepository(db), labels: repository.NewLabelRepository(db), accounts: repository.NewAccountRepository(db), teams: repository.NewTeamRepository(db), users: repository.NewUserRepository(db), bots: repository.NewAgentBotRepository(db), conversationCounts: repository.NewConversationRepository(db), messageCounts: repository.NewMessageRepository(db), summaryMessageCounts: repository.NewMessageRepository(db)}
 }
 
 func (s *ReportService) SetOwnerRepositories(conversations reportConversationPort, inboxes reportInboxPort, messages reportMessagePort, contacts reportContactPort, labels reportLabelPort) {
@@ -69,10 +72,10 @@ func (s *ReportService) SetBotOwner(bots reportAgentBotPort) {
 
 func applyBaseTimeFilter(tx *gorm.DB, filter ReportFilter, timeCol string) *gorm.DB {
 	if filter.Since != nil {
-		tx = tx.Where(timeCol+" >= ?", *filter.Since)
+		tx = tx.Where(timeCol+" >= ?", repository.ReportTimeBoundary(tx, *filter.Since))
 	}
 	if filter.Until != nil {
-		tx = tx.Where(timeCol+" <= ?", *filter.Until)
+		tx = tx.Where(timeCol+" < ?", repository.ReportTimeBoundary(tx, *filter.Until))
 	}
 	return tx
 }
@@ -145,9 +148,20 @@ func (s *ReportService) GetAccountSummary(accountID uint, filters ...ReportFilte
 		resRate = RoundToOneDecimal((float64(resolvedCount) / float64(totalConvs)) * 100.0)
 	}
 
-	// Message and Contact Counts
+	// Default record counts are independent of the conversation creation cohort.
+	// Keep business_hours=true's legacy cohort semantics until its documented
+	// count/filter conflict is resolved separately; duration/FCR inputs stay intact.
 	var totalMessages, incomingMessages, outgoingMessages int64
-	if len(convIDs) > 0 {
+	if !filter.BusinessHours {
+		if s.summaryMessageCounts == nil {
+			return nil, ErrReportCountUnavailable
+		}
+		counts, countErr := s.summaryMessageCounts.CountReportSummary(accountID, filter.Since, filter.Until)
+		if countErr != nil {
+			return nil, ErrReportCountUnavailable
+		}
+		totalMessages, incomingMessages, outgoingMessages = counts.Total, counts.Incoming, counts.Outgoing
+	} else {
 		for _, msgs := range messagesMap {
 			for _, m := range msgs {
 				totalMessages++
@@ -156,20 +170,6 @@ func (s *ReportService) GetAccountSummary(accountID uint, filters ...ReportFilte
 				} else if m.MessageType == domain.MessageTypeOutgoing {
 					outgoingMessages++
 				}
-			}
-		}
-	} else if !filter.BusinessHours {
-		messages, loadErr := s.messages.ListForReport(accountID, nil, filter.Since, filter.Until)
-		if loadErr != nil {
-			return nil, loadErr
-		}
-		for _, message := range messages {
-			totalMessages++
-			if message.MessageType == domain.MessageTypeIncoming {
-				incomingMessages++
-			}
-			if message.MessageType == domain.MessageTypeOutgoing {
-				outgoingMessages++
 			}
 		}
 	}
@@ -214,12 +214,10 @@ func (s *ReportService) GetConversationTrends(accountID uint, days int, filters 
 	now := time.Now().UTC()
 	var startDate, endDate time.Time
 
-	if filter.Since != nil && filter.Until != nil && filter.Until.After(*filter.Since) {
-		startDate = time.Date(filter.Since.Year(), filter.Since.Month(), filter.Since.Day(), 0, 0, 0, 0, time.UTC)
-		endDate = time.Date(filter.Until.Year(), filter.Until.Month(), filter.Until.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
-		diffDays := int(endDate.Sub(startDate).Hours() / 24)
-		if diffDays > 0 {
-			days = diffDays
+	if filter.Since != nil && filter.Until != nil {
+		startDate, endDate = filter.Since.UTC(), filter.Until.UTC()
+		if !endDate.After(startDate) {
+			return &ConversationTrendsReport{Trends: []TrendPoint{}}, nil
 		}
 	} else {
 		if days <= 0 {
@@ -237,7 +235,10 @@ func (s *ReportService) GetConversationTrends(accountID uint, days int, filters 
 
 	// Load conversations with business hours if applicable
 	var convsCurrent, convsPrev []domain.Conversation
-	inboxesMap := s.loadInboxesMap(accountID)
+	inboxesMap, err := s.loadInboxesMap(accountID)
+	if err != nil {
+		return nil, err
+	}
 	rawCurrent, err := s.conversations.ListForReport(accountID, &startDate, &endDate)
 	if err != nil {
 		return nil, err
@@ -254,15 +255,15 @@ func (s *ReportService) GetConversationTrends(accountID uint, days int, filters 
 	}
 
 	// Group current conversations into daily buckets
-	dayCounts := make(map[string]int64, days)
+	dayCounts := make(map[string]int64)
 	for _, c := range convsCurrent {
 		dKey := c.CreatedAt.UTC().Format("2006-01-02")
 		dayCounts[dKey]++
 	}
 
-	trends := make([]TrendPoint, 0, days)
+	trends := make([]TrendPoint, 0)
 	var currentTotal int64
-	curDay := startDate
+	curDay := reportUTCDayStart(startDate)
 	for curDay.Before(endDate) {
 		dKey := curDay.Format("2006-01-02")
 		c := dayCounts[dKey]
@@ -289,4 +290,11 @@ func (s *ReportService) GetConversationTrends(accountID uint, days int, filters 
 		GrowthPercentage:    growth,
 		Trends:              trends,
 	}, nil
+}
+
+// reportUTCDayStart is a display/calendar boundary, not an expansion of the
+// absolute query window.
+func reportUTCDayStart(at time.Time) time.Time {
+	at = at.UTC()
+	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
 }

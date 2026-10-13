@@ -6,17 +6,25 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 )
 
-func (s *ReportService) loadInboxesMap(accountID uint) map[uint]*domain.Inbox {
-	inboxes, _ := s.inboxes.ListByAccount(accountID)
+func (s *ReportService) loadInboxesMap(accountID uint) (map[uint]*domain.Inbox, error) {
+	inboxes, err := s.inboxes.ListByAccount(accountID)
+	if err != nil {
+		// A failed owner read is not evidence of absent inbox configuration.
+		// Discard partial rows rather than calculating from an incomplete map.
+		return nil, err
+	}
 	m := make(map[uint]*domain.Inbox, len(inboxes))
 	for i := range inboxes {
 		m[inboxes[i].ID] = &inboxes[i]
 	}
-	return m
+	return m, nil
 }
 
 func (s *ReportService) loadAccountConversations(accountID uint, filter ReportFilter) ([]domain.Conversation, map[uint]*domain.Inbox, error) {
-	inboxesMap := s.loadInboxesMap(accountID)
+	inboxesMap, err := s.loadInboxesMap(accountID)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	convs, err := s.conversations.ListForReport(accountID, filter.Since, filter.Until)
 	if err != nil {

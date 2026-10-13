@@ -2,7 +2,9 @@ package service
 
 import "time"
 
-// ReportFilter specifies temporal and operational filtering for reports
+// ReportFilter selects [Since, Until): inclusive start, exclusive end.
+// Nil endpoints leave that side unbounded; date-only HTTP ends normalize to the
+// following UTC midnight so the complete named end date is included.
 type ReportFilter struct {
 	Since         *time.Time
 	Until         *time.Time
@@ -25,7 +27,7 @@ type AccountSummaryReport struct {
 	OutgoingMessagesCount      int64   `json:"outgoing_messages_count"`
 	ResolutionsCount           int64   `json:"resolutions_count"`
 	ResolutionRate             float64 `json:"resolution_rate"`               // % of total conversations resolved
-	AvgFirstResponseTime       float64 `json:"avg_first_response_time"`        // in seconds
+	AvgFirstResponseTime       float64 `json:"avg_first_response_time"`       // in seconds
 	AvgResolutionTime          float64 `json:"avg_resolution_time"`           // in seconds
 	AvgReplyTime               float64 `json:"avg_reply_time"`                // in seconds
 	FirstContactResolutionRate float64 `json:"first_contact_resolution_rate"` // % resolved with 1 agent reply
@@ -245,4 +247,3 @@ type AgentLiveConversationMetric struct {
 	Availability string            `json:"availability"`
 	Metric       LiveMetricsReport `json:"metric"`
 }
-

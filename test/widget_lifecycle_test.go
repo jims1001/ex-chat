@@ -77,7 +77,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		t.Fatalf("failed to create inbox: %v", err)
 	}
 
-	visitorSourceID := "visitor_alice_888"
+	visitorSourceID, visitorSession, _ := bootstrapWidgetVisitor(t, r, websiteToken)
 	var conv1ID, conv2ID uint
 
 	// =========================================================================
@@ -93,6 +93,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ := json.Marshal(identPayload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/widget/contact?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -107,6 +108,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(c1Payload)
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/widget/conversations?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -128,6 +130,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(c2Payload)
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/widget/conversations?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -144,6 +147,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// Query Visitor Conversation History
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/conversations?website_token=%s&source_id=%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -170,6 +174,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// Retrieve Conversation Detail
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/conversations/%d?website_token=%s&source_id=%s", conv1ID, websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -234,6 +239,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// Query Widget Campaigns
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/widget/campaigns?website_token="+websiteToken, nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -293,6 +299,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		for _, evt := range eventsToReport {
 			b, _ := json.Marshal(evt)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/widget/events?website_token="+websiteToken, bytes.NewReader(b))
+			req.Header.Set("X-Visitor-Session", visitorSession)
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
@@ -303,6 +310,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// Query recorded events
 		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/events?website_token=%s&source_id=%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -340,6 +348,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ := json.Marshal(addLabelsPayload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/widget/labels?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -349,6 +358,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// 2. Query contact labels
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/labels?website_token=%s&source_id=%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -372,6 +382,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(addConvLabelPayload)
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/widget/labels?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -381,6 +392,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// Query Conversation 1 labels
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/labels?website_token=%s&source_id=%s&conversation_id=%d", websiteToken, visitorSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -398,6 +410,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(removePayload)
 		req = httptest.NewRequest(http.MethodDelete, "/api/v1/widget/labels?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -407,6 +420,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// Verify contact labels after removal
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/labels?website_token=%s&source_id=%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		_ = json.Unmarshal(w.Body.Bytes(), &labelResp)
@@ -434,6 +448,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ := json.Marshal(postAttrsPayload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/widget/contact/custom_attributes?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -464,6 +479,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(patchContactPayload)
 		req = httptest.NewRequest(http.MethodPatch, "/api/v1/widget/contact?website_token="+websiteToken, bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -496,6 +512,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(patchConvAttrsPayload)
 		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/widget/conversations/%d/custom_attributes?website_token=%s", conv1ID, websiteToken), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -513,6 +530,7 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 		b, _ = json.Marshal(patchConvAttrsPayload2)
 		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/widget/conversations/%d/custom_attributes?website_token=%s", conv1ID, websiteToken), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -539,6 +557,7 @@ func TestWidgetLifecycle(t *testing.T) {
 	t.Run("Scenario 6: Security and Boundary Isolation", func(t *testing.T) {
 		// 1. Missing website_token
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/widget/conversations", nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest && w.Code != http.StatusNotFound {
@@ -547,6 +566,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// 2. Invalid website_token
 		req = httptest.NewRequest(http.MethodGet, "/api/v1/widget/conversations?website_token=non_existent_token_999", nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -554,8 +574,9 @@ func TestWidgetLifecycle(t *testing.T) {
 		}
 
 		// 3. Visitor B trying to access Visitor A's conversation
-		visitorBSourceID := "visitor_bob_intruder"
+		visitorBSourceID, visitorBSession, _ := bootstrapWidgetVisitor(t, r, websiteToken)
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/conversations/%d?website_token=%s&source_id=%s", conv1ID, websiteToken, visitorBSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorBSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -564,6 +585,7 @@ func TestWidgetLifecycle(t *testing.T) {
 
 		// 4. Header X-Website-Token fallback works
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/conversations?source_id=%s", visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("X-Website-Token", websiteToken)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)

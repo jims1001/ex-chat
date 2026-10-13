@@ -88,16 +88,19 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 	inbox := inboxResp.Data
 	websiteToken := inbox.WebsiteToken
 
+	sourceID, visitorSession, _ := bootstrapWidgetVisitor(t, r, websiteToken)
+
 	// 3. Identify contact via widget
 	contactPayload := map[string]any{
 		"website_token": websiteToken,
-		"source_id":     "src_bob_12345",
+		"source_id":     sourceID,
 		"identifier":    "cust_12345",
 		"name":          "Bob Customer",
 		"email":         "bob@customer.com",
 	}
 	body, _ = json.Marshal(contactPayload)
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/contact?website_token=%s", websiteToken), bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -110,7 +113,6 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &contactResp)
 	contactID := contactResp.Data.ID
-	sourceID := "src_bob_12345"
 
 	// 4. Create conversation assigned to Alice
 	convPayload := map[string]any{
@@ -143,6 +145,7 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 		}
 		body, _ = json.Marshal(msgPayload)
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/messages?website_token=%s", websiteToken), bytes.NewReader(body))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -298,6 +301,7 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 	}
 	body, _ = json.Marshal(widgetTypingPayload)
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/toggle_typing?website_token=%s", websiteToken), bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -338,6 +342,7 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 	}
 	body, _ = json.Marshal(widgetTranscriptPayload)
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/transcript?website_token=%s", websiteToken), bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -354,6 +359,7 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 	}
 	body, _ = json.Marshal(widgetSeenPayload)
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/update_last_seen?website_token=%s", websiteToken), bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -368,6 +374,7 @@ func TestConversationCollaborationEnhancement(t *testing.T) {
 	publicSeenURL := fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%d/conversations/%d/update_last_seen",
 		websiteToken, contactID, convID)
 	req = httptest.NewRequest(http.MethodPost, publicSeenURL, bytes.NewReader([]byte("{}")))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)

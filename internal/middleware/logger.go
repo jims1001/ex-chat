@@ -3,7 +3,9 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
@@ -16,7 +18,7 @@ func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		path := c.Request.URL.Path
-		raw := c.Request.URL.RawQuery
+		raw := safeRequestQuery(c.Request.URL.Path, c.Request.URL.RawQuery)
 
 		c.Next()
 
@@ -73,6 +75,60 @@ func RequestLogger() gin.HandlerFunc {
 			log.Info(msg)
 		}
 	}
+}
+
+// Reset links carry a credential in their query, including on frontend routes
+// handled by a reverse proxy. Never persist it in structured HTTP logs.
+func safeRequestQuery(path, raw string) string {
+	// Even rejected billing overrides may contain a short-lived portal credential.
+	clean := strings.TrimSuffix(path, "/")
+	if strings.HasPrefix(clean, "/api/v1/accounts/") || strings.HasPrefix(clean, "/enterprise/api/v1/accounts/") {
+		for _, suffix := range []string{"/subscription", "/checkout", "/select_billing_currency"} {
+			if strings.HasSuffix(clean, suffix) {
+				return ""
+			}
+		}
+	}
+
+	// Rejected count-route parameters can contain private text; log no query.
+	if isReportCountPath(strings.TrimSuffix(path, "/")) {
+		return ""
+	}
+	// Config requests can accidentally carry credentials under any query name,
+	// including on rejected requests and the router's trailing-slash redirect.
+	if strings.TrimSuffix(path, "/") == "/api/v1/super_admin/configs" {
+		return ""
+	}
+	// Invitation endpoints accept proof only in JSON. Even rejected query input
+	// must not persist a mailbox bearer token in access logs.
+	if strings.Contains(path, "/invitation") || strings.Contains(path, "/agent_invitations") || strings.Contains(path, "/confirmation") {
+		return ""
+	}
+	// The compatibility inventory never logs query/cursor input, including
+	// rejected unknown parameters that may contain raw definitions or secrets.
+	if strings.HasPrefix(path, "/api/v1/accounts/") && strings.HasSuffix(strings.TrimSuffix(path, "/"), "/automation_rules/compatibility") {
+		return ""
+	}
+	// Saved-filter URL parameters may contain private criteria, including
+	// rejected or unknown keys. The handler logs only safe operation metadata.
+	if strings.HasPrefix(path, "/api/v1/accounts/") && (strings.HasSuffix(strings.TrimSuffix(path, "/"), "/custom_filters") || strings.Contains(path, "/custom_filters/")) {
+		return ""
+	}
+	if raw == "" {
+		return ""
+	}
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return ""
+	} // malformed encoding must not leak a partial credential
+	for key := range values {
+		if strings.EqualFold(key, "hub.verify_token") || strings.EqualFold(key, "access_token") || strings.EqualFold(key, "auth_token") || strings.EqualFold(key, "client_secret") ||
+			strings.EqualFold(key, "reset_password_token") || strings.EqualFold(key, "confirmation_token") ||
+			(strings.Contains(path, "/auth/password") && strings.EqualFold(key, "token")) {
+			values.Set(key, "[REDACTED]")
+		}
+	}
+	return values.Encode()
 }
 
 // RecoveryLogger catches unhandled panics, logs formatted stack trace and returns 500 JSON

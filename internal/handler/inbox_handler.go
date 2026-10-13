@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
@@ -16,6 +18,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type InboxHandler struct {
@@ -583,19 +586,17 @@ func (h *InboxHandler) WidgetConfig(c *gin.Context) {
 		return
 	}
 
-	sourceID := c.Query("source_id")
-	if sourceID == "" {
-		sourceID = c.Query("contact_token")
-	}
-
+	// Public configuration never resolves a profile from a caller-controlled
+	// source ID. A supplied session must validate before revealing a contact.
 	var contactObj any
 	var pubsubToken string
-	if sourceID != "" && h.contactRepo != nil {
-		contact, _ := h.contactRepo.FindContactBySourceID(inbox.ID, sourceID)
-		if contact != nil {
-			contactObj = contact
-			pubsubToken = contact.PubsubToken
+	var sourceID string
+	if visitorSessionToken(c) != "" {
+		identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+		if err != nil {
+			return
 		}
+		contactObj, pubsubToken, sourceID = identity.contact, identity.contact.PubsubToken, identity.claims.SourceID
 	}
 
 	configMap := gin.H{
@@ -610,6 +611,7 @@ func (h *InboxHandler) WidgetConfig(c *gin.Context) {
 		"csat_survey_enabled":   inbox.CSATSurveyEnabled,
 		"contact":               contactObj,
 		"pubsub_token":          pubsubToken,
+		"source_id":             sourceID,
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -626,6 +628,7 @@ func (h *InboxHandler) WidgetConfig(c *gin.Context) {
 		"csat_survey_enabled":   inbox.CSATSurveyEnabled,
 		"contact":               contactObj,
 		"pubsub_token":          pubsubToken,
+		"source_id":             sourceID,
 	})
 }
 
@@ -656,60 +659,46 @@ func (h *InboxHandler) WidgetConfigCreate(c *gin.Context) {
 		return
 	}
 
-	var contactObj any
-	var pubsubToken string
-
-	if req.Contact != nil && h.contactRepo != nil {
-		srcID := req.Contact.SourceID
-		if srcID != "" {
-			existing, _ := h.contactRepo.FindContactBySourceID(inbox.ID, srcID)
-			if existing != nil {
-				contactObj = existing
-				pubsubToken = existing.PubsubToken
-			} else {
-				name := req.Contact.Name
-				if name == "" {
-					name = "Visitor " + srcID
-				}
-				newC := domain.Contact{
-					AccountID:   inbox.AccountID,
-					Name:        name,
-					Email:       req.Contact.Email,
-					PhoneNumber: req.Contact.PhoneNumber,
-					Identifier:  req.Contact.Identifier,
-				}
-				if err := h.contactRepo.Create(&newC); err == nil {
-					_ = h.contactRepo.CreateContactInbox(&domain.ContactInbox{
-						InboxID:   inbox.ID,
-						ContactID: newC.ID,
-						SourceID:  srcID,
-					})
-					contactObj = newC
-					pubsubToken = newC.PubsubToken
-				}
-			}
+	if h.contactRepo == nil || h.jwtSecret == "" {
+		response.InternalError(c, "Visitor session service is not configured")
+		return
+	}
+	var contact *domain.Contact
+	var sourceID string
+	if visitorSessionToken(c) != "" {
+		identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+		if err != nil {
+			return
+		}
+		contact, sourceID = identity.contact, identity.claims.SourceID
+	} else {
+		// Bootstrap grants a new anonymous identity only. Public source IDs,
+		// identifiers and emails cannot recover or link any existing profile.
+		// Recovery requires the prior signed session. Unverified identity hints
+		// are deliberately ignored instead of becoming authentication material.
+		randomSource := make([]byte, 32)
+		if _, err := rand.Read(randomSource); err != nil {
+			response.InternalError(c, "Failed to initialize visitor identity")
+			return
+		}
+		sourceID = hex.EncodeToString(randomSource)
+		contact = &domain.Contact{AccountID: inbox.AccountID, Name: "Visitor " + sourceID[:8]}
+		if err := h.contactRepo.Create(contact); err != nil {
+			response.InternalError(c, "Failed to create visitor profile")
+			return
+		}
+		if err := h.contactRepo.CreateContactInbox(&domain.ContactInbox{InboxID: inbox.ID, ContactID: contact.ID, SourceID: sourceID}); err != nil {
+			response.InternalError(c, "Failed to initialize visitor identity")
+			return
 		}
 	}
-
-	var visitorToken string
-	if contactObj != nil && h.jwtSecret != "" {
-		var cID uint
-		if c, ok := contactObj.(*domain.Contact); ok && c != nil {
-			cID = c.ID
-		} else if c, ok := contactObj.(domain.Contact); ok {
-			cID = c.ID
-		}
-		if cID > 0 {
-			src := req.SourceID
-			if src == "" && req.Contact.Identifier != "" {
-				src = req.Contact.Identifier
-			}
-			vt, err := auth.GenerateVisitorToken(inbox.ID, cID, src, h.jwtSecret, 72*time.Hour)
-			if err == nil {
-				visitorToken = vt
-			}
-		}
+	visitorToken, err := auth.GenerateVisitorToken(inbox.ID, contact.ID, sourceID, h.jwtSecret, 72*time.Hour)
+	if err != nil {
+		response.InternalError(c, "Failed to authorize visitor session")
+		return
 	}
+	var contactObj any = contact
+	pubsubToken := contact.PubsubToken
 
 	configCreateMap := gin.H{
 		"inbox_id":              inbox.ID,
@@ -723,6 +712,7 @@ func (h *InboxHandler) WidgetConfigCreate(c *gin.Context) {
 		"csat_survey_enabled":   inbox.CSATSurveyEnabled,
 		"contact":               contactObj,
 		"pubsub_token":          pubsubToken,
+		"source_id":             sourceID,
 		"visitor_token":         visitorToken,
 	}
 
@@ -740,6 +730,7 @@ func (h *InboxHandler) WidgetConfigCreate(c *gin.Context) {
 		"csat_survey_enabled":   inbox.CSATSurveyEnabled,
 		"contact":               contactObj,
 		"pubsub_token":          pubsubToken,
+		"source_id":             sourceID,
 		"visitor_token":         visitorToken,
 	})
 }
@@ -766,9 +757,9 @@ func (h *InboxHandler) GetInboxAssistant(c *gin.Context) {
 		return
 	}
 
-	assistant, err := h.captainRepo.FindAssistantByInbox(accountID, uint(id))
+	assistant, err := h.captainRepo.FindAssistantByInbox(c.Request.Context(), accountID, uint(id))
 	if err != nil {
-		response.InternalError(c, "Failed to get inbox assistant: "+err.Error())
+		response.InternalError(c, "Failed to get inbox assistant")
 		return
 	}
 	if assistant == nil {
@@ -1064,8 +1055,12 @@ func (h *InboxHandler) ListMessageTemplates(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	inbox, err := h.inboxRepo.FindSummaryByID(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to load inbox")
+		return
+	}
+	if inbox == nil {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
@@ -1087,12 +1082,12 @@ func (h *InboxHandler) ListMessageTemplates(c *gin.Context) {
 		"data":      templates,
 		"meta": gin.H{
 			"total":                len(templates),
-			"last_sync_attempt_at": time.Now().UTC(),
+			"last_sync_attempt_at": nil,
 		},
 	})
 }
 
-// SyncMessageTemplates initiates message template synchronization with provider/storage
+// SyncMessageTemplates imports local configuration through the legacy sync route.
 func (h *InboxHandler) SyncMessageTemplates(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
@@ -1103,29 +1098,33 @@ func (h *InboxHandler) SyncMessageTemplates(c *gin.Context) {
 		return
 	}
 
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	inbox, err := h.inboxRepo.FindSummaryByID(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to load inbox")
+		return
+	}
+	if inbox == nil {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
 
-	syncedTemplates, err := h.inboxRepo.SyncMessageTemplates(accountID, uint(inboxID))
+	importedTemplates, err := h.inboxRepo.SyncMessageTemplates(accountID, uint(inboxID))
 	if err != nil {
-		response.InternalError(c, "Failed to sync message templates: "+err.Error())
+		response.InternalError(c, "Failed to import message templates: "+err.Error())
 		return
 	}
 
-	templates := formatMessageTemplates(syncedTemplates)
+	templates := formatMessageTemplates(importedTemplates)
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":    "synced",
-		"message":   "Template sync completed successfully",
+		"status":    "imported",
+		"message":   "Local template configuration imported",
 		"templates": templates,
 		"payload":   templates,
 		"data":      templates,
 		"meta": gin.H{
 			"total":     len(templates),
-			"synced_at": time.Now().UTC(),
+			"synced_at": nil,
 		},
 	})
 }
@@ -1138,6 +1137,16 @@ func (h *InboxHandler) CreateMessageTemplate(c *gin.Context) {
 	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	inbox, err := h.inboxRepo.FindSummaryByID(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to load inbox")
+		return
+	}
+	if inbox == nil {
+		response.NotFound(c, "Inbox not found")
 		return
 	}
 
@@ -1188,6 +1197,16 @@ func (h *InboxHandler) DeleteMessageTemplate(c *gin.Context) {
 	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid inbox ID")
+		return
+	}
+
+	inbox, err := h.inboxRepo.FindSummaryByID(accountID, uint(inboxID))
+	if err != nil {
+		response.InternalError(c, "Failed to load inbox")
+		return
+	}
+	if inbox == nil {
+		response.NotFound(c, "Inbox not found")
 		return
 	}
 
@@ -1466,28 +1485,52 @@ func (h *InboxHandler) SetCallRecording(c *gin.Context) {
 	response.Success(c, cfg)
 }
 
-// GetCSATTemplate returns the current CSAT template configuration
+// CSAT configuration remains local presentation data for non-WhatsApp inboxes.
+// Its legacy active status is not a statement of provider approval or delivery.
+func (h *InboxHandler) csatInbox(c *gin.Context, accountID uint) (*domain.Inbox, bool) {
+	rawID := c.Param("id")
+	if rawID == "" {
+		rawID = c.Param("inbox_id")
+	}
+	inboxID, err := strconv.ParseUint(rawID, 10, 64)
+	if err != nil || inboxID == 0 || uint64(uint(inboxID)) != inboxID {
+		response.BadRequest(c, "Invalid inbox ID")
+		return nil, false
+	}
+	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && inbox == nil) {
+		response.NotFound(c, "Inbox not found")
+		return nil, false
+	}
+	if err != nil {
+		response.InternalError(c, "Failed to load inbox")
+		return nil, false
+	}
+	// Use the same stored channel classification as channel ingress/outbound.
+	if inbox.ChannelType == "Channel::Whatsapp" {
+		whatsAppCSATUnavailable(c)
+		return nil, false
+	}
+	return inbox, true
+}
+
+// GetCSATTemplate returns existing non-WhatsApp local CSAT configuration.
 func (h *InboxHandler) GetCSATTemplate(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
-
-	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		inboxID, _ = strconv.ParseUint(c.Param("inbox_id"), 10, 64)
+	inbox, ok := h.csatInbox(c, accountID)
+	if !ok {
+		return
 	}
-
-	inbox, err := h.inboxRepo.FindByID(accountID, uint(inboxID))
-	if err != nil || inbox == nil {
+	tmpl, err := h.inboxRepo.GetCSATTemplate(accountID, inbox.ID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		response.NotFound(c, "Inbox not found")
 		return
 	}
-
-	tmpl, err := h.inboxRepo.GetCSATTemplate(accountID, uint(inboxID))
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "Failed to load CSAT configuration")
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"success":       true,
 		"template":      tmpl,
@@ -1496,18 +1539,40 @@ func (h *InboxHandler) GetCSATTemplate(c *gin.Context) {
 	})
 }
 
-// SaveCSATTemplate creates or updates the CSAT survey template
+// SaveCSATTemplate saves existing local configuration, without provider effects.
 func (h *InboxHandler) SaveCSATTemplate(c *gin.Context) {
 	rawAccountID, _ := c.Get(middleware.ContextAccountID)
 	accountID := rawAccountID.(uint)
-
-	inboxID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		inboxID, _ = strconv.ParseUint(c.Param("inbox_id"), 10, 64)
+	inbox, ok := h.csatInbox(c, accountID)
+	if !ok {
+		return
 	}
-
-	inbox, _ := h.inboxRepo.FindByID(accountID, uint(inboxID))
-
+	var raw json.RawMessage
+	decoder := json.NewDecoder(c.Request.Body)
+	if err := decoder.Decode(&raw); err != nil {
+		response.BadRequest(c, "CSAT configuration must be a JSON object")
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		response.BadRequest(c, "CSAT configuration must contain one JSON object")
+		return
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		response.BadRequest(c, "CSAT configuration must be a JSON object")
+		return
+	}
+	for key, value := range object {
+		// Match encoding/json's case-insensitive struct-field binding.
+		if strings.EqualFold(key, "template") || strings.EqualFold(key, "csat_template") {
+			var nested map[string]any
+			if err := json.Unmarshal(value, &nested); err != nil || nested == nil {
+				response.BadRequest(c, "CSAT template must be a JSON object")
+				return
+			}
+		}
+	}
 	var req struct {
 		Template     map[string]any `json:"template"`
 		CSATTemplate map[string]any `json:"csat_template"`
@@ -1516,8 +1581,10 @@ func (h *InboxHandler) SaveCSATTemplate(c *gin.Context) {
 		Language     string         `json:"language"`
 		DisplayType  string         `json:"display_type"`
 	}
-	_ = c.ShouldBindJSON(&req)
-
+	if err := json.Unmarshal(raw, &req); err != nil {
+		response.BadRequest(c, "Invalid CSAT configuration fields")
+		return
+	}
 	data := req.Template
 	if len(data) == 0 {
 		data = req.CSATTemplate
@@ -1531,18 +1598,18 @@ func (h *InboxHandler) SaveCSATTemplate(c *gin.Context) {
 			"status":       "active",
 		}
 	}
-
-	if inbox != nil {
-		if err := h.inboxRepo.SaveCSATTemplate(accountID, uint(inboxID), data); err != nil {
-			response.InternalError(c, err.Error())
-			return
+	if err := h.inboxRepo.SaveCSATTemplate(accountID, inbox.ID, data); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Inbox not found")
+		} else {
+			response.InternalError(c, "Failed to save CSAT configuration")
 		}
+		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"success":       true,
 		"account_id":    accountID,
-		"inbox_id":      inboxID,
+		"inbox_id":      inbox.ID,
 		"template":      data,
 		"csat_template": data,
 		"data":          data,

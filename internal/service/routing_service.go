@@ -152,7 +152,60 @@ func (s *RoutingService) CheckAgentCapacity(accountID, inboxID, agentID uint, as
 func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.autoAssign(conv, false, nil)
+}
 
+// CreateWithAutoAssign plans initial routing before the conversation exists.
+// CON then commits the selected fields and creation fact together. There is no
+// create-to-routing crash gap and no late assignment that can replace a manual edit.
+// Capacity selection retains the existing best-effort cross-instance semantics.
+func (s *RoutingService) CreateWithAutoAssign(conv *domain.Conversation) error {
+	return s.CreateWithInitialMessage(conv, nil)
+}
+
+// CreateWithInitialMessage persists initial routing and an immutable plan for
+// the widget's first message and optional off-hours reply. API/ORC composition
+// completes the local messages; RTE never invokes the higher-level coordinator.
+func (s *RoutingService) CreateWithInitialMessage(conv *domain.Conversation, initial *domain.Message) error {
+	if conv == nil || conv.ID != 0 || s.convRepo == nil || !s.convRepo.AutomationCaptureEnabled() {
+		return gorm.ErrInvalidData
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	planned := *conv
+	var outOfOffice string
+	if planned.AssigneeID == nil {
+		if _, err := s.autoAssign(&planned, true, &outOfOffice); err != nil {
+			return err
+		}
+	}
+	// Enrichment belongs to IAM; never let GORM persist the selected user as a
+	// CON association while creating the owner row.
+	selectedAgent := planned.Assignee
+	planned.Assignee = nil
+	messages := make([]domain.Message, 0, 2)
+	if initial != nil {
+		messages = append(messages, *initial)
+	}
+	if outOfOffice != "" && (initial == nil || initial.Content != outOfOffice) {
+		messages = append(messages, domain.Message{AccountID: planned.AccountID, MessageType: domain.MessageTypeOutgoing, Content: outOfOffice})
+	}
+	if err := s.convRepo.CreateWithInitialMessages(&planned, messages); err != nil {
+		return err
+	}
+	planned.Assignee = selectedAgent
+	*conv = planned
+
+	if selectedAgent != nil && s.hub != nil {
+		s.hub.Broadcast(&ws.Event{
+			Name: ws.EventConversationUpdated, AccountID: conv.AccountID, ConversationID: conv.ID,
+			Data: ginH{"id": conv.ID, "assignee_id": selectedAgent.ID, "assignee": selectedAgent},
+		})
+	}
+	return nil
+}
+
+func (s *RoutingService) autoAssign(conv *domain.Conversation, planOnly bool, outOfOffice *string) (*domain.User, error) {
 	// Ensure AccountID is resolved from inbox if missing
 	if conv.AccountID == 0 && conv.InboxID > 0 {
 		if s.inboxRepo == nil {
@@ -202,6 +255,12 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 
 	if shouldCheckWorkingHours && !s.IsWithinWorkingHours(&inbox, time.Now()) {
 		// Off-hours! Do not route to agents. Send out-of-office response if configured.
+		if planOnly {
+			if outOfOffice != nil {
+				*outOfOffice = inbox.OutOfOfficeMessage
+			}
+			return nil, nil
+		}
 		if inbox.OutOfOfficeMessage != "" {
 			if s.msgRepo == nil {
 				return nil, gorm.ErrInvalidData
@@ -247,7 +306,7 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 		}
 		// Over capacity! Clear assignee so AutoAssign can find an available agent or keep unassigned
 		conv.AssigneeID = nil
-		if conv.ID > 0 {
+		if !planOnly && conv.ID > 0 {
 			_ = s.convRepo.Assign(conv.AccountID, conv.ID, nil)
 		}
 	}
@@ -301,12 +360,14 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 					return nil, gorm.ErrRecordNotFound
 				}
 				fallbackUser := membership.User
-				if err := s.convRepo.Assign(conv.AccountID, conv.ID, &fallbackUser.ID); err != nil {
-					return nil, err
+				if !planOnly {
+					if err := s.convRepo.Assign(conv.AccountID, conv.ID, &fallbackUser.ID); err != nil {
+						return nil, err
+					}
 				}
 				conv.AssigneeID = &fallbackUser.ID
 				conv.Assignee = fallbackUser
-				if s.hub != nil {
+				if !planOnly && s.hub != nil {
 					s.hub.Broadcast(&ws.Event{
 						Name:           ws.EventConversationUpdated,
 						AccountID:      conv.AccountID,
@@ -332,8 +393,10 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 					return nil, gorm.ErrRecordNotFound
 				}
 				conv.TeamID = policy.FallbackTeamID
-				if err := s.convRepo.AssignTeam(conv.AccountID, conv.ID, policy.FallbackTeamID); err != nil {
-					return nil, err
+				if !planOnly {
+					if err := s.convRepo.AssignTeam(conv.AccountID, conv.ID, policy.FallbackTeamID); err != nil {
+						return nil, err
+					}
 				}
 				return nil, nil
 			}
@@ -387,8 +450,10 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	}
 
 	// 3. Assign conversation to selected agent
-	if err := s.convRepo.Assign(conv.AccountID, conv.ID, &bestAgent.ID); err != nil {
-		return nil, err
+	if !planOnly {
+		if err := s.convRepo.Assign(conv.AccountID, conv.ID, &bestAgent.ID); err != nil {
+			return nil, err
+		}
 	}
 	conv.AssigneeID = &bestAgent.ID
 	conv.Assignee = bestAgent
@@ -402,7 +467,7 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	)
 
 	// 4. Broadcast event via WebSocket if hub is provided
-	if s.hub != nil {
+	if !planOnly && s.hub != nil {
 		s.hub.Broadcast(&ws.Event{
 			Name:           ws.EventConversationUpdated,
 			AccountID:      conv.AccountID,
@@ -418,57 +483,29 @@ func (s *RoutingService) AutoAssign(conv *domain.Conversation) (*domain.User, er
 	return bestAgent, nil
 }
 
-// ResumeSnoozedConversations checks for any snoozed conversations whose snooze time has expired and re-opens them
+// ResumeSnoozedConversations publishes committed winners even when a later row
+// fails. The error remains visible; a later pass can retry the remaining rows.
 func (s *RoutingService) ResumeSnoozedConversations(ctx context.Context) ([]domain.Conversation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
 	if s.convRepo == nil {
 		return nil, gorm.ErrInvalidData
 	}
-	resumed, err := s.convRepo.ResumeExpiredSnoozed(ctx, now)
-	if err != nil {
-		return nil, err
-	}
-
+	resumed, err := s.convRepo.ResumeExpiredSnoozed(ctx, time.Now().UTC())
 	for i := range resumed {
 		conv := &resumed[i]
 		logger.WithComponent("routing").Info("resumed expired snoozed conversation",
-			"conversation_id", conv.ID,
-			"account_id", conv.AccountID,
+			"conversation_id", conv.ID, "account_id", conv.AccountID,
 		)
-
 		if s.hub != nil {
 			s.hub.Broadcast(&ws.Event{
-				Name:           ws.EventConversationUpdated,
-				AccountID:      conv.AccountID,
-				ConversationID: conv.ID,
-				Data: ginH{
-					"id":            conv.ID,
-					"status":        domain.ConversationStatusOpen,
-					"snoozed_until": nil,
-				},
+				Name: ws.EventConversationUpdated, AccountID: conv.AccountID, ConversationID: conv.ID,
+				Data: ginH{"id": conv.ID, "status": domain.ConversationStatusOpen, "snoozed_until": nil},
 			})
 		}
 	}
-	return resumed, nil
-}
-
-// StartSnoozeScheduler continuously scans for snoozed conversations to re-open
-func (s *RoutingService) StartSnoozeScheduler(ctx context.Context, interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, _ = s.ResumeSnoozedConversations(ctx)
-			}
-		}
-	}()
+	return resumed, err
 }
 
 type ginH = map[string]any

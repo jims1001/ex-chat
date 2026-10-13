@@ -1,267 +1,2319 @@
 {
   "version": "dependency-sources-v1",
   "contractSource": "Chatwoot完整文档/Chatwoot模块化架构设计文档/02-无循环依赖矩阵.md",
-  "scopePolicy": "Every non-test Go file in internal/handler and internal/service containing a registered Repository or Service dependency symbol must appear exactly once in scanScopes; files without such symbols are excluded by rule.",
+  "scopePolicy": "Every non-test Go file in internal/handler and internal/service containing a registered Repository, Service, or Coordinator dependency symbol must appear exactly once in scanScopes; files without such symbols are excluded by rule except explicitly registered split receiver methods that retain their receiver owner. localOwnerPorts separately registers typed local capabilities, owner-local credential reads and composition, with an exact production call-site guard. localCountOwnerPorts separately registers context-aware, account-scoped, bounded count-only RPT capabilities and their exact owner methods and composition; these are not remote contracts. localTextOwnerPorts separately registers the synchronous MSG-to-CHN text capability, credential-free intent/binding/status/result values, owner-local credential reads and provider operations, opaque dispatch preparation, and exact combined-router composition; standalone module-server does not compose this local capability and no remote transport contract is implied. localFirebaseConfigOwnerPorts separately registers the context-aware, fixed-key, bounded private NTF-to-SYS Firebase configuration read and its sole combined-router composition. Credentials remain local to this capability and NTF transport; this is not sys.configuration.get.v1, a remote credential API, or a startup dependency.",
   "repositoryOwners": {
-    "AICustomToolRepository":"AIC","AccountRepository":"TEN","AgentBotRepository":"EXT","AgentCapacityPolicyRepository":"RTE","AppliedSLARepository":"RPT","AssignmentPolicyRepository":"RTE","AttachmentRepository":"MSG","AutomationService":"AUT","CampaignRepository":"OPS","CampaignService":"OPS","CannedResponseRepository":"OPS","CaptainRepository":"AIC","ChannelAuthEnterpriseRepository":"IAM","ChannelIAMRepository":"IAM","ChannelRTMRepository":"RTM","ChannelMIGRepository":"MIG","ChannelRPTRepository":"RPT","ChannelENTRepository":"ENT","ChannelBILRepository":"BIL","ChannelTENRepository":"TEN","CompanyExtensionRepository":"CUS","CompanyRepository":"CUS","ContactExtensionRepository":"CUS","ContactRepository":"CUS","ConversationRepository":"CON","CopilotThreadRepository":"AIC","CSATExtensionRepository":"QLT","CSATRepository":"QLT","CustomAttributeRepository":"CUS","CustomFilterRepository":"SRH","DashboardAppRepository":"EXT","DataImportService":"MIG","DeviceRepository":"NTF","EmailLogRepository":"MSG","EmailService":"MSG","EnterpriseRepository":"ENT","InboxRepository":"CHN","IntegrationRepository":"EXT","JournalRepository":"L0","LabelRepository":"CUS","MacroRepository":"OPS","MessageRepository":"MSG","MigrationService":"MIG","NotificationRepository":"NTF","OrderRepository":"BIL","PlatformRepository":"EXT","PortalRepository":"KB","PublicRepository":"API","PushService":"NTF","QARepository":"QLT","ReportService":"RPT","RoutingService":"RTE","SetPublicRepository":"API","SystemConfigRepository":"SYS","SLARepository":"RPT","SLAService":"RPT","StorageService":"MED","TeamRepository":"TEN","TicketRepository":"TKT","UserRepository":"IAM","WebhookRepository":"EXT","WebhookService":"EXT","WidgetRepository":"API","CallRepository":"RTM"
+    "AICustomToolRepository": "AIC",
+    "AccountRepository": "TEN",
+    "AgentBotRepository": "EXT",
+    "AgentCapacityPolicyRepository": "RTE",
+    "AppliedSLARepository": "RPT",
+    "AssignmentPolicyRepository": "RTE",
+    "AttachmentRepository": "MSG",
+    "AutomationService": "AUT",
+    "CampaignRepository": "OPS",
+    "CampaignService": "OPS",
+    "CannedResponseRepository": "OPS",
+    "CaptainRepository": "AIC",
+    "ChannelAuthEnterpriseRepository": "IAM",
+    "ChannelIAMRepository": "IAM",
+    "ChannelRTMRepository": "RTM",
+    "ChannelMIGRepository": "MIG",
+    "ChannelRPTRepository": "RPT",
+    "ChannelENTRepository": "ENT",
+    "ChannelBILRepository": "BIL",
+    "ChannelTENRepository": "TEN",
+    "CompanyExtensionRepository": "CUS",
+    "CompanyRepository": "CUS",
+    "ContactExtensionRepository": "CUS",
+    "ContactRepository": "CUS",
+    "ConversationRepository": "CON",
+    "CopilotThreadRepository": "AIC",
+    "CSATExtensionRepository": "QLT",
+    "CSATRepository": "QLT",
+    "CustomAttributeRepository": "CUS",
+    "CustomFilterRepository": "SRH",
+    "DashboardAppRepository": "EXT",
+    "DataImportService": "MIG",
+    "DeviceRepository": "NTF",
+    "EmailLogRepository": "MSG",
+    "EmailService": "MSG",
+    "EnterpriseRepository": "ENT",
+    "InboxRepository": "CHN",
+    "IntegrationRepository": "EXT",
+    "JournalRepository": "L0",
+    "LabelRepository": "CUS",
+    "MacroRepository": "OPS",
+    "MessageRepository": "MSG",
+    "MigrationService": "MIG",
+    "NotificationRepository": "NTF",
+    "OrderRepository": "BIL",
+    "PlatformRepository": "EXT",
+    "PortalRepository": "KB",
+    "PublicRepository": "API",
+    "PushService": "NTF",
+    "QARepository": "QLT",
+    "ReportService": "RPT",
+    "ReportingEventReadRepository": "RPT",
+    "RoutingService": "RTE",
+    "SAMLRequestRepository": "IAM",
+    "SetPublicRepository": "API",
+    "SystemConfigRepository": "SYS",
+    "SLARepository": "RPT",
+    "SLAService": "RPT",
+    "StorageService": "MED",
+    "TeamRepository": "TEN",
+    "TicketRepository": "TKT",
+    "UserRepository": "IAM",
+    "WebhookRepository": "EXT",
+    "WebhookService": "EXT",
+    "WidgetRepository": "API",
+    "CallRepository": "RTM",
+    "LocalStorageService": "MED",
+    "ChannelIngressService": "RTM",
+    "CreationWorkflowCoordinator": "ORC",
+    "ChannelOutboundService": "MSG",
+    "InboxTranscriptSMTPRepository": "CHN"
   },
   "scanScopes": [
-    {"consumer":"TEN","file":"internal/handler/account_handler.go"},
-    {"consumer":"RTE","file":"internal/handler/agent_capacity_policy_handler.go"},
-    {"consumer":"RTE","file":"internal/handler/assignment_policy_handler.go"},
-    {"consumer":"AUD","file":"internal/handler/audit_handler.go"},
-    {"consumer":"API","file":"internal/handler/auth_enterprise_handler.go"},
-    {"consumer":"API","file":"internal/handler/auth_handler.go"},
-    {"consumer":"RTM","file":"internal/handler/channel_driver_handler.go"},
-    {"consumer":"CUS","file":"internal/handler/company_extension_handler.go"},
-    {"consumer":"CUS","file":"internal/handler/contact_extension_handler.go"},
-    {"consumer":"CUS","file":"internal/handler/contact_handler.go"},
-    {"consumer":"API","file":"internal/handler/conversation_handler.go"},
-    {"consumer":"ORC","file":"internal/handler/crm_ops_advanced_handler.go"},
-    {"consumer":"ORC","provider":"AUT","kind":"synchronous","file":"internal/handler/automation_rule_handler.go","symbol":"AutomationService"},
-    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/handler/conversation_participant_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"ORC","provider":"SRH","kind":"synchronous","file":"internal/handler/custom_filter_handler.go","symbol":"CustomFilterRepository"},
-    {"consumer":"CUS","file":"internal/handler/custom_attribute_handler.go"},
-    {"consumer":"EXT","file":"internal/handler/dashboard_app_handler.go"},
-    {"consumer":"NTF","file":"internal/handler/device_handler.go"},
-    {"consumer":"MIG","file":"internal/handler/data_import_handler.go"},
-    {"consumer":"API","file":"internal/handler/email_log_handler.go"},
-    {"consumer":"ENT","file":"internal/handler/enterprise_handler.go"},
-    {"consumer":"SYS","file":"internal/handler/system_config_handler.go"},
-    {"consumer":"SRH","file":"internal/handler/search_handler.go"},
-    {"consumer":"ORC","file":"internal/handler/inbox_handler.go"},
-    {"consumer":"EXT","file":"internal/handler/platform_handler.go"},
-    {"consumer":"KB","file":"internal/handler/portal_handler.go"},
-    {"consumer":"API","file":"internal/handler/public_handler.go"},
-    {"consumer":"QLT","file":"internal/handler/qa_handler.go"},
-    {"consumer":"RPT","file":"internal/handler/report_handler.go"},
-    {"consumer":"TEN","file":"internal/handler/team_handler.go"},
-    {"consumer":"TKT","file":"internal/handler/ticket_handler.go"},
-    {"consumer":"EXT","file":"internal/handler/webhook_handler.go"},
-    {"consumer":"API","file":"internal/handler/widget_handler.go"},
-    {"consumer":"AUT","file":"internal/service/automation_service.go"},
-    {"consumer":"RPT","file":"internal/service/report_service.go"},
-    {"consumer":"RPT","file":"internal/service/sla_service.go"},
-    {"consumer":"RTE","file":"internal/service/routing_service.go"},
-    {"consumer":"OPS","file":"internal/service/campaign_service.go"},
-    {"consumer":"OPS","file":"internal/handler/ops_handler.go"},
-    {"consumer":"OPS","file":"internal/handler/ops_macro_handler.go"},
-    {"consumer":"MIG","file":"internal/service/migration_service.go"},
-    {"consumer":"MIG","file":"internal/service/data_import_service.go"},
-    {"consumer":"MSG","file":"internal/service/email_service.go"},
-    {"consumer":"EXT","file":"internal/service/webhook_service.go"},
-    {"consumer":"NTF","file":"internal/service/push_service.go"},
-    {"consumer":"AIC","file":"internal/handler/copilot_handler.go"},
-    {"consumer":"AIC","file":"internal/handler/copilot_thread_handler.go"},
-    {"consumer":"AIC","file":"internal/handler/ai_custom_tool_handler.go"},
-    {"consumer":"AIC","file":"internal/repository/captain_repository.go"},
-    {"consumer":"TEN","file":"internal/repository/account_repository.go"},
-    {"consumer":"ORC","file":"internal/repository/company_extension_repository.go"},
-    {"consumer":"ORC","file":"internal/repository/contact_extension_repository.go"},
-    {"consumer":"ORC","file":"internal/repository/contact_repository.go"},
-    {"consumer":"ORC","file":"internal/repository/label_repository.go"},
-    {"consumer":"RPT","file":"internal/handler/applied_sla_handler.go"},
-    {"consumer":"QLT","file":"internal/handler/csat_handler.go"},
-    {"consumer":"OPS","file":"internal/repository/macro_repository.go"},
-    {"consumer":"EXT","file":"internal/repository/platform_repository.go"},
-    {"consumer":"API","file":"internal/repository/public_repository.go"},
-    {"consumer":"QLT","file":"internal/repository/qa_repository.go"},
-    {"consumer":"KB","file":"internal/repository/portal_repository.go"},
-    {"consumer":"API","file":"internal/repository/widget_repository.go"},
-    {"consumer":"TKT","file":"internal/repository/ticket_repository.go"}
+    {
+      "consumer": "TEN",
+      "file": "internal/handler/account_handler.go"
+    },
+    {
+      "consumer": "RTE",
+      "file": "internal/handler/agent_capacity_policy_handler.go"
+    },
+    {
+      "consumer": "RTE",
+      "file": "internal/handler/assignment_policy_handler.go"
+    },
+    {
+      "consumer": "AUD",
+      "file": "internal/handler/audit_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/auth_enterprise_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/auth_handler.go"
+    },
+    {
+      "consumer": "RTM",
+      "file": "internal/handler/channel_driver_handler.go"
+    },
+    {
+      "consumer": "CUS",
+      "file": "internal/handler/company_extension_handler.go"
+    },
+    {
+      "consumer": "CUS",
+      "file": "internal/handler/contact_extension_handler.go"
+    },
+    {
+      "consumer": "CUS",
+      "file": "internal/handler/contact_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/conversation_handler.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/handler/crm_ops_advanced_handler.go"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "kind": "synchronous",
+      "file": "internal/handler/automation_rule_handler.go",
+      "symbol": "AutomationService"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_participant_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "kind": "synchronous",
+      "file": "internal/handler/custom_filter_handler.go",
+      "symbol": "CustomFilterRepository"
+    },
+    {
+      "consumer": "CUS",
+      "file": "internal/handler/custom_attribute_handler.go"
+    },
+    {
+      "consumer": "EXT",
+      "file": "internal/handler/dashboard_app_handler.go"
+    },
+    {
+      "consumer": "NTF",
+      "file": "internal/handler/device_handler.go"
+    },
+    {
+      "consumer": "MIG",
+      "file": "internal/handler/data_import_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/email_log_handler.go"
+    },
+    {
+      "consumer": "ENT",
+      "file": "internal/handler/enterprise_handler.go"
+    },
+    {
+      "consumer": "SYS",
+      "file": "internal/handler/system_config_handler.go"
+    },
+    {
+      "consumer": "SRH",
+      "file": "internal/handler/search_handler.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/handler/inbox_handler.go"
+    },
+    {
+      "consumer": "EXT",
+      "file": "internal/handler/platform_handler.go"
+    },
+    {
+      "consumer": "KB",
+      "file": "internal/handler/portal_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/public_handler.go"
+    },
+    {
+      "consumer": "QLT",
+      "file": "internal/handler/qa_handler.go"
+    },
+    {
+      "consumer": "RPT",
+      "file": "internal/handler/report_handler.go"
+    },
+    {
+      "consumer": "RPT",
+      "file": "internal/handler/report_count_series.go"
+    },
+    {
+      "consumer": "TEN",
+      "file": "internal/handler/team_handler.go"
+    },
+    {
+      "consumer": "TKT",
+      "file": "internal/handler/ticket_handler.go"
+    },
+    {
+      "consumer": "EXT",
+      "file": "internal/handler/webhook_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/widget_handler.go"
+    },
+    {
+      "consumer": "AUT",
+      "file": "internal/service/automation_service.go"
+    },
+    {
+      "consumer": "RPT",
+      "file": "internal/service/report_service.go"
+    },
+    {
+      "consumer": "RPT",
+      "file": "internal/service/sla_service.go"
+    },
+    {
+      "consumer": "RPT",
+      "file": "internal/service/sla_facts.go"
+    },
+    {
+      "consumer": "RTE",
+      "file": "internal/service/routing_service.go"
+    },
+    {
+      "consumer": "OPS",
+      "file": "internal/service/campaign_service.go"
+    },
+    {
+      "consumer": "OPS",
+      "file": "internal/handler/ops_handler.go"
+    },
+    {
+      "consumer": "OPS",
+      "file": "internal/handler/ops_macro_handler.go"
+    },
+    {
+      "consumer": "MIG",
+      "file": "internal/service/migration_service.go"
+    },
+    {
+      "consumer": "MIG",
+      "file": "internal/service/data_import_service.go"
+    },
+    {
+      "consumer": "MSG",
+      "file": "internal/service/email_service.go"
+    },
+    {
+      "consumer": "EXT",
+      "file": "internal/service/webhook_service.go"
+    },
+    {
+      "consumer": "NTF",
+      "file": "internal/service/push_service.go"
+    },
+    {
+      "consumer": "NTF",
+      "file": "internal/service/push_fcm.go"
+    },
+    {
+      "consumer": "AIC",
+      "file": "internal/handler/copilot_handler.go"
+    },
+    {
+      "consumer": "AIC",
+      "file": "internal/handler/copilot_thread_handler.go"
+    },
+    {
+      "consumer": "AIC",
+      "file": "internal/handler/ai_custom_tool_handler.go"
+    },
+    {
+      "consumer": "AIC",
+      "file": "internal/repository/captain_repository.go"
+    },
+    {
+      "consumer": "TEN",
+      "file": "internal/repository/account_repository.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/repository/company_extension_repository.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/repository/contact_extension_repository.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/repository/contact_repository.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/repository/label_repository.go"
+    },
+    {
+      "consumer": "RPT",
+      "file": "internal/handler/applied_sla_handler.go"
+    },
+    {
+      "consumer": "QLT",
+      "file": "internal/handler/csat_handler.go"
+    },
+    {
+      "consumer": "OPS",
+      "file": "internal/repository/macro_repository.go"
+    },
+    {
+      "consumer": "EXT",
+      "file": "internal/repository/platform_repository.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/repository/public_repository.go"
+    },
+    {
+      "consumer": "QLT",
+      "file": "internal/repository/qa_repository.go"
+    },
+    {
+      "consumer": "KB",
+      "file": "internal/repository/portal_repository.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/repository/widget_repository.go"
+    },
+    {
+      "consumer": "TKT",
+      "file": "internal/repository/ticket_repository.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/widget_visitor_auth.go"
+    },
+    {
+      "consumer": "RTM",
+      "file": "internal/handler/call_recording_handler.go"
+    },
+    {
+      "consumer": "AIC",
+      "file": "internal/handler/copilot_thread_completion.go"
+    },
+    {
+      "consumer": "RTM",
+      "file": "internal/handler/channel_ingress_handler.go"
+    },
+    {
+      "consumer": "RTM",
+      "file": "internal/service/channel_ingress_service.go"
+    },
+    {
+      "consumer": "ORC",
+      "file": "internal/handler/automation_compatibility_handler.go"
+    },
+    {
+      "consumer": "MSG",
+      "file": "internal/service/channel_outbound_service.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/channel_outbound_handler.go"
+    },
+    {
+      "consumer": "RTM",
+      "file": "internal/handler/channel_outbound_callback_handler.go"
+    },
+    {
+      "consumer": "API",
+      "file": "internal/handler/agent_invitation_handler.go"
+    },
+    {
+      "consumer": "RTM",
+      "file": "internal/handler/call_read_authorization.go"
+    },
+    {
+      "consumer": "CHN",
+      "file": "internal/service/inbox_transcript_smtp.go"
+    },
+    {
+      "consumer": "CHN",
+      "file": "internal/service/channel_text_owner.go"
+    }
   ],
   "modules": [
-    {"name":"IAM","synchronous":[],"events":[],"shared":[],"startup":[]},
-    {"name":"TEN","synchronous":["IAM"],"events":[],"shared":[],"startup":[]},
-    {"name":"ENT","synchronous":["TEN"],"events":[],"shared":[],"startup":[]},
-    {"name":"SYS","synchronous":["IAM","TEN","ENT"],"events":[],"shared":[],"startup":["IAM","TEN"]},
-    {"name":"CHN","synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":["TEN"]},
-    {"name":"CUS","synchronous":["TEN","CHN"],"events":[],"shared":["CHN"],"startup":[]},
-    {"name":"MED","synchronous":["TEN"],"events":[],"shared":[],"startup":[]},
-    {"name":"CON","synchronous":["TEN","CHN","CUS"],"events":[],"shared":["CHN","CUS"],"startup":[]},
-    {"name":"MSG","synchronous":["TEN","ENT","CHN","CON","MED"],"events":[],"shared":["CON"],"startup":[]},
-    {"name":"RTE","synchronous":["TEN","CHN","CON","MSG"],"events":["MSG"],"shared":["CON"],"startup":[]},
-    {"name":"TKT","synchronous":["IAM","TEN","CUS","CON"],"events":["MSG"],"shared":[],"startup":[]},
-    {"name":"QLT","synchronous":["IAM","TEN","CHN","CUS","CON","MSG","RTE","TKT"],"events":[],"shared":[],"startup":[]},
-    {"name":"KB","synchronous":["IAM","TEN","MED"],"events":[],"shared":[],"startup":[]},
-    {"name":"BIL","synchronous":["TEN","ENT"],"events":[],"shared":[],"startup":[]},
-    {"name":"EXT","synchronous":["IAM","TEN","ENT","CHN"],"events":["CON","MSG"],"shared":[],"startup":[]},
-    {"name":"NTF","synchronous":["IAM","TEN","CON"],"events":["MSG","RTE","TKT","QLT"],"shared":[],"startup":[]},
-    {"name":"AUT","synchronous":["TEN","ENT","CUS","CON","MSG","RTE","NTF","EXT"],"events":["CHN","CUS","TKT","QLT"],"shared":[],"startup":[]},
-    {"name":"OPS","synchronous":["TEN","ENT","CHN","CUS","CON","MSG","RTE","QLT","EXT","NTF","AUT"],"events":["MSG"],"shared":[],"startup":[]},
-    {"name":"AIC","synchronous":["TEN","ENT","BIL","KB","CHN","CON","MSG","TKT","EXT","OPS"],"events":[],"shared":["KB"],"startup":[]},
-    {"name":"MIG","synchronous":["TEN","CHN","CUS","MED","CON","MSG"],"events":[],"shared":[],"startup":[]},
-    {"name":"RPT","synchronous":["IAM","TEN","CHN","CUS","CON","MSG","EXT"],"events":["CHN","CUS","CON","MSG","RTE","TKT","QLT","AUT","OPS","AIC","EXT","BIL","MIG"],"shared":[],"startup":[]},
-    {"name":"SRH","synchronous":["TEN","CUS","CON","MSG","KB"],"events":["CUS","CON","MSG","TKT","KB"],"shared":[],"startup":[]},
-    {"name":"ORC","synchronous":["IAM","TEN","ENT","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH"],"events":[],"shared":[],"startup":[]},
-    {"name":"API","synchronous":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC"],"events":[],"shared":[],"startup":["IAM","TEN"]},
-    {"name":"RTM","synchronous":["IAM","TEN","CHN","CUS","CON","MSG"],"events":["API","CON","MSG","RTE","TKT","QLT","NTF","AUT","OPS"],"shared":[],"startup":[]},
-    {"name":"AUD","synchronous":[],"events":["IAM","TEN","ENT","SYS","CHN","CUS","MED","CON","MSG","RTE","TKT","QLT","KB","EXT","NTF","AUT","OPS","AIC","BIL","MIG","RPT","SRH","ORC","API","RTM"],"shared":[],"startup":[]}
+    {
+      "name": "IAM",
+      "synchronous": [],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "TEN",
+      "synchronous": [
+        "IAM"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "ENT",
+      "synchronous": [
+        "TEN"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "SYS",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "ENT"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": [
+        "IAM",
+        "TEN"
+      ]
+    },
+    {
+      "name": "CHN",
+      "synchronous": [
+        "TEN",
+        "ENT"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": [
+        "TEN"
+      ]
+    },
+    {
+      "name": "CUS",
+      "synchronous": [
+        "TEN",
+        "CHN"
+      ],
+      "events": [],
+      "shared": [
+        "CHN"
+      ],
+      "startup": []
+    },
+    {
+      "name": "MED",
+      "synchronous": [
+        "TEN"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "CON",
+      "synchronous": [
+        "TEN",
+        "CHN",
+        "CUS"
+      ],
+      "events": [],
+      "shared": [
+        "CHN",
+        "CUS"
+      ],
+      "startup": []
+    },
+    {
+      "name": "MSG",
+      "synchronous": [
+        "TEN",
+        "ENT",
+        "CHN",
+        "CON",
+        "MED"
+      ],
+      "events": [],
+      "shared": [
+        "CON"
+      ],
+      "startup": []
+    },
+    {
+      "name": "RTE",
+      "synchronous": [
+        "TEN",
+        "CHN",
+        "CON",
+        "MSG"
+      ],
+      "events": [
+        "MSG"
+      ],
+      "shared": [
+        "CON"
+      ],
+      "startup": []
+    },
+    {
+      "name": "TKT",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "CUS",
+        "CON"
+      ],
+      "events": [
+        "MSG"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "QLT",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "KB",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "MED"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "BIL",
+      "synchronous": [
+        "TEN",
+        "ENT"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "EXT",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "CHN"
+      ],
+      "events": [
+        "CON",
+        "MSG"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "NTF",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "SYS",
+        "CON"
+      ],
+      "events": [
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "AUT",
+      "synchronous": [
+        "TEN",
+        "ENT",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "NTF",
+        "EXT"
+      ],
+      "events": [
+        "CHN",
+        "CUS",
+        "TKT",
+        "QLT"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "OPS",
+      "synchronous": [
+        "TEN",
+        "ENT",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "QLT",
+        "EXT",
+        "NTF",
+        "AUT"
+      ],
+      "events": [
+        "MSG"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "AIC",
+      "synchronous": [
+        "TEN",
+        "ENT",
+        "BIL",
+        "KB",
+        "CHN",
+        "CON",
+        "MSG",
+        "TKT",
+        "EXT",
+        "OPS"
+      ],
+      "events": [],
+      "shared": [
+        "KB"
+      ],
+      "startup": []
+    },
+    {
+      "name": "MIG",
+      "synchronous": [
+        "TEN",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "RPT",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "EXT"
+      ],
+      "events": [
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "AUT",
+        "OPS",
+        "AIC",
+        "EXT",
+        "BIL",
+        "MIG"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "SRH",
+      "synchronous": [
+        "TEN",
+        "CUS",
+        "CON",
+        "MSG",
+        "KB"
+      ],
+      "events": [
+        "CUS",
+        "CON",
+        "MSG",
+        "TKT",
+        "KB"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "ORC",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "KB",
+        "EXT",
+        "NTF",
+        "AUT",
+        "OPS",
+        "AIC",
+        "BIL",
+        "MIG",
+        "RPT",
+        "SRH"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "API",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "SYS",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "KB",
+        "EXT",
+        "NTF",
+        "AUT",
+        "OPS",
+        "AIC",
+        "BIL",
+        "MIG",
+        "RPT",
+        "SRH",
+        "ORC"
+      ],
+      "events": [],
+      "shared": [],
+      "startup": [
+        "IAM",
+        "TEN"
+      ]
+    },
+    {
+      "name": "RTM",
+      "synchronous": [
+        "IAM",
+        "TEN",
+        "CHN",
+        "CUS",
+        "CON",
+        "MSG",
+        "MED"
+      ],
+      "events": [
+        "API",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "NTF",
+        "AUT",
+        "OPS"
+      ],
+      "shared": [],
+      "startup": []
+    },
+    {
+      "name": "AUD",
+      "synchronous": [],
+      "events": [
+        "IAM",
+        "TEN",
+        "ENT",
+        "SYS",
+        "CHN",
+        "CUS",
+        "MED",
+        "CON",
+        "MSG",
+        "RTE",
+        "TKT",
+        "QLT",
+        "KB",
+        "EXT",
+        "NTF",
+        "AUT",
+        "OPS",
+        "AIC",
+        "BIL",
+        "MIG",
+        "RPT",
+        "SRH",
+        "ORC",
+        "API",
+        "RTM"
+      ],
+      "shared": [],
+      "startup": []
+    }
   ],
   "observedCode": [
-    {"consumer":"MSG","provider":"ENT","kind":"synchronous","file":"internal/service/email_service.go","symbol":"ChannelENTRepository"},
-    {"consumer":"NTF","provider":"IAM","kind":"synchronous","file":"internal/service/push_service.go","symbol":"UserRepository"},
-    {"consumer":"ORC","provider":"SRH","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"CustomFilterRepository"},
-    {"consumer":"AUT","provider":"TEN","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"AccountRepository"},
-    {"consumer":"AUT","provider":"CUS","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"ContactRepository"},
-    {"consumer":"AUT","provider":"CUS","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"LabelRepository"},
-    {"consumer":"AUT","provider":"CON","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"ConversationRepository"},
-    {"consumer":"AUT","provider":"MSG","kind":"synchronous","file":"internal/service/automation_service.go","symbol":"MessageRepository"},
-    {"consumer":"RPT","provider":"CHN","kind":"synchronous","file":"internal/service/report_service.go","symbol":"InboxRepository"},
-    {"consumer":"RPT","provider":"CUS","kind":"synchronous","file":"internal/service/report_service.go","symbol":"ContactRepository"},
-    {"consumer":"RPT","provider":"CUS","kind":"synchronous","file":"internal/service/report_service.go","symbol":"LabelRepository"},
-    {"consumer":"RPT","provider":"CON","kind":"synchronous","file":"internal/service/report_service.go","symbol":"ConversationRepository"},
-    {"consumer":"RPT","provider":"MSG","kind":"synchronous","file":"internal/service/report_service.go","symbol":"MessageRepository"},
-    {"consumer":"RPT","provider":"TEN","kind":"synchronous","file":"internal/service/report_service.go","symbol":"AccountRepository"},
-    {"consumer":"RPT","provider":"TEN","kind":"synchronous","file":"internal/service/report_service.go","symbol":"TeamRepository"},
-    {"consumer":"RPT","provider":"IAM","kind":"synchronous","file":"internal/service/report_service.go","symbol":"UserRepository"},
-    {"consumer":"RPT","provider":"EXT","kind":"synchronous","file":"internal/service/report_service.go","symbol":"AgentBotRepository"},
-    {"consumer":"RPT","provider":"CON","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"ConversationRepository"},
-    {"consumer":"RPT","provider":"CHN","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"InboxRepository"},
-    {"consumer":"RPT","provider":"MSG","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"MessageRepository"},
-    {"consumer":"RPT","provider":"TEN","kind":"synchronous","file":"internal/service/sla_service.go","symbol":"AccountRepository"},
-    {"consumer":"RPT","provider":"CON","kind":"synchronous","file":"internal/handler/applied_sla_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"AIC","provider":"BIL","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"OrderRepository"},
-    {"consumer":"AIC","provider":"TKT","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"TicketRepository"},
-    {"consumer":"AIC","provider":"BIL","kind":"synchronous","file":"internal/handler/ai_custom_tool_handler.go","symbol":"OrderRepository"},
-    {"consumer":"AIC","provider":"TKT","kind":"synchronous","file":"internal/handler/ai_custom_tool_handler.go","symbol":"TicketRepository"},
-    {"consumer":"RTE","provider":"CHN","kind":"synchronous","file":"internal/handler/assignment_policy_handler.go","symbol":"InboxRepository"},
-    {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/handler/assignment_policy_handler.go","symbol":"AccountRepository"},
-    {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/handler/assignment_policy_handler.go","symbol":"TeamRepository"},
-    {"consumer":"RTE","provider":"CHN","kind":"synchronous","file":"internal/handler/agent_capacity_policy_handler.go","symbol":"InboxRepository"},
-    {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/handler/agent_capacity_policy_handler.go","symbol":"AccountRepository"},
-    {"consumer":"RTE","provider":"CON","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"ConversationRepository"},
-    {"consumer":"RTE","provider":"MSG","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"MessageRepository"},
-    {"consumer":"RTE","provider":"CHN","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"InboxRepository"},
-    {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"AccountRepository"},
-    {"consumer":"RTE","provider":"TEN","kind":"synchronous","file":"internal/service/routing_service.go","symbol":"TeamRepository"},
-    {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"ContactRepository"},
-    {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"LabelRepository"},
-    {"consumer":"OPS","provider":"CON","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"ConversationRepository"},
-    {"consumer":"OPS","provider":"MSG","kind":"synchronous","file":"internal/service/campaign_service.go","symbol":"MessageRepository"},
-    {"consumer":"SRH","provider":"CUS","kind":"synchronous","file":"internal/handler/search_handler.go","symbol":"ContactRepository"},
-    {"consumer":"SRH","provider":"CON","kind":"synchronous","file":"internal/handler/search_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"SRH","provider":"MSG","kind":"synchronous","file":"internal/handler/search_handler.go","symbol":"MessageRepository"},
-    {"consumer":"SRH","provider":"KB","kind":"synchronous","file":"internal/handler/search_handler.go","symbol":"PortalRepository"},
-    {"consumer":"AIC","provider":"OPS","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"CannedResponseRepository"},
-    {"consumer":"AIC","provider":"CON","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"AIC","provider":"MSG","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"MessageRepository"},
-    {"consumer":"AIC","provider":"KB","kind":"synchronous","file":"internal/handler/copilot_handler.go","symbol":"PortalRepository"},
-    {"consumer":"AIC","provider":"CON","kind":"synchronous","file":"internal/handler/copilot_thread_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"AIC","provider":"MSG","kind":"synchronous","file":"internal/handler/copilot_thread_handler.go","symbol":"MessageRepository"},
-    {"consumer":"AIC","provider":"MSG","kind":"synchronous","file":"internal/handler/ai_custom_tool_handler.go","symbol":"MessageRepository"},
-    {"consumer":"AIC","provider":"CHN","kind":"synchronous","file":"internal/repository/captain_repository.go","symbol":"InboxRepository"},
-    {"consumer":"AIC","provider":"CON","kind":"synchronous","file":"internal/repository/captain_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"AIC","provider":"MSG","kind":"synchronous","file":"internal/repository/captain_repository.go","symbol":"MessageRepository"},
-    {"consumer":"QLT","provider":"TEN","kind":"synchronous","file":"internal/handler/csat_handler.go","symbol":"AccountRepository"},
-    {"consumer":"QLT","provider":"CHN","kind":"synchronous","file":"internal/handler/csat_handler.go","symbol":"InboxRepository"},
-    {"consumer":"QLT","provider":"CUS","kind":"synchronous","file":"internal/handler/csat_handler.go","symbol":"ContactRepository"},
-    {"consumer":"QLT","provider":"CON","kind":"synchronous","file":"internal/handler/csat_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"QLT","provider":"MSG","kind":"synchronous","file":"internal/handler/csat_handler.go","symbol":"MessageRepository"},
-    {"consumer":"MIG","provider":"CHN","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"InboxRepository"},
-    {"consumer":"MIG","provider":"CUS","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"ContactRepository"},
-    {"consumer":"MIG","provider":"CON","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"ConversationRepository"},
-    {"consumer":"MIG","provider":"MSG","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"MessageRepository"},
-    {"consumer":"MIG","provider":"MSG","kind":"synchronous","file":"internal/service/migration_service.go","symbol":"AttachmentRepository"},
-    {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"AttachmentRepository"},
-    {"consumer":"MIG","provider":"CUS","kind":"synchronous","file":"internal/service/data_import_service.go","symbol":"ContactRepository"},
-    {"consumer":"RTM","provider":"CHN","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"InboxRepository"},
-    {"consumer":"RTM","provider":"CUS","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"ContactRepository"},
-    {"consumer":"RTM","provider":"CON","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"RTM","provider":"MSG","kind":"synchronous","file":"internal/handler/channel_driver_handler.go","symbol":"MessageRepository"},
-        {"consumer":"API","provider":"IAM","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelIAMRepository"},
-    {"consumer":"API","provider":"MIG","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelMIGRepository"},
-    {"consumer":"API","provider":"RPT","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelRPTRepository"},
-    {"consumer":"API","provider":"ENT","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelENTRepository"},
-    {"consumer":"API","provider":"BIL","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelBILRepository"},
-    {"consumer":"API","provider":"TEN","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ChannelTENRepository"},
-    {"consumer":"API","provider":"IAM","kind":"synchronous","file":"internal/handler/auth_handler.go","symbol":"ChannelIAMRepository"},
-    {"consumer":"API","provider":"RPT","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"ChannelRPTRepository"},
-    {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"LabelRepository"},
-    {"consumer":"OPS","provider":"CON","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"OPS","provider":"EXT","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"WebhookService"},
-    {"consumer":"OPS","provider":"NTF","kind":"synchronous","file":"internal/handler/ops_macro_handler.go","symbol":"NotificationRepository"},
-    {"consumer":"OPS","provider":"QLT","kind":"synchronous","file":"internal/handler/ops_macro_handler.go","symbol":"CSATRepository"},
-    {"consumer":"TEN","provider":"IAM","kind":"synchronous","file":"internal/handler/account_handler.go","symbol":"UserRepository"},
-    {"consumer":"TEN","provider":"IAM","kind":"synchronous","file":"internal/repository/account_repository.go","symbol":"UserRepository"},
-    {"consumer":"ORC","provider":"IAM","kind":"synchronous","file":"internal/repository/company_extension_repository.go","symbol":"UserRepository"},
-    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/repository/company_extension_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/repository/company_extension_repository.go","symbol":"MessageRepository"},
-    {"consumer":"ORC","provider":"CHN","kind":"synchronous","file":"internal/repository/contact_extension_repository.go","symbol":"InboxRepository"},
-    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/repository/contact_extension_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/repository/contact_extension_repository.go","symbol":"MessageRepository"},
-    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"MessageRepository"},
-    {"consumer":"ORC","provider":"TKT","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"TicketRepository"},
-    {"consumer":"ORC","provider":"BIL","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"OrderRepository"},
-    {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/repository/contact_repository.go","symbol":"CampaignRepository"},
-    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/repository/label_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"CUS","provider":"CHN","kind":"synchronous","file":"internal/handler/contact_handler.go","symbol":"InboxRepository"},
-    {"consumer":"EXT","provider":"IAM","kind":"synchronous","file":"internal/handler/platform_handler.go","symbol":"UserRepository"},
-    {"consumer":"OPS","provider":"AUT","kind":"synchronous","file":"internal/handler/ops_handler.go","symbol":"AutomationService"},
-    {"consumer":"API","provider":"IAM","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"UserRepository"},
-    {"consumer":"API","provider":"TEN","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"AccountRepository"},
-    {"consumer":"API","provider":"CHN","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"InboxRepository"},
-    {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ContactRepository"},
-    {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"API","provider":"KB","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"PortalRepository"},
-    {"consumer":"API","provider":"MIG","kind":"synchronous","file":"internal/handler/auth_enterprise_handler.go","symbol":"MigrationService"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/handler/auth_handler.go","symbol":"EmailService"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/handler/email_log_handler.go","symbol":"EmailLogRepository"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/handler/email_log_handler.go","symbol":"EmailService"},
-    {"consumer":"API","provider":"AUT","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"AutomationService"},
-    {"consumer":"API","provider":"OPS","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"CampaignService"},
-    {"consumer":"API","provider":"AIC","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"CaptainRepository"},
-    {"consumer":"API","provider":"EXT","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"WebhookService"},
-    {"consumer":"API","provider":"NTF","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"NotificationRepository"},
-    {"consumer":"API","provider":"RTE","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"RoutingService"},
-    {"consumer":"API","provider":"RPT","kind":"synchronous","file":"internal/handler/conversation_handler.go","symbol":"SLAService"},
-    {"consumer":"ORC","provider":"IAM","kind":"synchronous","file":"internal/handler/inbox_handler.go","symbol":"UserRepository"},
-    {"consumer":"ORC","provider":"CHN","kind":"synchronous","file":"internal/handler/inbox_handler.go","symbol":"InboxRepository"},
-    {"consumer":"ORC","provider":"EXT","kind":"synchronous","file":"internal/handler/inbox_handler.go","symbol":"AgentBotRepository"},
-    {"consumer":"ORC","provider":"AIC","kind":"synchronous","file":"internal/handler/inbox_handler.go","symbol":"CaptainRepository"},
-    {"consumer":"ORC","provider":"AUT","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"AutomationService"},
-    {"consumer":"ORC","provider":"CON","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"ConversationRepository"},
-    {"consumer":"ORC","provider":"CUS","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"CompanyRepository"},
-    {"consumer":"ORC","provider":"EXT","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"IntegrationRepository"},
-    {"consumer":"ORC","provider":"EXT","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"AgentBotRepository"},
-    {"consumer":"ORC","provider":"CHN","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"InboxRepository"},
-    {"consumer":"ORC","provider":"MED","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"StorageService"},
-    {"consumer":"ORC","provider":"MSG","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"MessageRepository"},
-    {"consumer":"ORC","provider":"NTF","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"NotificationRepository"},
-    {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"CampaignRepository"},
-    {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"CannedResponseRepository"},
-    {"consumer":"ORC","provider":"TEN","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"AccountRepository"},
-    {"consumer":"ORC","provider":"IAM","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"UserRepository"},
-    {"consumer":"ORC","provider":"TEN","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"TeamRepository"},
-    {"consumer":"ORC","provider":"CUS","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"LabelRepository"},
-    {"consumer":"ORC","provider":"OPS","kind":"synchronous","file":"internal/handler/inbox_handler.go","symbol":"CampaignRepository"},
-    {"consumer":"ORC","provider":"RPT","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"SLAService"},
-    {"consumer":"ORC","provider":"RTE","kind":"synchronous","file":"internal/handler/crm_ops_advanced_handler.go","symbol":"RoutingService"},
-    {"consumer":"OPS","provider":"CON","kind":"synchronous","file":"internal/repository/macro_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"OPS","provider":"TEN","kind":"synchronous","file":"internal/repository/macro_repository.go","symbol":"AccountRepository"},
-    {"consumer":"OPS","provider":"TEN","kind":"synchronous","file":"internal/repository/macro_repository.go","symbol":"TeamRepository"},
-    {"consumer":"OPS","provider":"CUS","kind":"synchronous","file":"internal/repository/macro_repository.go","symbol":"LabelRepository"},
-    {"consumer":"OPS","provider":"MSG","kind":"synchronous","file":"internal/repository/macro_repository.go","symbol":"MessageRepository"},
-    {"consumer":"EXT","provider":"TEN","kind":"synchronous","file":"internal/repository/platform_repository.go","symbol":"AccountRepository"},
-    {"consumer":"EXT","provider":"IAM","kind":"synchronous","file":"internal/repository/platform_repository.go","symbol":"UserRepository"},
-    {"consumer":"API","provider":"CHN","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"InboxRepository"},
-    {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"ContactRepository"},
-    {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/public_repository.go","symbol":"MessageRepository"},
-    {"consumer":"QLT","provider":"TKT","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"TicketRepository"},
-    {"consumer":"QLT","provider":"CON","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"QLT","provider":"IAM","kind":"synchronous","file":"internal/repository/qa_repository.go","symbol":"UserRepository"},
-    {"consumer":"KB","provider":"IAM","kind":"synchronous","file":"internal/repository/portal_repository.go","symbol":"UserRepository"},
-    {"consumer":"API","provider":"CHN","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"InboxRepository"},
-    {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"ContactRepository"},
-    {"consumer":"API","provider":"CON","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"ConversationRepository"},
-    {"consumer":"API","provider":"OPS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"CampaignRepository"},
-    {"consumer":"API","provider":"CUS","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"LabelRepository"},
-    {"consumer":"API","provider":"MSG","kind":"synchronous","file":"internal/repository/widget_repository.go","symbol":"MessageRepository"},
-    {"consumer":"TKT","provider":"TEN","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"AccountRepository"},
-    {"consumer":"TKT","provider":"IAM","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"UserRepository"},
-    {"consumer":"TKT","provider":"CUS","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"ContactRepository"},
-    {"consumer":"TKT","provider":"CON","kind":"synchronous","file":"internal/repository/ticket_repository.go","symbol":"ConversationRepository"}
+    {
+      "consumer": "MSG",
+      "provider": "ENT",
+      "kind": "synchronous",
+      "file": "internal/service/email_service.go",
+      "symbol": "ChannelENTRepository"
+    },
+    {
+      "consumer": "NTF",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/service/push_service.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "SRH",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CustomFilterRepository"
+    },
+    {
+      "consumer": "AUT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/service/automation_service.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "AUT",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/automation_service.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "AUT",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/automation_service.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "AUT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/automation_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "AUT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/automation_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "TeamRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "EXT",
+      "kind": "synchronous",
+      "file": "internal/service/report_service.go",
+      "symbol": "AgentBotRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/sla_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/service/sla_service.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/sla_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/service/sla_service.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/applied_sla_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "BIL",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_handler.go",
+      "symbol": "OrderRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "TKT",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_handler.go",
+      "symbol": "TicketRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "BIL",
+      "kind": "synchronous",
+      "file": "internal/handler/ai_custom_tool_handler.go",
+      "symbol": "OrderRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "TKT",
+      "kind": "synchronous",
+      "file": "internal/handler/ai_custom_tool_handler.go",
+      "symbol": "TicketRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/assignment_policy_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/assignment_policy_handler.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/assignment_policy_handler.go",
+      "symbol": "TeamRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/agent_capacity_policy_handler.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/routing_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/routing_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/service/routing_service.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/service/routing_service.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "RTE",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/service/routing_service.go",
+      "symbol": "TeamRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/campaign_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "SRH",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "SRH",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "SRH",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "SRH",
+      "provider": "KB",
+      "kind": "synchronous",
+      "file": "internal/handler/search_handler.go",
+      "symbol": "PortalRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_handler.go",
+      "symbol": "CannedResponseRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "KB",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_handler.go",
+      "symbol": "PortalRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_thread_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/copilot_thread_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/ai_custom_tool_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "AIC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/captain_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/service/migration_service.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/migration_service.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/migration_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/migration_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/migration_service.go",
+      "symbol": "AttachmentRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AttachmentRepository"
+    },
+    {
+      "consumer": "MIG",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/data_import_service.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_driver_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_driver_handler.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_driver_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_driver_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelIAMRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MIG",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelMIGRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "RPT",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelRPTRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "ENT",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelENTRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "BIL",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelBILRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ChannelTENRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_handler.go",
+      "symbol": "ChannelIAMRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "RPT",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "ChannelRPTRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/ops_handler.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/ops_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "EXT",
+      "kind": "synchronous",
+      "file": "internal/handler/ops_handler.go",
+      "symbol": "WebhookService"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "NTF",
+      "kind": "synchronous",
+      "file": "internal/handler/ops_macro_handler.go",
+      "symbol": "NotificationRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "QLT",
+      "kind": "synchronous",
+      "file": "internal/handler/ops_macro_handler.go",
+      "symbol": "CSATRepository"
+    },
+    {
+      "consumer": "TEN",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/account_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "TEN",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/repository/account_repository.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/company_extension_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_extension_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "TKT",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "TicketRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "BIL",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "OrderRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/repository/contact_repository.go",
+      "symbol": "CampaignRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/label_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "CUS",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/contact_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/platform_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "AUT",
+      "kind": "synchronous",
+      "file": "internal/handler/ops_handler.go",
+      "symbol": "AutomationService"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "KB",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "PortalRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MIG",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "MigrationService"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_handler.go",
+      "symbol": "EmailService"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/email_log_handler.go",
+      "symbol": "EmailLogRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/email_log_handler.go",
+      "symbol": "EmailService"
+    },
+    {
+      "consumer": "API",
+      "provider": "AUT",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "AutomationService"
+    },
+    {
+      "consumer": "API",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "CampaignService"
+    },
+    {
+      "consumer": "API",
+      "provider": "AIC",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "CaptainRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "EXT",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "WebhookService"
+    },
+    {
+      "consumer": "API",
+      "provider": "NTF",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "NotificationRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "RTE",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "RoutingService"
+    },
+    {
+      "consumer": "API",
+      "provider": "RPT",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "SLAService"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "EXT",
+      "kind": "synchronous",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "AgentBotRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AIC",
+      "kind": "synchronous",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "CaptainRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "AUT",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AutomationService"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CompanyRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "EXT",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "IntegrationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "EXT",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AgentBotRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MED",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "StorageService"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "NTF",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "NotificationRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CampaignRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "CannedResponseRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "TeamRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/handler/inbox_handler.go",
+      "symbol": "CampaignRepository"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "RPT",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "SLAService"
+    },
+    {
+      "consumer": "ORC",
+      "provider": "RTE",
+      "kind": "synchronous",
+      "file": "internal/handler/crm_ops_advanced_handler.go",
+      "symbol": "RoutingService"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "TeamRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "OPS",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/macro_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "EXT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/repository/platform_repository.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/public_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "TKT",
+      "kind": "synchronous",
+      "file": "internal/repository/qa_repository.go",
+      "symbol": "TicketRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/qa_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/repository/qa_repository.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "KB",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/repository/portal_repository.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "OPS",
+      "kind": "synchronous",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "CampaignRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "LabelRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/repository/widget_repository.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "TKT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/repository/ticket_repository.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/widget_visitor_auth.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "QLT",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/csat_handler.go",
+      "symbol": "ChannelIAMRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MED",
+      "kind": "synchronous",
+      "file": "internal/handler/call_recording_handler.go",
+      "symbol": "LocalStorageService"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MED",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_driver_handler.go",
+      "symbol": "LocalStorageService"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/auth_enterprise_handler.go",
+      "symbol": "EmailService"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/service/channel_ingress_service.go",
+      "symbol": "MessageRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "ORC",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "CreationWorkflowCoordinator"
+    },
+    {
+      "consumer": "MSG",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/service/channel_outbound_service.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/conversation_handler.go",
+      "symbol": "ChannelOutboundService"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_driver_handler.go",
+      "symbol": "ChannelOutboundService"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_outbound_handler.go",
+      "symbol": "ChannelOutboundService"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/channel_outbound_callback_handler.go",
+      "symbol": "ChannelOutboundService"
+    },
+    {
+      "consumer": "API",
+      "provider": "IAM",
+      "kind": "synchronous",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "UserRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "API",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "file": "internal/handler/agent_invitation_handler.go",
+      "symbol": "EmailService"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "AccountRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "InboxRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CUS",
+      "kind": "synchronous",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "ContactRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "CON",
+      "kind": "synchronous",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "ConversationRepository"
+    },
+    {
+      "consumer": "RTM",
+      "provider": "TEN",
+      "kind": "synchronous",
+      "file": "internal/handler/call_read_authorization.go",
+      "symbol": "TeamRepository"
+    }
+  ],
+  "localOwnerPorts": [
+    {
+      "consumer": "MSG",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "port": "domain.InboxTranscriptSMTP",
+      "method": "SendInboxTranscript",
+      "definitionFile": "internal/domain/inbox_transcript_smtp.go",
+      "consumerFieldFile": "internal/modruntime/runtime.go",
+      "consumerField": "InboxTranscriptSMTP",
+      "consumerFile": "internal/modruntime/ordinary_email.go",
+      "providerFile": "internal/service/inbox_transcript_smtp.go",
+      "providerFactory": "NewInboxTranscriptSMTP",
+      "providerRepository": "InboxTranscriptSMTPRepository",
+      "providerRepositoryMethod": "FindInboxSMTP",
+      "providerRepositoryFile": "internal/repository/inbox_repository.go",
+      "compositionFile": "cmd/server/main.go",
+      "standaloneFile": "cmd/module-server/main.go"
+    }
+  ],
+  "localCountOwnerPorts": [
+    {
+      "consumer": "RPT",
+      "provider": "CON",
+      "kind": "synchronous",
+      "scope": "local-count-only",
+      "port": "service.ReportConversationCountPort",
+      "method": "CountReportBuckets",
+      "definitionFile": "internal/service/report_count_series.go",
+      "consumerFieldFile": "internal/service/report_service.go",
+      "consumerField": "conversationCounts",
+      "consumerFile": "internal/service/report_count_series.go",
+      "providerRepository": "ConversationRepository",
+      "providerRepositoryFile": "internal/repository/conversation_report_count.go",
+      "providerTable": "conversations",
+      "providerFactory": "NewConversationRepository",
+      "defaultCompositionFile": "internal/service/report_service.go",
+      "defaultCompositionFunction": "NewReportService",
+      "compositionFile": "internal/router/router.go",
+      "compositionMethod": "SetCountOwners",
+      "maxBuckets": 400
+    },
+    {
+      "consumer": "RPT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "scope": "local-count-only",
+      "port": "service.ReportMessageCountPort",
+      "method": "CountReportBuckets",
+      "definitionFile": "internal/service/report_count_series.go",
+      "consumerFieldFile": "internal/service/report_service.go",
+      "consumerField": "messageCounts",
+      "consumerFile": "internal/service/report_count_series.go",
+      "providerRepository": "MessageRepository",
+      "providerRepositoryFile": "internal/repository/message_report_count.go",
+      "providerTable": "messages",
+      "providerFactory": "NewMessageRepository",
+      "defaultCompositionFile": "internal/service/report_service.go",
+      "defaultCompositionFunction": "NewReportService",
+      "compositionFile": "internal/router/router.go",
+      "compositionMethod": "SetCountOwners",
+      "maxBuckets": 400
+    }
+  ],
+  "localSummaryOwnerPorts": [
+    {
+      "consumer": "RPT",
+      "provider": "MSG",
+      "kind": "synchronous",
+      "scope": "local-summary-count-only",
+      "port": "service.ReportMessageSummaryPort",
+      "method": "CountReportSummary",
+      "definitionFile": "internal/service/report_message_summary.go",
+      "consumerFieldFile": "internal/service/report_service.go",
+      "consumerField": "summaryMessageCounts",
+      "consumerFile": "internal/service/report_service.go",
+      "providerRepository": "MessageRepository",
+      "providerRepositoryFile": "internal/repository/message_report_summary.go",
+      "providerTable": "messages",
+      "providerFactory": "NewMessageRepository",
+      "defaultCompositionFile": "internal/service/report_service.go",
+      "defaultCompositionFunction": "NewReportService",
+      "compositionFile": "internal/router/router.go",
+      "compositionMethod": "SetSummaryMessageOwner"
+    }
+  ],
+  "localTextOwnerPorts": [
+    {
+      "consumer": "MSG",
+      "provider": "CHN",
+      "kind": "synchronous",
+      "scope": "local-text-transport-only",
+      "port": "channel.TextOwner",
+      "methods": [
+        "Ready",
+        "OutboundEnabled",
+        "PrepareText",
+        "PrepareDispatch",
+        "LookupText",
+        "VerifyTwilioStatus",
+        "ParseWhatsAppStatuses",
+        "CheckBinding"
+      ],
+      "definitionFile": "internal/channel/text_owner.go",
+      "consumerFile": "internal/service/channel_outbound_service.go",
+      "consumerType": "ChannelOutboundService",
+      "consumerField": "owner",
+      "consumerFactory": "NewChannelOutboundService",
+      "providerFile": "internal/service/channel_text_owner.go",
+      "providerType": "channelTextOwner",
+      "providerFactory": "NewChannelTextOwner",
+      "providerRepository": "InboxRepository",
+      "providerRepositoryMethod": "OutboundConnection",
+      "providerRepositoryFile": "internal/repository/inbox_outbound.go",
+      "preparedPort": "channel.PreparedText",
+      "preparedType": "preparedChannelText",
+      "compositionFile": "internal/router/router.go",
+      "standaloneFile": "cmd/module-server/main.go"
+    }
+  ],
+  "localFirebaseConfigOwnerPorts": [
+    {
+      "consumer": "NTF",
+      "provider": "SYS",
+      "kind": "synchronous",
+      "scope": "local-private-firebase-config-only",
+      "port": "service.FirebasePushConfigPort",
+      "method": "FirebasePushConfiguration",
+      "definitionFile": "internal/service/push_service.go",
+      "consumerType": "PushService",
+      "consumerFactory": "NewPushService",
+      "consumerField": "firebaseConfig",
+      "consumerFile": "internal/service/push_fcm.go",
+      "providerRepository": "SystemConfigRepository",
+      "providerRepositoryFile": "internal/repository/system_config_firebase.go",
+      "providerFactory": "NewSystemConfigRepository",
+      "providerTable": "system_configs",
+      "keys": [
+        "FIREBASE_PROJECT_ID",
+        "FIREBASE_CREDENTIALS"
+      ],
+      "maxRows": 3,
+      "maxValueBytes": 32768,
+      "compositionFile": "internal/router/router.go",
+      "compositionFunction": "SetupRouterWithOptions",
+      "compositionMethod": "SetFirebaseConfigOwner",
+      "standaloneFile": "cmd/module-server/main.go"
+    }
   ]
 }

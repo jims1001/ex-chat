@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -105,8 +106,8 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 	db.Create(&inbox)
 
 	// Create Visitor 1 & Visitor 2
-	visitor1SourceID := "visitor_alice_token_111"
-	visitor2SourceID := "visitor_bob_token_222"
+	visitor1SourceID, visitor1Session, _ := bootstrapWidgetVisitor(t, r, websiteToken)
+	visitor2SourceID, visitor2Session, _ := bootstrapWidgetVisitor(t, r, websiteToken)
 
 	// Visitor 1 creates a conversation
 	v1ConvBody, _ := json.Marshal(map[string]string{
@@ -114,6 +115,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 		"message":   "Hi from Alice!",
 	})
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations?website_token=%s", websiteToken), bytes.NewReader(v1ConvBody))
+	req.Header.Set("X-Visitor-Session", visitor1Session)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -136,6 +138,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 		"name":      "Bob Visitor",
 	})
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/contact?website_token=%s", websiteToken), bytes.NewReader(v2IdentifyBody))
+	req.Header.Set("X-Visitor-Session", visitor2Session)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -147,8 +150,26 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 	// 1. Widget 越权访问防护测试
 	// =========================================================================
 	t.Run("Widget Cross-Visitor Enumeration and Impersonation Prevention", func(t *testing.T) {
+		// Knowing a persisted source ID does not authorize access without a session.
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/messages?website_token=%s&conversation_id=%d&source_id=%s", websiteToken, conv1ID, visitor1SourceID), nil)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for raw-source impersonation, got %d", w.Code)
+		}
+
+		// A valid Bob session cannot become Alice by supplying Alice's source ID.
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/messages?website_token=%s&conversation_id=%d&source_id=%s", websiteToken, conv1ID, visitor1SourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitor2Session)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for a signed cross-visitor source override, got %d", w.Code)
+		}
+
 		// A. Visitor 2 attempts to list messages of Visitor 1's conversation -> 404
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/messages?website_token=%s&conversation_id=%d&source_id=%s", websiteToken, conv1ID, visitor2SourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -157,6 +178,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 
 		// Visitor 1 reading own messages -> 200
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/messages?website_token=%s&conversation_id=%d&source_id=%s", websiteToken, conv1ID, visitor1SourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitor1Session)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -170,6 +192,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 			"content":         "Hacked message into Alice conversation",
 		})
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/messages?website_token=%s", websiteToken), bytes.NewReader(impersonateMsgBody))
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -183,6 +206,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 			"conversation_id": conv1ID,
 		})
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/update_last_seen?website_token=%s", websiteToken), bytes.NewReader(lastSeenBody))
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -197,6 +221,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 			"typing_status":   "on",
 		})
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/toggle_typing?website_token=%s", websiteToken), bytes.NewReader(typingBody))
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -211,6 +236,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 			"email":           "intruder@example.com",
 		})
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/transcript?website_token=%s", websiteToken), bytes.NewReader(transcriptBody))
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -537,6 +563,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 
 		// Visitor 1 fetches conversation detail
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/conversations/%d?website_token=%s&source_id=%s", conv1ID, websiteToken, visitor1SourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitor1Session)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -560,18 +587,24 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 
 		// Visitor 1 lists conversation history
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/conversations?website_token=%s&source_id=%s", websiteToken, visitor1SourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitor1Session)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200 for listing conversations, got %d", w.Code)
 		}
 		var listResp struct {
-			Data []struct {
-				Messages []domain.Message `json:"messages"`
+			Data struct {
+				Conversations []domain.Conversation `json:"conversations"`
 			} `json:"data"`
 		}
-		_ = json.Unmarshal(w.Body.Bytes(), &listResp)
-		for _, conv := range listResp.Data {
+		if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+			t.Fatalf("decode visitor conversation history: %v", err)
+		}
+		if len(listResp.Data.Conversations) == 0 {
+			t.Fatal("expected visitor conversation in history")
+		}
+		for _, conv := range listResp.Data.Conversations {
 			for _, m := range conv.Messages {
 				if m.Private || strings.Contains(m.Content, "Confidential agent internal note") {
 					t.Fatalf("leak detected in list conversations: private message exposed")
@@ -597,6 +630,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 			"content":   "Hacked by Bob!",
 		})
 		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/widget/messages/%d?website_token=%s", aliceMsg.ID, websiteToken), bytes.NewReader(updateBodyBob))
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -614,6 +648,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 				"content":   "Forged agent message",
 			})
 			req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/v1/widget/messages/%d?website_token=%s", agentMsg.ID, websiteToken), bytes.NewReader(updateAgentMsg))
+			req.Header.Set("X-Visitor-Session", visitor1Session)
 			req.Header.Set("Content-Type", "application/json")
 			w = httptest.NewRecorder()
 			r.ServeHTTP(w, req)
@@ -627,23 +662,17 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 	// 8. Widget 事件查询隔离与跨访客保护
 	// =========================================================================
 	t.Run("Widget ListEvents Isolation", func(t *testing.T) {
-		// Requesting events with no source_id -> should return empty array
+		// Anonymous event access must fail closed, even when there are no events
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/events?website_token=%s", websiteToken), nil)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 for empty events request, got %d", w.Code)
-		}
-		var emptyResp struct {
-			Data []any `json:"data"`
-		}
-		_ = json.Unmarshal(w.Body.Bytes(), &emptyResp)
-		if len(emptyResp.Data) != 0 {
-			t.Fatalf("expected 0 events without source_id, got %d", len(emptyResp.Data))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for anonymous events request, got %d", w.Code)
 		}
 
 		// Visitor 2 queries events specifying conv1ID (Visitor 1's conversation) -> 404
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/events?website_token=%s&source_id=%s&conversation_id=%d", websiteToken, visitor2SourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -662,6 +691,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 			"labels":          []string{"vip", "escalated"},
 		})
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/labels?website_token=%s", websiteToken), bytes.NewReader(addLabelBody))
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -671,6 +701,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 
 		// Visitor 2 attempts to get labels for conv1ID -> 404
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/widget/labels?website_token=%s&source_id=%s&conversation_id=%d", websiteToken, visitor2SourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitor2Session)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -682,12 +713,16 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 	// 10. DirectUpload 安全校验与带 Key 接收端真实上传测试
 	// =========================================================================
 	t.Run("DirectUpload Security and WithKey Handler", func(t *testing.T) {
-		// A. Direct upload without visitor identity -> 400
+		visitorSession, err := auth.GenerateVisitorToken(inbox.ID, contact1ID, visitor1SourceID, cfg.JWTSecret, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A. Direct upload without a signed visitor session -> 403
 		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s", websiteToken), nil)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 without visitor identity, got %d", w.Code)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 without signed visitor session, got %d", w.Code)
 		}
 
 		// B. Direct upload with dangerous HTML/SVG file -> 400
@@ -698,7 +733,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 				"byte_size":    100,
 			},
 		})
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&source_id=%s", websiteToken, visitor1SourceID), bytes.NewReader(svgReqBody))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&visitor_token=%s", websiteToken, visitorSession), bytes.NewReader(svgReqBody))
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -714,7 +749,7 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 				"byte_size":    2048,
 			},
 		})
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&source_id=%s", websiteToken, visitor1SourceID), bytes.NewReader(validImgBody))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/direct_uploads?website_token=%s&visitor_token=%s", websiteToken, visitorSession), bytes.NewReader(validImgBody))
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -739,6 +774,48 @@ func TestWidgetSecurityAndRBAC(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200 for direct upload binary PUT, got %d body=%s", w.Code, w.Body.String())
+		}
+
+		var uploadResult struct {
+			FileURL string `json:"file_url"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &uploadResult); err != nil {
+			t.Fatalf("decode uploaded file URL: %v", err)
+		}
+		ownerPrefix := fmt.Sprintf("/uploads/widget/inbox_%d/contact_%d/", inbox.ID, contact1ID)
+		if !strings.HasPrefix(uploadResult.FileURL, ownerPrefix) {
+			t.Fatalf("upload missing durable visitor namespace: %s", uploadResult.FileURL)
+		}
+		capabilityURL, err := url.Parse(uploadInitResp.DirectUpload.URL)
+		if err != nil {
+			t.Fatalf("parse upload capability URL: %v", err)
+		}
+		uploadCapability := capabilityURL.Query().Get("visitor_token")
+		if uploadCapability == "" {
+			t.Fatal("missing negotiated upload capability")
+		}
+		for _, download := range []struct {
+			name, session, query string
+			want                 int
+		}{
+			{name: "owner", session: visitor1Session, want: http.StatusOK},
+			{name: "same inbox intruder", session: visitor2Session, want: http.StatusForbidden},
+			{name: "anonymous", want: http.StatusUnauthorized},
+			{name: "removed test bypass", query: "?test_direct_access=true", want: http.StatusUnauthorized},
+			{name: "upload capability is not download session", session: uploadCapability, want: http.StatusUnauthorized},
+		} {
+			req = httptest.NewRequest(http.MethodGet, uploadResult.FileURL+download.query, nil)
+			if download.session != "" {
+				req.Header.Set("X-Visitor-Session", download.session)
+			}
+			w = httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != download.want {
+				t.Fatalf("%s download: want %d got %d: %s", download.name, download.want, w.Code, w.Body.String())
+			}
+			if download.want == http.StatusOK && !bytes.Equal(w.Body.Bytes(), fakeImageData) {
+				t.Fatalf("owner download returned unexpected bytes: %q", w.Body.String())
+			}
 		}
 	})
 

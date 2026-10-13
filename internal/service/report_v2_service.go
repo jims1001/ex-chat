@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // GetLiveConversationMetrics returns real-time open/unattended/unassigned/pending conversation metrics
@@ -124,7 +126,7 @@ func (s *ReportService) GetBotMetrics(accountID uint, filter ReportFilter) (*Bot
 	selected := []domain.Conversation{}
 	ids := []uint{}
 	for _, c := range conversations {
-		if len(allowed) == 0 || allowed[c.InboxID] {
+		if allowed[c.InboxID] {
 			selected = append(selected, c)
 			ids = append(ids, c.ID)
 		}
@@ -139,32 +141,15 @@ func (s *ReportService) GetBotMetrics(accountID uint, filter ReportFilter) (*Bot
 			msgCount++
 		}
 	}
-	var botResolutions, botHandoffs int64
-	eq := s.db.Model(&domain.ReportingEvent{}).Where("account_id = ? AND name = ?", accountID, "conversation_bot_resolved")
-	eq = applyBaseTimeFilter(eq, filter, "created_at")
-	_ = eq.Count(&botResolutions).Error
-	hq := s.db.Model(&domain.ReportingEvent{}).Where("account_id = ? AND name = ?", accountID, "conversation_bot_handoff")
-	hq = applyBaseTimeFilter(hq, filter, "created_at")
-	_ = hq.Count(&botHandoffs).Error
-	if botResolutions == 0 {
-		for _, c := range selected {
-			if c.Status == domain.ConversationStatusResolved && (c.AssigneeID == nil || *c.AssigneeID == 0) {
-				botResolutions++
-			}
-		}
-	}
-	if botHandoffs == 0 {
-		for _, c := range selected {
-			if c.AssigneeID != nil && *c.AssigneeID > 0 {
-				botHandoffs++
-			}
-		}
+	outcomes, err := s.getBotOutcomeCounts(accountID, filter)
+	if err != nil {
+		return nil, err
 	}
 	total := int64(len(selected))
 	var rr, hr float64
 	if total > 0 {
-		rr = RoundToOneDecimal(float64(botResolutions) / float64(total) * 100)
-		hr = RoundToOneDecimal(float64(botHandoffs) / float64(total) * 100)
+		rr = RoundToOneDecimal(float64(outcomes.BotResolutionsCount) / float64(total) * 100)
+		hr = RoundToOneDecimal(float64(outcomes.BotHandoffsCount) / float64(total) * 100)
 	}
 	return &BotMetricsReport{ConversationCount: total, MessageCount: msgCount, ResolutionRate: rr, HandoffRate: hr}, nil
 }
@@ -179,47 +164,74 @@ func filterUintIDs(ids []uint, allowed map[uint]bool) []uint {
 	return result
 }
 
-// GetBotSummary provides current vs previous period comparison for bot resolutions and handoffs
+// botReportingEventsUnavailable keeps malformed stored associations and query
+// details out of the HTTP/log error string while retaining dependency error identity.
+type botReportingEventsUnavailable struct {
+	cause error
+}
+
+func (e botReportingEventsUnavailable) Error() string { return "bot reporting events are unavailable" }
+func (e botReportingEventsUnavailable) Unwrap() error { return e.cause }
+
+// getBotOutcomeCounts uses account-scoped events in the requested event window.
+// This is intentionally independent of the creation-time denominator cohort.
+// A direct positive conversation_id is required; metadata remains opaque.
+func (s *ReportService) getBotOutcomeCounts(accountID uint, filter ReportFilter) (BotSummaryMetrics, error) {
+	var events []struct {
+		ConversationID *uint
+		Name           string
+	}
+	query := s.db.Session(&gorm.Session{Logger: gormlogger.Discard}).
+		Model(&domain.ReportingEvent{}).
+		Distinct("conversation_id", "name").
+		Where("account_id = ? AND name IN ?", accountID, []string{"conversation_bot_resolved", "conversation_bot_handoff"})
+	query = applyBaseTimeFilter(query, filter, "created_at")
+	if err := query.Find(&events).Error; err != nil {
+		return BotSummaryMetrics{}, botReportingEventsUnavailable{cause: err}
+	}
+	resolutions, handoffs := map[uint]bool{}, map[uint]bool{}
+	for _, event := range events {
+		if event.ConversationID == nil || *event.ConversationID == 0 {
+			return BotSummaryMetrics{}, botReportingEventsUnavailable{}
+		}
+		if event.Name == "conversation_bot_handoff" {
+			handoffs[*event.ConversationID] = true
+		} else {
+			resolutions[*event.ConversationID] = true
+		}
+	}
+	for id := range handoffs {
+		delete(resolutions, id)
+	}
+	return BotSummaryMetrics{BotResolutionsCount: int64(len(resolutions)), BotHandoffsCount: int64(len(handoffs))}, nil
+}
+
+// GetBotSummary provides exact current and previous event counts without
+// reconstructing integers from rounded percentages.
 func (s *ReportService) GetBotSummary(accountID uint, filter ReportFilter) (*BotSummaryReport, error) {
-	currentMetrics, err := s.GetBotMetrics(accountID, filter)
+	current, err := s.getBotOutcomeCounts(accountID, filter)
 	if err != nil {
 		return nil, err
 	}
 
-	// Calculate previous period
-	var prevFilter ReportFilter
-	if filter.Since != nil && filter.Until != nil {
-		diff := filter.Until.Sub(*filter.Since)
-		pSince := filter.Since.Add(-diff)
-		pUntil := *filter.Since
-		prevFilter.Since = &pSince
-		prevFilter.Until = &pUntil
-	} else if filter.Since != nil {
+	previous := BotSummaryMetrics{}
+	if filter.Since != nil {
+		prevFilter := filter
 		pUntil := *filter.Since
 		pSince := pUntil.AddDate(0, 0, -7)
-		prevFilter.Since = &pSince
-		prevFilter.Until = &pUntil
-	}
-
-	var prevResolutions, prevHandoffs int64
-	if prevFilter.Since != nil {
-		prevMetrics, _ := s.GetBotMetrics(accountID, prevFilter)
-		if prevMetrics != nil {
-			prevResolutions = int64(prevMetrics.ResolutionRate * float64(prevMetrics.ConversationCount) / 100.0)
-			prevHandoffs = int64(prevMetrics.HandoffRate * float64(prevMetrics.ConversationCount) / 100.0)
+		if filter.Until != nil {
+			pSince = filter.Since.Add(-filter.Until.Sub(*filter.Since))
+		}
+		prevFilter.Since, prevFilter.Until = &pSince, &pUntil
+		previous, err = s.getBotOutcomeCounts(accountID, prevFilter)
+		if err != nil {
+			return nil, err
 		}
 	}
-
-	curRes := int64(currentMetrics.ResolutionRate * float64(currentMetrics.ConversationCount) / 100.0)
-	curHandoff := int64(currentMetrics.HandoffRate * float64(currentMetrics.ConversationCount) / 100.0)
-
 	return &BotSummaryReport{
-		BotResolutionsCount: curRes,
-		BotHandoffsCount:    curHandoff,
-		Previous: BotSummaryMetrics{
-			BotResolutionsCount: prevResolutions,
-			BotHandoffsCount:    prevHandoffs,
-		},
+		BotResolutionsCount: current.BotResolutionsCount,
+		BotHandoffsCount:    current.BotHandoffsCount,
+		Previous:            previous,
 	}, nil
 }
 
@@ -481,19 +493,16 @@ func (s *ReportService) GetConversationTraffic(accountID uint, filter ReportFilt
 		return nil, err
 	}
 
-	// Generate list of unique dates
-	dateMap := make(map[string]bool)
-	cur := startDate
-	for !cur.After(endDate) {
-		dateMap[cur.Format("2006-01-02")] = true
-		cur = cur.AddDate(0, 0, 1)
+	// Enumerate UTC calendar labels after the existing numeric display shift.
+	// Keep query bounds absolute, and include only days intersecting [start,end).
+	offset := time.Duration(timezoneOffset * float64(time.Hour))
+	dates := []string{}
+	if endDate.After(startDate) {
+		displayStart, displayEnd := startDate.UTC().Add(offset), endDate.UTC().Add(offset)
+		for cur := reportUTCDayStart(displayStart); cur.Before(displayEnd); cur = cur.AddDate(0, 0, 1) {
+			dates = append(dates, cur.Format("2006-01-02"))
+		}
 	}
-
-	var dates []string
-	for d := range dateMap {
-		dates = append(dates, d)
-	}
-	sort.Strings(dates)
 
 	// Counts matrix: counts[hour][date]
 	counts := make(map[int]map[string]int64)
@@ -502,7 +511,7 @@ func (s *ReportService) GetConversationTraffic(accountID uint, filter ReportFilt
 	}
 
 	for _, c := range convs {
-		locTime := c.CreatedAt.Add(time.Duration(timezoneOffset * float64(time.Hour)))
+		locTime := c.CreatedAt.UTC().Add(offset)
 		dStr := locTime.Format("2006-01-02")
 		h := locTime.Hour()
 		if counts[h] != nil {
@@ -536,7 +545,7 @@ func (s *ReportService) GetYearInReview(accountID, userID uint, year int) (*Year
 	}
 
 	start := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := time.Date(year, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	end := time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	conversations, err := s.conversations.ListForReport(accountID, &start, &end)
 	if err != nil {
@@ -580,10 +589,12 @@ func (s *ReportService) GetYearInReview(accountID, userID uint, year int) (*Year
 
 	// Average response time
 	var avgSeconds float64
-	_ = s.db.Model(&domain.ReportingEvent{}).
+	responseEvents := s.db.Model(&domain.ReportingEvent{}).
 		Select("COALESCE(AVG(value), 0)").
-		Where("account_id = ? AND user_id = ? AND name = ? AND created_at >= ? AND created_at <= ?", accountID, userID, "first_response", start, end).
-		Scan(&avgSeconds).Error
+		Where("account_id = ? AND user_id = ? AND name = ?", accountID, userID, "first_response")
+	if err := applyBaseTimeFilter(responseEvents, ReportFilter{Since: &start, Until: &end}, "created_at").Scan(&avgSeconds).Error; err != nil {
+		return nil, err
+	}
 
 	return &YearInReviewReport{
 		Year:               year,
@@ -606,8 +617,8 @@ func (s *ReportService) GetDrilldown(accountID uint, metric, dimensionType strin
 	if perPage > 100 {
 		perPage = 100
 	}
-	start := time.Date(bucketTime.Year(), bucketTime.Month(), bucketTime.Day(), 0, 0, 0, 0, time.UTC)
-	end := start.Add(24 * time.Hour).Add(-time.Nanosecond)
+	start := reportUTCDayStart(bucketTime)
+	end := start.AddDate(0, 0, 1)
 	conversations, err := s.conversations.ListForReport(accountID, &start, &end)
 	if err != nil {
 		return nil, err
@@ -727,13 +738,13 @@ func (s *ReportService) GetConversationsReport(accountID uint, reportType string
 		uID := au.UserID
 		m, err := s.GetLiveConversationMetrics(accountID, nil)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		// Custom open/unattended for this specific agent
 		var agentOpen, agentUnattended int64
 		conversations, loadErr := s.conversations.ListForReport(accountID, nil, nil)
 		if loadErr != nil {
-			continue
+			return nil, loadErr
 		}
 		for _, conversation := range conversations {
 			if conversation.AssigneeID != nil && *conversation.AssigneeID == uID && conversation.Status == domain.ConversationStatusOpen {

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type identityView struct {
@@ -65,27 +65,29 @@ type mediaUploadView struct {
 }
 
 type conversationView struct {
-	ID             uint       `json:"id"`
-	UUID           string     `json:"uuid"`
-	DisplayID      uint       `json:"display_id"`
-	AccountID      uint       `json:"account_id"`
-	InboxID        uint       `json:"inbox_id"`
-	ContactID      uint       `json:"contact_id"`
-	AssigneeID     *uint      `json:"assignee_id,omitempty"`
-	TeamID         *uint      `json:"team_id,omitempty"`
-	Status         string     `json:"status"`
-	Priority       string     `json:"priority"`
-	ObjectVersion  int        `json:"object_version"`
-	SnoozedUntil   *time.Time `json:"snoozed_until,omitempty"`
-	LastActivityAt time.Time  `json:"last_activity_at"`
-	UnreadCount    int        `json:"unread_count"`
-	Muted          bool       `json:"muted"`
-	LabelIDs       []uint     `json:"label_ids"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	CustomAttributes string     `json:"custom_attributes,omitempty"`
+	ID               uint       `json:"id"`
+	UUID             string     `json:"uuid"`
+	DisplayID        uint       `json:"display_id"`
+	AccountID        uint       `json:"account_id"`
+	InboxID          uint       `json:"inbox_id"`
+	ContactID        uint       `json:"contact_id"`
+	AssigneeID       *uint      `json:"assignee_id,omitempty"`
+	TeamID           *uint      `json:"team_id,omitempty"`
+	Status           string     `json:"status"`
+	Priority         string     `json:"priority"`
+	ObjectVersion    int        `json:"object_version"`
+	SnoozedUntil     *time.Time `json:"snoozed_until,omitempty"`
+	LastActivityAt   time.Time  `json:"last_activity_at"`
+	UnreadCount      int        `json:"unread_count"`
+	Muted            bool       `json:"muted"`
+	LabelIDs         []uint     `json:"label_ids"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type messageView struct {
+	DeliveryFailed bool       `json:"delivery_failed,omitempty"`
 	ID             uint       `json:"id"`
 	AccountID      uint       `json:"account_id"`
 	ConversationID uint       `json:"conversation_id"`
@@ -172,16 +174,17 @@ type templateView struct {
 }
 
 type contactView struct {
-	ID            uint   `json:"id"`
-	AccountID     uint   `json:"account_id"`
-	CompanyID     *uint  `json:"company_id,omitempty"`
-	Name          string `json:"name"`
-	Email         string `json:"email"`
-	PhoneNumber   string `json:"phone_number"`
-	Identifier    string `json:"identifier"`
-	AvatarURL     string `json:"avatar_url"`
-	Blocked       bool   `json:"blocked"`
-	ObjectVersion int    `json:"object_version"`
+	CustomAttributes string `json:"custom_attributes,omitempty"`
+	ID               uint   `json:"id"`
+	AccountID        uint   `json:"account_id"`
+	CompanyID        *uint  `json:"company_id,omitempty"`
+	Name             string `json:"name"`
+	Email            string `json:"email"`
+	PhoneNumber      string `json:"phone_number"`
+	Identifier       string `json:"identifier"`
+	AvatarURL        string `json:"avatar_url"`
+	Blocked          bool   `json:"blocked"`
+	ObjectVersion    int    `json:"object_version"`
 }
 
 type companyView struct {
@@ -308,6 +311,17 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		return errors.New("module runtime is incomplete")
 	}
 	switch r.Config.ModuleID {
+	case "AIC":
+		if err := r.registerPersistedAIUsage(); err != nil {
+			return err
+		}
+		return r.registerBoundAssistantRead()
+	case "RPT":
+		return r.registerStoredReportingEvents()
+	case "SYS":
+		return r.registerPublicSystemConfiguration()
+	case "SRH":
+		return r.registerSavedFilterContracts()
 	case "IAM":
 		users := repository.NewUserRepository(r.DB)
 		return r.Contracts.RegisterQuery("iam.identity.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
@@ -434,6 +448,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}
 		return r.Contracts.RegisterEvent("iam.identity.changed.v1", func(context.Context, foundation.EventEnvelope) error { return nil })
 	case "ENT":
+		if err := r.registerPersistedFeatureFlags(); err != nil {
+			return err
+		}
 		enterprise := repository.NewEnterpriseRepository(r.DB)
 		return r.Contracts.RegisterQuery("ent.capability.check.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			capability, _ := query.Filter["capability"].(string)
@@ -448,6 +465,12 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return capabilityCheckView{AccountID: query.AccountID, Capability: capability, Allowed: features[capability]}, nil
 		})
 	case "CUS":
+		if err := r.registerAutomationNumericCatalog(); err != nil {
+			return err
+		}
+		if err := r.registerAutomationCustomerActions(); err != nil {
+			return err
+		}
 		contacts := repository.NewContactRepositoryWithOwnerPorts(r.DB, nil, nil, nil, nil, nil)
 		companies := repository.NewCompanyRepository(r.DB)
 		labels := repository.NewLabelRepositoryWithConversationPort(r.DB, nil)
@@ -463,7 +486,16 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if contact == nil {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "contact was not found"}
 			}
-			return contactFromModel(contact), nil
+			view := contactFromModel(contact)
+			for _, field := range query.Fields {
+				if field == "custom_attributes" {
+					if query.Actor.Type != "System" || query.Actor.AuthSource != "module" {
+						return nil, &ContractFailure{Type: "permission_denied", Message: "custom attributes require a module actor"}
+					}
+					view.CustomAttributes = contact.CustomAttributes
+				}
+			}
+			return view, nil
 		}); err != nil {
 			return err
 		}
@@ -1109,6 +1141,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return map[string]any{"account_id": command.AccountID, "deleted_count": len(assetIDs), "ready": true}, nil
 		})
 	case "CON":
+		if err := r.registerAutomationConversationActions(); err != nil {
+			return err
+		}
 		if err := r.Contracts.RegisterQuery("con.conversation.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			conversationID, err := uintFilter(query.Filter, "id")
 			if err != nil {
@@ -1123,6 +1158,14 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			view, err := conversationFromModel(r.DB, &conversation)
 			if err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation labels are unavailable"}
+			}
+			for _, field := range query.Fields {
+				if field == "custom_attributes" {
+					if query.Actor.Type != "System" || query.Actor.AuthSource != "module" {
+						return nil, &ContractFailure{Type: "permission_denied", Message: "custom attributes require a module actor"}
+					}
+					view.CustomAttributes = conversation.CustomAttributes
+				}
 			}
 			return view, nil
 		}); err != nil {
@@ -1436,18 +1479,39 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				updates["snoozed_until"] = until.UTC()
 			}
 			tx := Transaction(ctx, r.DB)
-			result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).Updates(updates)
+			var before domain.Conversation
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).First(&before).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					if command.Target.ExpectedVersion > 0 {
+						return nil, &ContractFailure{Type: "state_conflict", Message: "conversation version changed or target is unavailable"}
+					}
+					return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
+				}
+				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
+			}
+			ownerQuery := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting)
+			if command.Target.ExpectedVersion > 0 {
+				ownerQuery = ownerQuery.Where("object_version = ?", command.Target.ExpectedVersion)
+			}
+			result := ownerQuery.Updates(updates)
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation status could not be changed"}
 			}
 			if result.RowsAffected != 1 {
+				if command.Target.ExpectedVersion > 0 {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "conversation version changed or target is unavailable"}
+				}
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
 			}
 			var conversation domain.Conversation
 			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, conversationID).First(&conversation).Error; err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation store is unavailable"}
 			}
-			if err := r.appendBusinessEvent(ctx, command, "con.conversation_status.changed.v1", "Conversation", command.Target.ID, []string{"status", "snoozed_until"}, map[string]any{"conversation_id": conversation.ID, "status": conversation.Status, "snoozed_until": conversation.SnoozedUntil, "object_version": conversation.ObjectVersion}); err != nil {
+			payload := map[string]any{"conversation_id": conversation.ID, "status": conversation.Status, "snoozed_until": conversation.SnoozedUntil, "object_version": conversation.ObjectVersion}
+			if before.Status != conversation.Status {
+				payload["status_before"], payload["status_after"] = before.Status, conversation.Status
+			}
+			if err := r.appendBusinessEvent(ctx, command, "con.conversation_status.changed.v1", "Conversation", command.Target.ID, []string{"status", "snoozed_until"}, payload); err != nil {
 				return nil, err
 			}
 			return conversationFromModel(tx, &conversation)
@@ -1465,11 +1529,18 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation priority is invalid"}
 			}
 			tx := Transaction(ctx, r.DB)
-			result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting).Updates(map[string]any{"priority": priority, "object_version": gorm.Expr("object_version + 1"), "last_activity_at": time.Now().UTC(), "updated_at": time.Now().UTC()})
+			ownerQuery := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", command.AccountID, conversationID, domain.ConversationStatusDeleting)
+			if command.Target.ExpectedVersion > 0 {
+				ownerQuery = ownerQuery.Where("object_version = ?", command.Target.ExpectedVersion)
+			}
+			result := ownerQuery.Updates(map[string]any{"priority": priority, "object_version": gorm.Expr("object_version + 1"), "last_activity_at": time.Now().UTC(), "updated_at": time.Now().UTC()})
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "conversation priority could not be changed"}
 			}
 			if result.RowsAffected != 1 {
+				if command.Target.ExpectedVersion > 0 {
+					return nil, &ContractFailure{Type: "state_conflict", Message: "conversation version changed or target is unavailable"}
+				}
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "conversation was not found"}
 			}
 			var conversation domain.Conversation
@@ -1586,6 +1657,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if err != nil {
 				return &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
 			}
+			if prepared, err := r.consumePreparedAutomationMessageActivity(ctx, event, conversationID); prepared || err != nil {
+				return err
+			}
 			senderID, _ := uintFilter(event.Payload, "sender_id")
 			messageType, _ := event.Payload["message_type"].(string)
 			incoming := messageType == domain.MessageTypeIncoming
@@ -1597,7 +1671,17 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return nil
 		})
 	case "MSG":
+		if err := r.registerAutomationMessageActions(); err != nil {
+			return err
+		}
+		if err := r.registerConfirmedCannedPreview(); err != nil {
+			return err
+		}
+		r.Contracts.authorizers["msg.message.create.v1"] = r.requireMessageCreateActor
 		if err := r.Contracts.RegisterCommand("msg.message.create.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
+			if err := r.requireMessageCreateActor(ctx, command); err != nil {
+				return nil, err
+			}
 			conversationID, err := uintFilter(command.Input, "conversation_id")
 			if err != nil {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is required"}
@@ -1668,7 +1752,13 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				}
 			}
 			now := time.Now().UTC()
-			message := domain.Message{AccountID: command.AccountID, ConversationID: conversationID, SenderType: senderType, SenderID: senderID, MessageType: messageType, ContentType: contentType, Content: content, Private: private, Status: "sent", EchoID: echoID, CreatedAt: now, UpdatedAt: now}
+			// This standalone command has no provider transport orchestration. Persist
+			// truthful local state and never adopt these rows into outbound work.
+			localStatus := domain.MessageStatusSaved
+			if messageType == domain.MessageTypeOutgoing && !private {
+				localStatus = domain.MessageStatusQueued
+			}
+			message := domain.Message{AccountID: command.AccountID, ConversationID: conversationID, SenderType: senderType, SenderID: senderID, MessageType: messageType, ContentType: contentType, Content: content, Private: private, Status: localStatus, EchoID: echoID, CreatedAt: now, UpdatedAt: now}
 			if err := tx.Create(&message).Error; err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "message could not be created"}
 			}
@@ -1749,6 +1839,13 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			} else if err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
 			}
+			var tracked int64
+			if err := tx.Model(&domain.OutboundMessageAttempt{}).Where("account_id = ? AND message_id = ?", command.AccountID, message.ID).Count(&tracked).Error; err != nil {
+				return nil, err
+			}
+			if tracked > 0 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "tracked provider messages require the verified outbound workflow"}
+			}
 			if message.Deleted {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "deleted message status cannot change"}
 			}
@@ -1777,18 +1874,34 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			tx := Transaction(ctx, r.DB)
 			var message domain.Message
-			if err := tx.Where("account_id = ? AND id = ?", command.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND id = ?", command.AccountID, messageID).First(&message).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "message was not found"}
 			} else if err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message store is unavailable"}
 			}
+			var tracked int64
+			if err := tx.Model(&domain.OutboundMessageAttempt{}).Where("account_id = ? AND message_id = ?", command.AccountID, message.ID).Count(&tracked).Error; err != nil {
+				return nil, err
+			}
+			if tracked > 0 {
+				return nil, &ContractFailure{Type: "state_conflict", Message: "tracked provider messages require the verified outbound workflow"}
+			}
 			if message.Deleted || message.MessageType != domain.MessageTypeOutgoing || message.Status != domain.MessageStatusFailed {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "only failed outgoing messages can be retried"}
 			}
-			if err := tx.Model(&domain.Message{}).Where("account_id = ? AND id = ? AND status = ?", command.AccountID, messageID, domain.MessageStatusFailed).Updates(map[string]any{"status": domain.MessageStatusSent, "updated_at": time.Now().UTC()}).Error; err != nil {
+			outcome := domain.MessageStatusQueued
+			if message.Private {
+				outcome = domain.MessageStatusSaved
+			}
+			now := time.Now().UTC()
+			result := tx.Model(&domain.Message{}).Where("account_id = ? AND id = ? AND status = ? AND deleted = ?", command.AccountID, messageID, domain.MessageStatusFailed, false).Updates(map[string]any{"status": outcome, "updated_at": now})
+			if result.Error != nil {
+				return nil, result.Error
+			}
+			if result.RowsAffected != 1 {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "message retry could not be scheduled"}
 			}
-			message.Status, message.UpdatedAt = domain.MessageStatusSent, time.Now().UTC()
+			message.Status, message.UpdatedAt = outcome, now
 			if err := r.appendBusinessEvent(ctx, command, "msg.message_status.changed.v1", "Message", command.Target.ID, []string{"status"}, map[string]any{"message_id": message.ID, "conversation_id": message.ConversationID, "status": message.Status, "operation": "retry"}); err != nil {
 				return nil, err
 			}
@@ -1846,76 +1959,12 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
+		r.Contracts.authorizers["msg.email.send.v1"] = rejectPublicInboxRoute
 		if err := r.Contracts.RegisterCommand("msg.email.send.v1", func(ctx context.Context, command foundation.CommandEnvelope) (any, error) {
-			toEmail, _ := command.Input["to_email"].(string)
-			fromEmail, _ := command.Input["from_email"].(string)
-			subject, _ := command.Input["subject"].(string)
-			htmlBody, _ := command.Input["content_html"].(string)
-			textBody, _ := command.Input["content_text"].(string)
-			toEmail, fromEmail, subject = strings.TrimSpace(toEmail), strings.TrimSpace(fromEmail), strings.TrimSpace(subject)
-			if address, err := mail.ParseAddress(toEmail); err != nil || address.Address != toEmail {
-				return nil, &ContractFailure{Type: "validation_failed", Message: "to_email is invalid"}
-			}
-			if address, err := mail.ParseAddress(fromEmail); err != nil || address.Address != fromEmail {
-				return nil, &ContractFailure{Type: "validation_failed", Message: "from_email is invalid"}
-			}
-			if subject == "" || len(subject) > 512 || (strings.TrimSpace(htmlBody) == "" && strings.TrimSpace(textBody) == "") {
-				return nil, &ContractFailure{Type: "validation_failed", Message: "email subject and content are required"}
-			}
-			emailType, _ := command.Input["email_type"].(string)
-			emailType = strings.ToLower(strings.TrimSpace(emailType))
-			if emailType != "transcript" && emailType != "confirmation" && emailType != "reset_password" && emailType != "notification" {
-				return nil, &ContractFailure{Type: "validation_failed", Message: "email_type is invalid"}
-			}
-			var conversationID *uint
-			if value, exists := command.Input["conversation_id"]; exists {
-				parsed, err := optionalUint(value)
-				if err != nil || parsed == nil {
-					return nil, &ContractFailure{Type: "validation_failed", Message: "conversation_id is invalid"}
-				}
-				conversationID = parsed
-				conDependency, ok := r.Config.Dependencies["CON"]
-				if !ok {
-					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "conversation validation is unavailable"}
-				}
-				query := foundation.QueryEnvelope{QueryType: "con.conversation.get.v1", AccountID: command.AccountID, Actor: command.Actor, Filter: map[string]any{"id": *conversationID}, Sort: []string{"id"}, Page: "1", Fields: []string{"id", "account_id"}, Consistency: "strong", RequestedAt: time.Now().UTC()}
-				var conversation conversationView
-				if err := newModuleClient("MSG", conDependency, r.Config.ContractVersion, r.Config.MaxTimeout).query(ctx, query, &conversation); err != nil {
-					return nil, err
-				}
-			}
-			if command.Target.Type == "conversation" {
-				if conversationID == nil || command.Target.ID != strconv.FormatUint(uint64(*conversationID), 10) {
-					return nil, &ContractFailure{Type: "validation_failed", Message: "conversation target must match conversation_id"}
-				}
-			} else if command.Target.Type != "account" || command.Target.ID != strconv.FormatUint(uint64(command.AccountID), 10) {
-				return nil, &ContractFailure{Type: "validation_failed", Message: "email target is invalid"}
-			}
-			var userID *uint
-			if value, exists := command.Input["user_id"]; exists {
-				parsed, err := optionalUint(value)
-				if err != nil || parsed == nil {
-					return nil, &ContractFailure{Type: "validation_failed", Message: "user_id is invalid"}
-				}
-				userID = parsed
-				tenDependency, ok := r.Config.Dependencies["TEN"]
-				if !ok {
-					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "email user validation is unavailable"}
-				}
-				if err := newModuleClient("MSG", tenDependency, r.Config.ContractVersion, r.Config.MaxTimeout).requireMember(ctx, command.AccountID, command.Actor, *userID); err != nil {
-					return nil, err
-				}
-			}
-			now := time.Now().UTC()
-			email := domain.EmailLog{AccountID: command.AccountID, ConversationID: conversationID, UserID: userID, EmailType: emailType, ToEmail: toEmail, FromEmail: fromEmail, Subject: subject, ContentHTML: htmlBody, ContentText: textBody, Status: "pending", DeliveryStatus: "pending", MaxRetries: 3, CreatedAt: now, UpdatedAt: now}
-			tx := Transaction(ctx, r.DB)
-			if err := tx.Create(&email).Error; err != nil {
-				return nil, &ContractFailure{Type: "state_conflict", Message: "email delivery could not be queued"}
-			}
-			if err := r.appendBusinessEvent(ctx, command, "msg.email_delivery.changed.v1", "EmailLog", strconv.FormatUint(uint64(email.ID), 10), []string{"delivery_status"}, map[string]any{"email_log_id": email.ID, "conversation_id": email.ConversationID, "email_type": email.EmailType, "delivery_status": email.DeliveryStatus}); err != nil {
+			if err := rejectPublicInboxRoute(ctx, command); err != nil {
 				return nil, err
 			}
-			return map[string]any{"id": email.ID, "account_id": email.AccountID, "conversation_id": email.ConversationID, "email_type": email.EmailType, "status": email.Status, "delivery_status": email.DeliveryStatus, "retry_count": email.RetryCount, "max_retries": email.MaxRetries, "created_at": email.CreatedAt, "updated_at": email.UpdatedAt}, nil
+			return r.sendEmailCommand(ctx, command, nil)
 		}); err != nil {
 			return err
 		}
@@ -1924,6 +1973,9 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "account target is required"}
 			}
 			tx := Transaction(ctx, r.DB)
+			if err := r.anonymizeOrdinaryEmail(ctx, command.AccountID); err != nil {
+				return nil, err
+			}
 			if err := tx.Where("account_id = ?", command.AccountID).Delete(&domain.Attachment{}).Error; err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "message attachments could not be anonymized"}
 			}
@@ -2010,18 +2062,18 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "email delivery id is required"}
 			}
 			var email domain.EmailLog
-			if err := r.DB.Select("id", "account_id", "conversation_id", "email_type", "status", "delivery_status", "retry_count", "max_retries", "next_retry_at", "last_attempt_at", "created_at", "updated_at").Where("account_id = ? AND id = ?", query.AccountID, emailID).First(&email).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := r.DB.Select("id", "account_id", "conversation_id", "email_type", "managed_queue", "status", "delivery_status", "retry_count", "max_retries", "next_retry_at", "last_attempt_at", "created_at", "updated_at").Where("account_id = ? AND id = ?", query.AccountID, emailID).First(&email).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, &ContractFailure{Type: "resource_not_found", Message: "email delivery was not found"}
 			} else if err != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "email delivery store is unavailable"}
 			}
-			return map[string]any{"id": email.ID, "account_id": email.AccountID, "conversation_id": email.ConversationID, "email_type": email.EmailType, "status": email.Status, "delivery_status": email.DeliveryStatus, "retry_count": email.RetryCount, "max_retries": email.MaxRetries, "next_retry_at": email.NextRetryAt, "last_attempt_at": email.LastAttemptAt, "created_at": email.CreatedAt, "updated_at": email.UpdatedAt}, nil
+			return r.ordinaryEmailStatus(email)
 		}); err != nil {
 			return err
 		}
 		if err := r.Contracts.RegisterQuery("msg.account_deletion_status.get.v1", func(_ context.Context, query foundation.QueryEnvelope) (any, error) {
 			counts := map[string]int64{}
-			for name, statement := range map[string]*gorm.DB{"message_count": r.DB.Model(&domain.Message{}).Where("account_id = ?", query.AccountID), "attachment_count": r.DB.Model(&domain.Attachment{}).Where("account_id = ?", query.AccountID), "draft_count": r.DB.Model(&domain.DraftMessage{}).Where("account_id = ?", query.AccountID), "email_log_count": r.DB.Model(&domain.EmailLog{}).Where("account_id = ?", query.AccountID)} {
+			for name, statement := range map[string]*gorm.DB{"message_count": r.DB.Model(&domain.Message{}).Where("account_id = ?", query.AccountID), "attachment_count": r.DB.Model(&domain.Attachment{}).Where("account_id = ?", query.AccountID), "draft_count": r.DB.Model(&domain.DraftMessage{}).Where("account_id = ?", query.AccountID), "email_log_count": r.DB.Model(&domain.EmailLog{}).Where("account_id = ?", query.AccountID), "ordinary_email_intent_count": r.DB.Model(&domain.OrdinaryEmailIntent{}).Where("account_id = ?", query.AccountID), "ordinary_email_attempt_count": r.DB.Model(&domain.OrdinaryEmailAttempt{}).Where("account_id = ?", query.AccountID), "ordinary_email_private_content_count": r.DB.Model(&domain.OrdinaryEmailIntent{}).Where("account_id = ? AND (anonymized = ? OR payload <> '')", query.AccountID, false)} {
 				var count int64
 				if err := statement.Count(&count).Error; err != nil {
 					return nil, &ContractFailure{Type: "dependency_unavailable", Message: "message deletion status is unavailable"}
@@ -4465,17 +4517,53 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			return json.RawMessage(raw)
 		}
 		autRuleView := func(rule *domain.AutomationRule) map[string]any {
-			return map[string]any{"id": rule.ID, "account_id": rule.AccountID, "name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": definitionJSON(rule.Conditions), "actions": definitionJSON(rule.Actions), "active": rule.Active, "created_at": rule.CreatedAt, "updated_at": rule.UpdatedAt}
+			return map[string]any{"id": rule.ID, "account_id": rule.AccountID, "name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "condition_semantics": rule.ConditionSemantics, "conditions": definitionJSON(rule.Conditions), "actions": definitionJSON(rule.Actions), "active": rule.Active, "created_at": rule.CreatedAt, "updated_at": rule.UpdatedAt}
 		}
 		validEvent := func(value string) bool {
 			switch value {
-			case "conversation_created", "conversation_updated", "message_created", "conversation_opened":
+			case "conversation_created", "conversation_updated", "message_created", "conversation_opened", "conversation_resolved":
 				return true
 			default:
 				return false
 			}
 		}
-		definitionInput := func(input map[string]any, key string, fallback string) (string, *ContractFailure) {
+		conditionSemanticsInput := func(input map[string]any, fallback string) (string, *ContractFailure) {
+			value, provided := input["condition_semantics"]
+			if !provided {
+				return fallback, nil
+			}
+			profile, valid := value.(string)
+			if !valid || (profile != "" && profile != domain.AutomationNumericCustomV1) {
+				return "", &ContractFailure{Type: "validation_failed", Message: "condition_semantics must be an empty string or numeric_custom.v1"}
+			}
+			return profile, nil
+		}
+		// Generic command envelopes can arrive already decoded to float64. Reject
+		// such trees rather than freeze an approximation as an exact threshold.
+		var exactConditionInput func(any) bool
+		exactConditionInput = func(value any) bool {
+			switch item := value.(type) {
+			case nil, string, bool, json.Number, json.RawMessage, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+				return true
+			case []any:
+				for _, child := range item {
+					if !exactConditionInput(child) {
+						return false
+					}
+				}
+				return true
+			case map[string]any:
+				for _, child := range item {
+					if !exactConditionInput(child) {
+						return false
+					}
+				}
+				return true
+			default:
+				return false
+			}
+		}
+		definitionInput := func(input map[string]any, key string, fallback string, profile string) (string, *ContractFailure) {
 			value, ok := input[key]
 			if !ok {
 				return fallback, nil
@@ -4483,19 +4571,49 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if value == nil {
 				return "", &ContractFailure{Type: "validation_failed", Message: key + " must be an array"}
 			}
+			if key == "conditions" && profile != "" {
+				if raw, ok := value.(string); ok {
+					return raw, nil
+				}
+				if raw, ok := value.(json.RawMessage); ok {
+					return string(raw), nil
+				}
+				if !exactConditionInput(value) {
+					return "", &ContractFailure{Type: "validation_failed", Message: "adopted numeric conditions require a JSON string, raw JSON, or exact-number definition"}
+				}
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					return "", &ContractFailure{Type: "validation_failed", Message: "conditions definition is invalid"}
+				}
+				return string(encoded), nil
+			}
 			if raw, ok := value.(string); ok {
+				if key == "actions" {
+					if _, valid := parseAutomationActionDefinitions(raw); !valid {
+						return "", &ContractFailure{Type: "validation_failed", Message: "actions definition is invalid"}
+					}
+					return raw, nil
+				}
 				var items []any
 				if err := json.Unmarshal([]byte(raw), &items); err != nil {
 					return "", &ContractFailure{Type: "validation_failed", Message: key + " must be a JSON array"}
 				}
 				return raw, nil
 			}
-			if _, ok := value.([]any); !ok {
+			if _, ok := value.([]any); !ok && key != "actions" {
 				return "", &ContractFailure{Type: "validation_failed", Message: key + " must be an array"}
+			}
+			if key == "actions" && automationUnsafeActionNumbers(value) {
+				return "", &ContractFailure{Type: "validation_failed", Message: "large numerical action identities require a JSON string definition"}
 			}
 			encoded, err := json.Marshal(value)
 			if err != nil {
 				return "", &ContractFailure{Type: "validation_failed", Message: key + " is invalid"}
+			}
+			if key == "actions" {
+				if _, valid := parseAutomationActionDefinitions(string(encoded)); !valid {
+					return "", &ContractFailure{Type: "validation_failed", Message: "actions definition is invalid"}
+				}
 			}
 			return string(encoded), nil
 		}
@@ -4539,7 +4657,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation rule version store is unavailable"}
 			}
-			return map[string]any{"id": version.ID, "account_id": version.AccountID, "rule_id": version.RuleID, "version": version.Version, "event_name": version.EventName, "conditions": definitionJSON(version.Conditions), "actions": definitionJSON(version.Actions), "created_at": version.CreatedAt}, nil
+			return map[string]any{"id": version.ID, "account_id": version.AccountID, "rule_id": version.RuleID, "version": version.Version, "event_name": version.EventName, "condition_semantics": version.ConditionSemantics, "conditions": definitionJSON(version.Conditions), "actions": definitionJSON(version.Actions), "created_at": version.CreatedAt}, nil
 		}); err != nil {
 			return err
 		}
@@ -4556,7 +4674,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if result.Error != nil {
 				return nil, &ContractFailure{Type: "dependency_unavailable", Message: "automation execution store is unavailable"}
 			}
-			return map[string]any{"id": execution.ID, "account_id": execution.AccountID, "rule_id": execution.RuleID, "conversation_id": execution.ConversationID, "message_id": execution.MessageID, "event_name": execution.EventName, "status": execution.Status, "duration_ms": execution.DurationMs, "triggered_at": execution.TriggeredAt, "created_at": execution.CreatedAt}, nil
+			return automationExecutionView(&execution), nil
 		}); err != nil {
 			return err
 		}
@@ -4570,13 +4688,20 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			if name == "" || len(name) > 255 || !validEvent(eventName) {
 				return nil, &ContractFailure{Type: "validation_failed", Message: "rule name or event_name is invalid"}
 			}
-			conditions, failure := definitionInput(command.Input, "conditions", "[]")
+			profile, failure := conditionSemanticsInput(command.Input, "")
 			if failure != nil {
 				return nil, failure
 			}
-			actions, failure := definitionInput(command.Input, "actions", "[]")
+			conditions, failure := definitionInput(command.Input, "conditions", "[]", profile)
 			if failure != nil {
 				return nil, failure
+			}
+			actions, failure := definitionInput(command.Input, "actions", "[]", profile)
+			if failure != nil {
+				return nil, failure
+			}
+			if err := domain.ValidateAutomationConditionSemantics(profile, conditions); err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: err.Error()}
 			}
 			description, _ := command.Input["description"].(string)
 			active := true
@@ -4584,12 +4709,12 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				active = value
 			}
 			now := time.Now().UTC()
-			rule := &domain.AutomationRule{AccountID: command.AccountID, Name: name, Description: description, EventName: eventName, Conditions: conditions, Actions: actions, Active: active, CreatedAt: now, UpdatedAt: now}
+			rule := &domain.AutomationRule{AccountID: command.AccountID, Name: name, Description: description, EventName: eventName, Conditions: conditions, ConditionSemantics: profile, Actions: actions, Active: active, CreatedAt: now, UpdatedAt: now}
 			tx := Transaction(ctx, r.DB)
 			if err := tx.Create(rule).Error; err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "rule could not be created"}
 			}
-			version := &domain.AutomationRuleVersion{AccountID: command.AccountID, RuleID: rule.ID, Version: 1, EventName: eventName, Conditions: conditions, Actions: actions, CreatedAt: now}
+			version := &domain.AutomationRuleVersion{AccountID: command.AccountID, RuleID: rule.ID, Version: 1, EventName: eventName, Conditions: conditions, ConditionSemantics: profile, Actions: actions, CreatedAt: now}
 			if err := tx.Create(version).Error; err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "rule version could not be frozen"}
 			}
@@ -4619,6 +4744,15 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			}
 			changed := []string{}
 			definitionChanged := false
+			profile, failure := conditionSemanticsInput(command.Input, rule.ConditionSemantics)
+			if failure != nil {
+				return nil, failure
+			}
+			if profile != rule.ConditionSemantics {
+				rule.ConditionSemantics = profile
+				changed = append(changed, "condition_semantics")
+				definitionChanged = true
+			}
 			if raw, ok := command.Input["name"]; ok {
 				name, valid := raw.(string)
 				name = strings.TrimSpace(name)
@@ -4659,7 +4793,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 				if key == "actions" {
 					current = rule.Actions
 				}
-				value, failure := definitionInput(command.Input, key, current)
+				value, failure := definitionInput(command.Input, key, current, rule.ConditionSemantics)
 				if failure != nil {
 					return nil, failure
 				}
@@ -4673,11 +4807,14 @@ func (r *Runtime) RegisterBusinessContracts() error {
 					definitionChanged = true
 				}
 			}
+			if err := domain.ValidateAutomationConditionSemantics(rule.ConditionSemantics, rule.Conditions); err != nil {
+				return nil, &ContractFailure{Type: "validation_failed", Message: err.Error()}
+			}
 			if len(changed) == 0 {
 				return autRuleView(&rule), nil
 			}
 			rule.UpdatedAt = time.Now().UTC()
-			if err := tx.Model(&domain.AutomationRule{}).Where("account_id = ? AND id = ?", command.AccountID, rule.ID).Updates(map[string]any{"name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": rule.Conditions, "actions": rule.Actions, "updated_at": rule.UpdatedAt}).Error; err != nil {
+			if err := tx.Model(&domain.AutomationRule{}).Where("account_id = ? AND id = ?", command.AccountID, rule.ID).Updates(map[string]any{"name": rule.Name, "description": rule.Description, "event_name": rule.EventName, "conditions": rule.Conditions, "condition_semantics": rule.ConditionSemantics, "actions": rule.Actions, "updated_at": rule.UpdatedAt}).Error; err != nil {
 				return nil, &ContractFailure{Type: "state_conflict", Message: "rule could not be updated"}
 			}
 			var latest domain.AutomationRuleVersion
@@ -4687,7 +4824,7 @@ func (r *Runtime) RegisterBusinessContracts() error {
 			version := latest.Version
 			if definitionChanged {
 				version++
-				frozen := &domain.AutomationRuleVersion{AccountID: command.AccountID, RuleID: rule.ID, Version: version, EventName: rule.EventName, Conditions: rule.Conditions, Actions: rule.Actions, CreatedAt: rule.UpdatedAt}
+				frozen := &domain.AutomationRuleVersion{AccountID: command.AccountID, RuleID: rule.ID, Version: version, EventName: rule.EventName, Conditions: rule.Conditions, ConditionSemantics: rule.ConditionSemantics, Actions: rule.Actions, CreatedAt: rule.UpdatedAt}
 				if err := tx.Create(frozen).Error; err != nil {
 					return nil, &ContractFailure{Type: "state_conflict", Message: "rule version could not be frozen"}
 				}
@@ -4734,8 +4871,20 @@ func (r *Runtime) RegisterBusinessContracts() error {
 		}); err != nil {
 			return err
 		}
-		return nil
+		return r.registerAutomationLifecycle()
 	case "OPS":
+		if err := r.registerCannedSend(); err != nil {
+			return err
+		}
+		if err := r.registerCannedResponseManage(); err != nil {
+			return err
+		}
+		if err := r.registerCannedResponseRead(); err != nil {
+			return err
+		}
+		if err := r.registerCannedResponsePreview(); err != nil {
+			return err
+		}
 		return r.Contracts.RegisterEvent("cus.contact.merged.v1", func(ctx context.Context, event foundation.EventEnvelope) error {
 			baseID, mergedID, failure := contactMergeEventIDs(event)
 			if failure != nil {
@@ -5207,6 +5356,15 @@ func accountFromModel(account *domain.Account) *accountView {
 }
 
 func (r *Runtime) appendBusinessEvent(ctx context.Context, command foundation.CommandEnvelope, eventType, aggregateType, aggregateID string, changed []string, payload map[string]any) error {
+	// Preserve bounded automation ancestry on local CON action facts. This is data,
+	// not authority; target ownership and expected-version checks still run normally.
+	if r.Config.ModuleID == "CON" && (command.CommandType == "con.status.change.v1" || command.CommandType == "con.priority.change.v1" || command.CommandType == "con.automation.apply.v1") {
+		if origin, err := uintFilter(command.Input, "origin_execution_id"); err == nil {
+			if depth, err := uintFilter(command.Input, "automation_depth"); err == nil && depth <= automationMaxDepth {
+				payload["origin_execution_id"], payload["automation_depth"] = origin, depth
+			}
+		}
+	}
 	tx := Transaction(ctx, r.DB)
 	var latest int64
 	if err := tx.Model(&domain.LocalChangeJournal{}).Where("source_module = ? AND action = ? AND object_type = ? AND object_display_id = ?", r.Config.ModuleID, "event_outbox", aggregateType, aggregateID).Select("COALESCE(MAX(object_version_after),0)").Scan(&latest).Error; err != nil {
@@ -5245,7 +5403,7 @@ func conversationFromModel(db *gorm.DB, conversation *domain.Conversation) (*con
 }
 
 func messageFromModel(message domain.Message) messageView {
-	return messageView{ID: message.ID, AccountID: message.AccountID, ConversationID: message.ConversationID, SenderType: message.SenderType, SenderID: message.SenderID, MessageType: message.MessageType, ContentType: message.ContentType, Content: message.Content, Private: message.Private, Status: message.Status, Deleted: message.Deleted, DeletedAt: message.DeletedAt, EditedAt: message.EditedAt, CreatedAt: message.CreatedAt, UpdatedAt: message.UpdatedAt}
+	return messageView{DeliveryFailed: message.DeliveryFailed, ID: message.ID, AccountID: message.AccountID, ConversationID: message.ConversationID, SenderType: message.SenderType, SenderID: message.SenderID, MessageType: message.MessageType, ContentType: message.ContentType, Content: message.Content, Private: message.Private, Status: message.Status, Deleted: message.Deleted, DeletedAt: message.DeletedAt, EditedAt: message.EditedAt, CreatedAt: message.CreatedAt, UpdatedAt: message.UpdatedAt}
 }
 
 func ticketFromModel(ticket *domain.Ticket) ticketView {
@@ -5476,7 +5634,11 @@ type moduleClient struct {
 }
 
 func newModuleClient(caller string, dependency DependencyConfig, version string, timeout time.Duration) *moduleClient {
-	return &moduleClient{caller: caller, baseURL: strings.TrimRight(dependency.URL, "/"), token: dependency.Token, version: version, client: &http.Client{Timeout: timeout}}
+	client := &http.Client{Timeout: timeout}
+	if dependency.LocalHandler != nil {
+		client.Transport = localContractTransport{handler: dependency.LocalHandler}
+	}
+	return &moduleClient{caller: caller, baseURL: strings.TrimRight(dependency.URL, "/"), token: dependency.Token, version: version, client: client}
 }
 
 func (c *moduleClient) query(ctx context.Context, envelope foundation.QueryEnvelope, output any) error {

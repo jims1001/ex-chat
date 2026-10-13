@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,9 +15,11 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
+	"github.com/OracleBetX-Projects/ex-chat/internal/billingportal"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
+	"github.com/OracleBetX-Projects/ex-chat/internal/payment"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
@@ -24,21 +29,28 @@ import (
 )
 
 type AuthEnterpriseHandler struct {
-	iamRepo           repository.ChannelIAMRepository
-	migRepo           repository.ChannelMIGRepository
-	rptRepo           repository.ChannelRPTRepository
-	entRepo           repository.ChannelENTRepository
-	bilRepo           repository.ChannelBILRepository
-	tenRepo           repository.ChannelTENRepository
-	userRepo          *repository.UserRepository
-	accountRepo       *repository.AccountRepository
-	portalRepo        *repository.PortalRepository
-	contactRepo       *repository.ContactRepository
-	inboxRepo         *repository.InboxRepository
-	conversationRepo  *repository.ConversationRepository
-	migrationService  *service.MigrationService
-	dataImportService *service.DataImportService
-	cfg               *config.Config
+	paymentService       *payment.Service
+	billingPortalService *billingportal.Service
+	iamRepo              repository.ChannelIAMRepository
+	migRepo              repository.ChannelMIGRepository
+	rptRepo              repository.ChannelRPTRepository
+	entRepo              repository.ChannelENTRepository
+	bilRepo              repository.ChannelBILRepository
+	tenRepo              repository.ChannelTENRepository
+	userRepo             *repository.UserRepository
+	accountRepo          *repository.AccountRepository
+	portalRepo           *repository.PortalRepository
+	contactRepo          *repository.ContactRepository
+	inboxRepo            *repository.InboxRepository
+	conversationRepo     *repository.ConversationRepository
+	migrationService     *service.MigrationService
+	dataImportService    *service.DataImportService
+	emailService         *service.EmailService
+	cfg                  *config.Config
+}
+
+func (h *AuthEnterpriseHandler) SetEmailService(es *service.EmailService) {
+	h.emailService = es
 }
 
 func (h *AuthEnterpriseHandler) SetMigrationService(ms *service.MigrationService) {
@@ -76,20 +88,36 @@ func NewAuthEnterpriseHandler(
 	}
 }
 
+type googleTokenVerifier interface {
+	Verify(context.Context, string, string) (string, string, error)
+}
+
+var googleIDTokenVerifier googleTokenVerifier = auth.NewGoogleVerifier()
+
 // ----------------- Google OAuth2 & SAML -----------------
 
 func (h *AuthEnterpriseHandler) GoogleOAuthCallback(c *gin.Context) {
-	credential := c.Query("credential")
-	if credential == "" {
-		credential = c.PostForm("credential")
+	// Google Identity Services POSTs a credential with double-submit CSRF tokens.
+	// Never accept credentials in a URL (logs/history) or an unbound GET login.
+	csrfCookie, err := c.Cookie("g_csrf_token")
+	csrfForm := c.PostForm("g_csrf_token")
+	if c.Request.Method != http.MethodPost || err != nil || csrfCookie == "" ||
+		csrfForm == "" || subtle.ConstantTimeCompare([]byte(csrfCookie), []byte(csrfForm)) != 1 {
+		response.Unauthorized(c, "Invalid Google login CSRF token")
+		return
 	}
+	credential := c.PostForm("credential")
 
 	if credential == "" {
 		response.Unauthorized(c, "Missing Google ID token credential")
 		return
 	}
 
-	email, name, err := auth.ParseGoogleIDToken(credential)
+	if h.cfg == nil || strings.TrimSpace(h.cfg.GoogleClientID) == "" {
+		response.Error(c, http.StatusServiceUnavailable, auth.ErrGoogleNotConfigured.Error())
+		return
+	}
+	email, name, err := googleIDTokenVerifier.Verify(c.Request.Context(), credential, h.cfg.GoogleClientID)
 	if err != nil || email == "" {
 		errMsg := "Invalid or unverified Google token"
 		if err != nil {
@@ -105,16 +133,42 @@ func (h *AuthEnterpriseHandler) GoogleOAuthCallback(c *gin.Context) {
 	}
 
 	user, err := h.userRepo.FindByEmail(email)
-	if err != nil || user == nil {
-		user = &domain.User{
-			Email: email,
-			Name:  name,
-			Role:  domain.RoleAgent,
+	if err != nil {
+		response.InternalError(c, "Unable to load Google user")
+		return
+	}
+	if user == nil {
+		user = &domain.User{Email: email, Name: name, Role: domain.RoleAgent}
+		if err := h.userRepo.Create(user); err != nil {
+			response.InternalError(c, "Unable to create Google user")
+			return
 		}
-		_ = h.userRepo.Create(user)
+	}
+	// SSO must honor the application's MFA setting too.
+	if h.iamRepo == nil {
+		response.InternalError(c, "MFA authentication repository unavailable")
+		return
+	}
+	profile, err := h.iamRepo.GetMFAProfile(user.ID)
+	if err != nil {
+		response.InternalError(c, "Unable to verify MFA requirements")
+		return
+	}
+	if profile != nil && profile.Enabled {
+		challenge, err := auth.GenerateMFAToken(user, h.cfg.JWTSecret)
+		if err != nil {
+			response.InternalError(c, "Unable to create MFA challenge")
+			return
+		}
+		response.Success(c, gin.H{"mfa_required": true, "mfa_token": challenge})
+		return
+	}
+	token, err := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
+	if err != nil {
+		response.InternalError(c, "Unable to create session")
+		return
 	}
 
-	token, _ := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
 	logger.WithComponent("sso").Info("google oauth authentication succeeded", "user_id", user.ID, "email", user.Email)
 	response.Success(c, gin.H{
 		"token": token,
@@ -334,236 +388,96 @@ func (h *AuthEnterpriseHandler) EnableSAMLSetting(c *gin.Context) {
 	})
 }
 
+// SAML authentication stays disabled until a complete trusted SP implementation
+// can validate assertion signatures, conditions, audience, request and replay.
+// Saving SAML settings alone must not enable an unverified authentication path.
 func (h *AuthEnterpriseHandler) InitiateSAMLLogin(c *gin.Context) {
-	var req struct {
-		Email     string `json:"email" binding:"required"`
-		AccountID *uint  `json:"account_id"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	ssoURL := "https://idp.example.com/sso/saml"
-	if req.AccountID != nil {
-		setting, err := h.iamRepo.GetSAMLSetting(*req.AccountID)
-		if err == nil && setting != nil {
-			if !setting.Enabled {
-				response.BadRequest(c, "SAML SSO is disabled for this account")
-				return
-			}
-			if setting.SSOURL != "" {
-				ssoURL = setting.SSOURL
-			}
-		}
-	} else if user, _ := h.userRepo.FindByEmail(req.Email); user != nil {
-		accounts, _ := h.accountRepo.ListAccountsForUser(user.ID)
-		if len(accounts) > 0 {
-			setting, err := h.iamRepo.GetSAMLSetting(accounts[0].ID)
-			if err == nil && setting != nil {
-				if !setting.Enabled {
-					response.BadRequest(c, "SAML SSO is disabled for this account")
-					return
-				}
-				if setting.SSOURL != "" {
-					ssoURL = setting.SSOURL
-				}
-			}
-		}
-	}
-
-	relayStateBytes := make([]byte, 16)
-	_, _ = rand.Read(relayStateBytes)
-	relayState := hex.EncodeToString(relayStateBytes)
-
-	response.Success(c, gin.H{
-		"sso_url":     ssoURL,
-		"relay_state": relayState,
-		"email":       req.Email,
-	})
+	response.Error(c, http.StatusServiceUnavailable, auth.ErrSAMLVerificationUnavailable.Error())
 }
 
 func (h *AuthEnterpriseHandler) SAMLCallback(c *gin.Context) {
-	samlResponse := c.PostForm("SAMLResponse")
-	if samlResponse == "" {
-		samlResponse = c.Query("SAMLResponse")
-	}
-	relayState := c.PostForm("RelayState")
-	if relayState == "" {
-		relayState = c.Query("RelayState")
-	}
-
-	if samlResponse == "" {
-		response.Unauthorized(c, "Missing SAMLResponse payload")
-		return
-	}
-
-	claims, err := auth.ParseSAMLResponse(samlResponse)
-	if err != nil || claims == nil || claims.Email == "" {
-		errMsg := "SAML verification failed"
-		if err != nil {
-			errMsg += ": " + err.Error()
-		}
-		logger.WithComponent("sso").Warn("saml authentication failed", "error", errMsg, "client_ip", c.ClientIP())
-		response.Unauthorized(c, errMsg)
-		return
-	}
-
-	userName := "SAML Enterprise User"
-	if claims.FirstName != "" || claims.LastName != "" {
-		userName = strings.TrimSpace(claims.FirstName + " " + claims.LastName)
-	}
-
-	user, err := h.userRepo.FindByEmail(claims.Email)
-	if err != nil || user == nil {
-		user = &domain.User{
-			Email: claims.Email,
-			Name:  userName,
-			Role:  domain.RoleAgent,
-		}
-		_ = h.userRepo.Create(user)
-	}
-
-	token, _ := auth.GenerateToken(user, h.cfg.JWTSecret, h.cfg.JWTExpirationHours)
-	logger.WithComponent("sso").Info("saml authentication succeeded", "user_id", user.ID, "email", user.Email)
-	response.Success(c, gin.H{
-		"token":       token,
-		"user":        user,
-		"relay_state": relayState,
-	})
+	response.Error(c, http.StatusServiceUnavailable, auth.ErrSAMLVerificationUnavailable.Error())
 }
 
 // ----------------- MFA & Sessions & Password Reset -----------------
 
+// GetMFAProfile is status-only. Existing secrets and recovery codes are never
+// recoverable through a bearer session; sensitive changes require reauth.
 func (h *AuthEnterpriseHandler) GetMFAProfile(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	profile, err := h.iamRepo.GetMFAProfile(userID)
-	if err != nil {
-		response.InternalError(c, err.Error())
+	if userID == 0 {
+		response.Unauthorized(c, "Authentication required")
 		return
 	}
-
-	if profile == nil {
-		secret, err := auth.GenerateTOTPSecret()
-		if err != nil {
-			response.InternalError(c, "Failed to generate MFA secret")
+	profile, err := h.iamRepo.GetMFAProfile(userID)
+	if err != nil {
+		response.InternalError(c, "Unable to load MFA status")
+		return
+	}
+	enabled := profile != nil && profile.Enabled
+	remaining := 0
+	if profile != nil && profile.BackupCodes != "" {
+		var codes []string
+		if err := json.Unmarshal([]byte(profile.BackupCodes), &codes); err != nil {
+			response.InternalError(c, "Unable to load MFA status")
 			return
 		}
-		rawCodes, _ := auth.GenerateBackupCodes(8)
-		bBytes, _ := json.Marshal(rawCodes)
-		profile = &domain.MFAProfile{
-			UserID:      userID,
-			Secret:      secret,
-			BackupCodes: string(bBytes),
-			Enabled:     false,
-		}
-		_ = h.iamRepo.SaveMFAProfile(profile)
+		remaining = len(codes)
 	}
-
-	response.Success(c, profile)
+	response.Success(c, gin.H{"enabled": enabled, "setup_required": !enabled, "backup_codes_remaining": remaining})
 }
 
-func (h *AuthEnterpriseHandler) EnableMFA(c *gin.Context) {
-	h.VerifyMFA(c)
-}
+func (h *AuthEnterpriseHandler) SetupMFA(c *gin.Context)            { h.manageMFA(c, "setup") }
+func (h *AuthEnterpriseHandler) EnableMFA(c *gin.Context)           { h.manageMFA(c, "enable") }
+func (h *AuthEnterpriseHandler) VerifyMFA(c *gin.Context)           { h.manageMFA(c, "enable") }
+func (h *AuthEnterpriseHandler) GenerateBackupCodes(c *gin.Context) { h.manageMFA(c, "backup_codes") }
+func (h *AuthEnterpriseHandler) DisableMFA(c *gin.Context)          { h.manageMFA(c, "disable") }
 
-func (h *AuthEnterpriseHandler) VerifyMFA(c *gin.Context) {
+func (h *AuthEnterpriseHandler) manageMFA(c *gin.Context, action string) {
 	userID := c.GetUint("user_id")
+	if userID == 0 {
+		response.Unauthorized(c, "Authentication required")
+		return
+	}
 	var req struct {
-		OTPCode    string `json:"otp_code"`
-		Code       string `json:"code"`
-		BackupCode string `json:"backup_code"`
+		CurrentPassword string `json:"current_password"`
+		OTPCode         string `json:"otp_code"`
+		Code            string `json:"code"`
+		BackupCode      string `json:"backup_code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+		response.BadRequest(c, "Valid reauthentication payload required")
 		return
 	}
-
-	codeToVerify := strings.TrimSpace(req.OTPCode)
-	if codeToVerify == "" {
-		codeToVerify = strings.TrimSpace(req.Code)
+	code := strings.TrimSpace(req.OTPCode)
+	if code == "" {
+		code = strings.TrimSpace(req.Code)
 	}
-	if codeToVerify == "" {
-		codeToVerify = strings.TrimSpace(req.BackupCode)
+	if code == "" {
+		code = strings.TrimSpace(req.BackupCode)
 	}
-	if codeToVerify == "" {
-		response.BadRequest(c, "Verification code is required")
-		return
-	}
-
-	profile, err := h.iamRepo.GetMFAProfile(userID)
-	if err != nil || profile == nil {
-		response.BadRequest(c, "MFA setup has not been initiated. Please setup MFA first.")
-		return
-	}
-
-	// Verify standard RFC 6238 TOTP or backup code
-	valid := auth.VerifyTOTPCode(profile.Secret, codeToVerify)
-	if !valid {
-		var backupCodes []string
-		_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
-		for i, code := range backupCodes {
-			if code == codeToVerify {
-				valid = true
-				backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
-				bBytes, _ := json.Marshal(backupCodes)
-				profile.BackupCodes = string(bBytes)
-				break
-			}
-		}
-	}
-	if !valid {
-		response.BadRequest(c, "Invalid TOTP code or backup code")
-		return
-	}
-
-	profile.Enabled = true
-	_ = h.iamRepo.SaveMFAProfile(profile)
-
-	var backupCodes []string
-	_ = json.Unmarshal([]byte(profile.BackupCodes), &backupCodes)
-	if len(backupCodes) == 0 {
-		backupCodes, _ = h.iamRepo.GenerateMFABackupCodes(userID)
-	}
-
-	response.Success(c, gin.H{
-		"enabled":      true,
-		"backup_codes": backupCodes,
-		"message":      "MFA activated successfully",
-	})
-}
-
-func (h *AuthEnterpriseHandler) GenerateBackupCodes(c *gin.Context) {
-	userID := c.GetUint("user_id")
-	profile, err := h.iamRepo.GetMFAProfile(userID)
-	if err != nil || profile == nil {
-		response.BadRequest(c, "MFA is not set up")
-		return
-	}
-	if !profile.Enabled {
-		response.BadRequest(c, "MFA is not enabled")
-		return
-	}
-
-	codes, err := h.iamRepo.GenerateMFABackupCodes(userID)
+	profile, codes, err := h.iamRepo.ManageMFA(userID, req.CurrentPassword, action, code)
 	if err != nil {
-		response.InternalError(c, "Failed to generate backup codes: "+err.Error())
+		switch {
+		case errors.Is(err, repository.ErrMFAInvalidPassword):
+			response.Unauthorized(c, "Current password verification failed")
+		case errors.Is(err, repository.ErrMFAReauthUnsupported):
+			response.Error(c, http.StatusConflict, "This account requires a verified identity-provider reauthentication flow before changing MFA")
+		case errors.Is(err, repository.ErrMFAAlreadyEnabled), errors.Is(err, repository.ErrMFASetupRequired), errors.Is(err, repository.ErrMFAInvalidAction):
+			response.Error(c, http.StatusConflict, "MFA state does not allow this operation")
+		default:
+			respondMFAVerificationError(c, err)
+		}
 		return
 	}
-
-	response.Success(c, gin.H{
-		"backup_codes": codes,
-	})
-}
-
-func (h *AuthEnterpriseHandler) DisableMFA(c *gin.Context) {
-	userID := c.GetUint("user_id")
-	profile, err := h.iamRepo.GetMFAProfile(userID)
-	if err == nil && profile != nil {
-		profile.Enabled = false
-		_ = h.iamRepo.SaveMFAProfile(profile)
+	result := gin.H{"enabled": profile.Enabled}
+	if action == "setup" {
+		result["secret"] = profile.Secret
 	}
-	response.Success(c, gin.H{"enabled": false})
+	if action == "enable" || action == "backup_codes" {
+		result["backup_codes"] = codes
+	}
+	response.Success(c, result)
 }
 
 func (h *AuthEnterpriseHandler) ListSessions(c *gin.Context) {
@@ -584,76 +498,124 @@ func (h *AuthEnterpriseHandler) DeleteSession(c *gin.Context) {
 	response.Success(c, gin.H{"revoked": true})
 }
 
+// Password reset responses deliberately make no promise of successful delivery.
+// Account eligibility, provider errors, and token storage failures share the same
+// response; deployment-wide configuration failures are checked before lookup.
 func (h *AuthEnterpriseHandler) RequestPasswordReset(c *gin.Context) {
 	var req struct {
-		Email string `json:"email" binding:"required"`
+		Email string `json:"email" binding:"required,email,max=255"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+		response.BadRequest(c, "A valid email address is required")
 		return
 	}
-
-	user, err := h.userRepo.FindByEmail(req.Email)
-	if err != nil || user == nil {
-		// Silent success to prevent user enumeration
-		response.Success(c, gin.H{"message": "If email exists, reset link has been sent"})
+	if h.emailService == nil || h.iamRepo == nil || h.userRepo == nil || h.emailService.CheckPasswordResetConfiguration() != nil {
+		response.Error(c, http.StatusServiceUnavailable, "Password reset is temporarily unavailable")
 		return
 	}
-
-	tokenBytes := make([]byte, 16)
-	_, _ = rand.Read(tokenBytes)
-	resetToken := hex.EncodeToString(tokenBytes)
-
-	tokenRecord := &domain.PasswordResetToken{
-		UserID:    user.ID,
-		Email:     user.Email,
-		Token:     resetToken,
-		ExpiresAt: time.Now().Add(2 * time.Hour),
+	accepted := func() {
+		response.Success(c, gin.H{"message": "If the account is eligible, check your email for password reset instructions"})
 	}
-	_ = h.iamRepo.CreatePasswordResetToken(tokenRecord)
-
-	respData := gin.H{
-		"message": "If email exists, reset instructions have been sent",
+	user, err := h.userRepo.FindByEmail(strings.ToLower(req.Email))
+	if err != nil {
+		logger.WithComponent("password_reset").Error("password reset account lookup failed")
+		accepted()
+		return
 	}
-	if h.cfg != nil && h.cfg.Environment == "test" {
-		respData["reset_token"] = resetToken
+	if user == nil {
+		accepted()
+		return
 	}
-
-	response.Success(c, respData)
+	// A reset must not silently add a local password to a passwordless SSO
+	// account. Existing local-password users retain their configured MFA.
+	if _, err := bcrypt.Cost([]byte(user.PasswordHash)); err != nil {
+		accepted()
+		return
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		logger.WithComponent("password_reset").Error("password reset token generation failed")
+		accepted()
+		return
+	}
+	rawToken := hex.EncodeToString(tokenBytes)
+	digest, err := repository.PasswordResetTokenDigest(rawToken)
+	if err != nil {
+		accepted()
+		return
+	}
+	record := &domain.PasswordResetToken{
+		UserID: user.ID, Email: user.Email, Token: digest,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := h.iamRepo.CreatePasswordResetToken(record); err != nil {
+		logger.WithComponent("password_reset").Error("password reset token storage failed")
+		accepted()
+		return
+	}
+	if err := h.emailService.SendPasswordResetEmail(c.Request.Context(), user.Email, rawToken, record.ExpiresAt); err != nil {
+		// The persisted token is pending and cannot be used, including when
+		// SMTP reports an ambiguous delivery failure. Never log the payload.
+		logger.WithComponent("password_reset").Error("password reset email delivery failed")
+		accepted()
+		return
+	}
+	if err := h.iamRepo.ActivatePasswordResetToken(record.ID); err != nil {
+		logger.WithComponent("password_reset").Error("password reset token activation failed")
+	}
+	accepted()
 }
 
 func (h *AuthEnterpriseHandler) ResetPassword(c *gin.Context) {
 	var req struct {
-		Token    string `json:"token" binding:"required"`
-		Password string `json:"password" binding:"required"`
+		Token                string  `json:"token"`
+		ResetPasswordToken   string  `json:"reset_password_token"`
+		Password             string  `json:"password" binding:"required"`
+		PasswordConfirmation *string `json:"password_confirmation"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+		response.BadRequest(c, "Reset token and password are required")
 		return
 	}
-
-	tokenRecord, err := h.iamRepo.GetValidPasswordResetToken(req.Token)
-	if err != nil || tokenRecord == nil {
+	if req.Token != "" && req.ResetPasswordToken != "" && req.Token != req.ResetPasswordToken {
 		response.BadRequest(c, "Reset token is invalid or expired")
 		return
 	}
-
+	if req.Token == "" {
+		req.Token = req.ResetPasswordToken
+	}
+	if _, err := repository.PasswordResetTokenDigest(req.Token); err != nil {
+		response.BadRequest(c, "Reset token is invalid or expired")
+		return
+	}
+	// bcrypt accepts at most 72 bytes. Validate explicitly rather than returning
+	// a hashing error; passwords are not trimmed or otherwise transformed.
+	if len(req.Password) < 8 || len(req.Password) > 72 {
+		response.BadRequest(c, "Password must contain between 8 and 72 bytes")
+		return
+	}
+	if req.PasswordConfirmation != nil && *req.PasswordConfirmation != req.Password {
+		response.BadRequest(c, "Password confirmation does not match")
+		return
+	}
+	if h.iamRepo == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Password reset is temporarily unavailable")
+		return
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "Unable to update password")
 		return
 	}
-
-	user, err := h.userRepo.FindByID(tokenRecord.UserID)
-	if err != nil || user == nil {
-		response.NotFound(c, "User not found")
+	if err := h.iamRepo.ConsumePasswordResetToken(req.Token, string(hash)); err != nil {
+		if errors.Is(err, repository.ErrPasswordResetInvalid) {
+			response.BadRequest(c, "Reset token is invalid or expired")
+		} else {
+			logger.WithComponent("password_reset").Error("password reset transaction failed")
+			response.InternalError(c, "Unable to update password")
+		}
 		return
 	}
-
-	user.PasswordHash = string(hash)
-	_ = h.userRepo.Update(user)
-	_ = h.iamRepo.MarkPasswordResetTokenUsed(tokenRecord.ID)
-
 	response.Success(c, gin.H{"message": "Password updated successfully"})
 }
 
@@ -1052,6 +1014,11 @@ func (h *AuthEnterpriseHandler) UpdateLimits(c *gin.Context) {
 }
 
 func (h *AuthEnterpriseHandler) RecordBilling(c *gin.Context) {
+	// This is a privileged manual adjustment, never a tenant payment shortcut.
+	if !middleware.IsSuperAdmin(c, h.cfg) {
+		response.Forbidden(c, "Manual billing adjustments require platform super administrator access")
+		return
+	}
 	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Account ID must be numeric")
@@ -1208,85 +1175,112 @@ func (h *AuthEnterpriseHandler) GetSubscription(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
-	response.Success(c, sub)
+	selection, err := h.billingPortalService.Selection(c.Request.Context(), uint(accountID))
+	if err != nil {
+		h.billingPortalError(c, err)
+		return
+	}
+	response.Success(c, struct {
+		*domain.AccountSubscription
+		SelectedBillingCurrency   string   `json:"selected_billing_currency"`
+		BillingCustomerStatus     string   `json:"billing_customer_status"`
+		CurrencySelectionRequired bool     `json:"currency_selection_required"`
+		CurrencyOptions           []string `json:"currency_options"`
+	}{sub, selection.Currency, selection.Status, selection.Required, selection.Options})
 }
 
 func (h *AuthEnterpriseHandler) CreateOrUpdateSubscription(c *gin.Context) {
-	accountID, err := strconv.ParseUint(c.Param("account_id"), 10, 64)
+	accountID, err := h.getAccountIDParam(c)
+	if err != nil || accountID == 0 {
+		response.BadRequest(c, "Account ID must be positive and numeric")
+		return
+	}
+	req, err := readBillingObject(c)
 	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
+		response.BadRequest(c, "Invalid subscription request")
 		return
 	}
-
-	var req struct {
-		PlanID   uint   `json:"plan_id"`
-		PlanSlug string `json:"plan_slug"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if len(req) == 0 {
+		h.initializeBillingCustomer(c, accountID)
 		return
 	}
-
-	// Ensure default plans exist
-	_, _ = h.bilRepo.ListSubscriptionPlans()
-
-	var plan domain.SubscriptionPlan
-	var planPtr *domain.SubscriptionPlan
-	if req.PlanID > 0 {
-		planPtr, err = h.bilRepo.GetSubscriptionPlan(req.PlanID)
-	} else if req.PlanSlug != "" {
-		planPtr, err = h.bilRepo.GetSubscriptionPlanBySlug(req.PlanSlug)
+	if len(req) != 1 {
+		response.BadRequest(c, "Specify exactly one plan selector")
+		return
+	}
+	var plan *domain.SubscriptionPlan
+	if raw, ok := req["plan_id"]; ok {
+		var id uint
+		if json.Unmarshal(raw, &id) != nil || id == 0 {
+			response.BadRequest(c, "Invalid plan ID")
+			return
+		}
+		plan, err = h.bilRepo.GetSubscriptionPlan(id)
+	} else if raw, ok := req["plan_slug"]; ok {
+		var slug string
+		if json.Unmarshal(raw, &slug) != nil || slug == "" || strings.TrimSpace(slug) != slug {
+			response.BadRequest(c, "Invalid plan slug")
+			return
+		}
+		if slug == "free" {
+			if err := h.billingPortalService.CheckCompatibility(c.Request.Context(), accountID); err != nil {
+				h.billingPortalError(c, err)
+				return
+			}
+			// Preserve only the explicit existing free compatibility branch. Paid
+			// requests must not seed plans or create any subscription state.
+			if _, err := h.bilRepo.ListSubscriptionPlans(); err != nil {
+				response.InternalError(c, "Unable to load subscription plans")
+				return
+			}
+		}
+		plan, err = h.bilRepo.GetSubscriptionPlanBySlug(slug)
+		if err != nil && (slug == "pro" || slug == "starter" || slug == "enterprise") {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "error": "Paid subscription checkout is unavailable; no subscription was activated"})
+			return
+		}
 	} else {
-		planPtr, err = h.bilRepo.GetSubscriptionPlanBySlug("pro")
+		response.BadRequest(c, "Unsupported subscription parameter")
+		return
 	}
-
-	if err != nil || planPtr == nil {
+	if err != nil || plan == nil {
 		response.NotFound(c, "Subscription plan not found")
 		return
 	}
-	plan = *planPtr
-
+	// A plan selection is never evidence of payment. Recurring billing requires
+	// verified invoice/renewal/cancellation handling before this flow is enabled.
+	if plan.PriceCents != 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "error": "Paid subscription checkout is unavailable; no subscription was activated"})
+		return
+	}
+	if err := h.billingPortalService.CheckCompatibility(c.Request.Context(), accountID); err != nil {
+		h.billingPortalError(c, err)
+		return
+	}
+	sub, err := h.bilRepo.GetAccountSubscription(accountID)
+	if err != nil {
+		response.InternalError(c, "Unable to load subscription")
+		return
+	}
+	if sub != nil && (sub.StripeCustomerID != "" || (sub.Plan != nil && sub.Plan.PriceCents > 0)) {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "error": "Existing paid subscriptions require provider reconciliation before changes"})
+		return
+	}
 	now := time.Now().UTC()
-	sub, _ := h.bilRepo.GetAccountSubscription(uint(accountID))
 	if sub == nil {
-		sub = &domain.AccountSubscription{
-			AccountID: uint(accountID),
-		}
+		sub = &domain.AccountSubscription{AccountID: accountID}
 	}
 	sub.PlanID = plan.ID
-	sub.Plan = &plan
+	sub.Plan = plan
 	sub.Status = "active"
+	sub.BillingCurrency = "usd"
 	sub.CurrentPeriodStart = now
-	sub.CurrentPeriodEnd = now.AddDate(0, 1, 0) // 1 month
-
+	sub.CurrentPeriodEnd = now.AddDate(1, 0, 0)
 	if err := h.bilRepo.SaveAccountSubscription(sub); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "Unable to save free subscription")
 		return
 	}
-
-	_ = h.bilRepo.RecordBilling(&domain.AccountBilling{
-		AccountID:   uint(accountID),
-		ActionType:  "subscription",
-		Amount:      float64(plan.PriceCents) / 100.0,
-		Currency:    "USD",
-		Description: "Subscription: " + plan.Name,
-		CreatedAt:   now,
-	})
-
 	response.Success(c, sub)
-}
-
-func (h *AuthEnterpriseHandler) HandleSubscriptionWebhook(c *gin.Context) {
-	var payload map[string]any
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	response.Success(c, gin.H{
-		"received": true,
-		"status":   "processed",
-	})
 }
 
 // ----------------- Enterprise Billing & Checkout & Topup -----------------
@@ -1301,77 +1295,6 @@ func (h *AuthEnterpriseHandler) getAccountIDParam(c *gin.Context) (uint, error) 
 		return 0, err
 	}
 	return uint(id), nil
-}
-
-func (h *AuthEnterpriseHandler) Checkout(c *gin.Context) {
-	accountID, err := h.getAccountIDParam(c)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	sessionBytes := make([]byte, 16)
-	_, _ = rand.Read(sessionBytes)
-	sessionID := hex.EncodeToString(sessionBytes)
-	redirectURL := fmt.Sprintf("https://billing.stripe.com/session/cs_live_%s_%d", sessionID, accountID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":      true,
-		"redirect_url": redirectURL,
-		"data": gin.H{
-			"redirect_url": redirectURL,
-		},
-	})
-}
-
-func (h *AuthEnterpriseHandler) SelectBillingCurrency(c *gin.Context) {
-	accountID, err := h.getAccountIDParam(c)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	var req struct {
-		Currency string `json:"currency" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	curr := strings.ToLower(strings.TrimSpace(req.Currency))
-	if curr == "" {
-		curr = "usd"
-	}
-
-	if account, err := h.accountRepo.FindByID(accountID); err == nil {
-		var customAttrs map[string]any
-		if account.CustomAttributes != "" {
-			_ = json.Unmarshal([]byte(account.CustomAttributes), &customAttrs)
-		}
-		if customAttrs == nil {
-			customAttrs = make(map[string]any)
-		}
-		customAttrs["billing_currency"] = curr
-		b, _ := json.Marshal(customAttrs)
-		account.CustomAttributes = string(b)
-		_ = h.accountRepo.Update(account)
-	}
-
-	sub, _ := h.bilRepo.GetAccountSubscription(accountID)
-	if sub != nil {
-		sub.BillingCurrency = curr
-		_ = h.bilRepo.SaveAccountSubscription(sub)
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":          true,
-		"billing_currency": curr,
-		"message":          "Billing currency updated successfully",
-		"data": gin.H{
-			"billing_currency": curr,
-		},
-	})
 }
 
 func (h *AuthEnterpriseHandler) ToggleDeletion(c *gin.Context) {
@@ -1437,107 +1360,15 @@ func (h *AuthEnterpriseHandler) ToggleDeletion(c *gin.Context) {
 
 func (h *AuthEnterpriseHandler) TopupOptions(c *gin.Context) {
 	accountID, err := h.getAccountIDParam(c)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
+	if err != nil || accountID == 0 {
+		response.BadRequest(c, "Account ID must be positive and numeric")
 		return
 	}
-
-	curr := "usd"
-	if account, err := h.accountRepo.FindByID(accountID); err == nil && account.CustomAttributes != "" {
-		var customAttrs map[string]any
-		if err := json.Unmarshal([]byte(account.CustomAttributes), &customAttrs); err == nil {
-			if bc, ok := customAttrs["billing_currency"].(string); ok && bc != "" {
-				curr = bc
-			}
-		}
+	options := make([]gin.H, 0, 5)
+	for _, units := range []int64{500, 1000, 2500, 5000, 10000} {
+		minor, _ := payment.TopupPrice(units)
+		options = append(options, gin.H{"credits": units, "amount_minor": minor, "amount": float64(minor) / 100, "currency": "usd"})
 	}
-
-	options := []gin.H{
-		{"credits": 500, "amount": 10.0, "currency": curr},
-		{"credits": 1000, "amount": 20.0, "currency": curr},
-		{"credits": 2500, "amount": 45.0, "currency": curr},
-		{"credits": 5000, "amount": 80.0, "currency": curr},
-		{"credits": 10000, "amount": 150.0, "currency": curr},
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"id":       accountID,
-		"currency": curr,
-		"options":  options,
-		"success":  true,
-		"data": gin.H{
-			"id":       accountID,
-			"currency": curr,
-			"options":  options,
-		},
-	})
-}
-
-func (h *AuthEnterpriseHandler) TopupCheckout(c *gin.Context) {
-	accountID, err := h.getAccountIDParam(c)
-	if err != nil {
-		response.BadRequest(c, "Account ID must be numeric")
-		return
-	}
-
-	var req struct {
-		Credits int `json:"credits"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.Credits <= 0 {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "credits is required and must be positive",
-		})
-		return
-	}
-
-	curr := "usd"
-	if account, err := h.accountRepo.FindByID(accountID); err == nil && account.CustomAttributes != "" {
-		var customAttrs map[string]any
-		if err := json.Unmarshal([]byte(account.CustomAttributes), &customAttrs); err == nil {
-			if bc, ok := customAttrs["billing_currency"].(string); ok && bc != "" {
-				curr = bc
-			}
-		}
-	}
-
-	amount := float64(req.Credits) * 0.02
-	if req.Credits >= 10000 {
-		amount = float64(req.Credits) * 0.015
-	} else if req.Credits >= 5000 {
-		amount = float64(req.Credits) * 0.016
-	}
-
-	sessionBytes := make([]byte, 16)
-	_, _ = rand.Read(sessionBytes)
-	sessionID := hex.EncodeToString(sessionBytes)
-	redirectURL := fmt.Sprintf("https://checkout.stripe.com/pay/cs_topup_%s_%d", sessionID, req.Credits)
-
-	_ = h.bilRepo.RecordBilling(&domain.AccountBilling{
-		AccountID:   accountID,
-		ActionType:  "topup",
-		Amount:      amount,
-		Currency:    strings.ToUpper(curr),
-		Description: fmt.Sprintf("Top-up %d AI Credits", req.Credits),
-		CreatedAt:   time.Now().UTC(),
-	})
-
-	limits, _ := h.entRepo.GetAccountLimit(accountID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"id":           accountID,
-		"credits":      req.Credits,
-		"amount":       amount,
-		"currency":     curr,
-		"redirect_url": redirectURL,
-		"limits":       limits,
-		"success":      true,
-		"data": gin.H{
-			"id":           accountID,
-			"credits":      req.Credits,
-			"amount":       amount,
-			"currency":     curr,
-			"redirect_url": redirectURL,
-			"limits":       limits,
-		},
-	})
+	data := gin.H{"id": accountID, "currency": "usd", "options": options, "supported_currencies": []string{"usd"}}
+	c.JSON(http.StatusOK, gin.H{"success": true, "id": accountID, "currency": "usd", "options": options, "data": data})
 }

@@ -24,6 +24,9 @@ import (
 
 func TestAllSystemGapsCovered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("AGENT_INVITATIONS_ENABLED", "true")
+	t.Setenv("FRONTEND_URL", "https://app.example.test")
+	t.Setenv("MAILER_SENDER_EMAIL", "support@example.test")
 
 	cfg := &config.Config{
 		Environment:        "test",
@@ -39,7 +42,8 @@ func TestAllSystemGapsCovered(t *testing.T) {
 	}
 
 	hub := ws.NewHub()
-	r := router.SetupRouter(cfg, db, hub)
+	mail := service.NewMockEmailSender()
+	r := router.SetupRouterWithOptions(cfg, db, hub, router.Options{EmailSender: mail})
 
 	// Admin Setup
 	signUpBody, _ := json.Marshal(map[string]string{
@@ -471,28 +475,74 @@ func TestAllSystemGapsCovered(t *testing.T) {
 	// 11. 成员维护 (Update & Remove Agent)
 	// -------------------------------------------------------------
 	t.Run("Item 11: Agent Maintenance", func(t *testing.T) {
-		// Add agent
+		// Creating an invitation delivers proof to the recipient without provisioning them.
+		var membersBefore int64
+		if err := db.Model(&domain.AccountUser{}).Where("account_id = ?", accID).Count(&membersBefore).Error; err != nil {
+			t.Fatal(err)
+		}
+		emailsBefore := len(mail.GetSentEmails())
 		recAdd := authReq(http.MethodPost, "/api/v1/accounts/"+accStr+"/agents", map[string]string{
-			"name":  "Temp Agent",
-			"email": "tempagent@example.com",
-			"role":  "agent",
+			"name": "Ignored Inviter-Supplied Name", "email": "invitedagent@example.com", "role": "agent",
 		})
-		if recAdd.Code != http.StatusCreated {
-			t.Fatalf("Add agent failed: %d", recAdd.Code)
+		if recAdd.Code != http.StatusAccepted {
+			t.Fatalf("Invite agent expected 202: %d %s", recAdd.Code, recAdd.Body.String())
 		}
-		var addResp struct {
-			Data domain.AccountUser `json:"data"`
+		var users, membersAfter int64
+		if err := db.Model(&domain.User{}).Where("email = ?", "invitedagent@example.com").Count(&users).Error; err != nil {
+			t.Fatal(err)
 		}
-		_ = json.Unmarshal(recAdd.Body.Bytes(), &addResp)
-		agentID := strconv.FormatUint(uint64(addResp.Data.UserID), 10)
+		if err := db.Model(&domain.AccountUser{}).Where("account_id = ?", accID).Count(&membersAfter).Error; err != nil {
+			t.Fatal(err)
+		}
+		if users != 0 || membersAfter != membersBefore {
+			t.Fatalf("invitation prematurely provisioned user/member: users=%d members=%d before=%d", users, membersAfter, membersBefore)
+		}
+		sent := mail.GetSentEmails()
+		if len(sent) != emailsBefore+1 || sent[len(sent)-1].To != "invitedagent@example.com" {
+			t.Fatal("expected invitation email to recipient")
+		}
+		if strings.Contains(recAdd.Body.String(), `"token"`) || strings.Contains(recAdd.Body.String(), `"password"`) {
+			t.Fatal("invitation API leaked credential fields")
+		}
 
-		// Update agent
-		recUp := authReq(http.MethodPut, "/api/v1/accounts/"+accStr+"/agents/"+agentID, map[string]string{
-			"name": "Updated Agent Name",
-			"role": "administrator",
-		})
+		// Use a separately accepted member fixture for account-scoped maintenance.
+		agent := createAccountMemberFixture(t, db, accID, "Temp Agent", "tempagent@example.com", "TempFixturePassword123!", domain.RoleAgent, nil)
+		agentID := strconv.FormatUint(uint64(agent.ID), 10)
+		for _, update := range []map[string]string{
+			{"name": "Updated Agent Name", "role": domain.RoleAdministrator},
+			{"email": "other@example.com"},
+			{"password": "AttackerSelectedPassword123!"},
+		} {
+			recUp := authReq(http.MethodPut, "/api/v1/accounts/"+accStr+"/agents/"+agentID, update)
+			if recUp.Code != http.StatusBadRequest {
+				t.Fatalf("global identity update expected 400, got %d: %s", recUp.Code, recUp.Body.String())
+			}
+		}
+		var unchanged domain.User
+		if err := db.First(&unchanged, agent.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.Name != agent.Name || unchanged.Email != agent.Email || unchanged.PasswordHash != agent.PasswordHash {
+			t.Fatal("rejected account update mutated global user identity")
+		}
+		var membership domain.AccountUser
+		if err := db.Where("account_id = ? AND user_id = ?", accID, agent.ID).First(&membership).Error; err != nil {
+			t.Fatal(err)
+		}
+		if membership.Role != domain.RoleAgent {
+			t.Fatal("rejected identity update partially changed account role")
+		}
+
+		// An administrator may still update the account membership role.
+		recUp := authReq(http.MethodPut, "/api/v1/accounts/"+accStr+"/agents/"+agentID, map[string]string{"role": domain.RoleAdministrator})
 		if recUp.Code != http.StatusOK {
-			t.Fatalf("Update agent failed: %d", recUp.Code)
+			t.Fatalf("Update membership role failed: %d %s", recUp.Code, recUp.Body.String())
+		}
+		if err := db.Where("account_id = ? AND user_id = ?", accID, agent.ID).First(&membership).Error; err != nil {
+			t.Fatal(err)
+		}
+		if membership.Role != domain.RoleAdministrator {
+			t.Fatal("administrator membership role update was not persisted")
 		}
 
 		// Remove agent
@@ -716,18 +766,22 @@ func TestAllSystemGapsCovered(t *testing.T) {
 		reqFB.Header.Set("Content-Type", "application/json")
 		wFB := httptest.NewRecorder()
 		r.ServeHTTP(wFB, reqFB)
-		if wFB.Code != http.StatusOK {
+		if wFB.Code != http.StatusServiceUnavailable {
 			t.Fatalf("Facebook webhook failed: code=%d, body=%s", wFB.Code, wFB.Body.String())
 		}
 
-		// Verify contact and message created
-		var contact domain.Contact
-		if err := db.Where("account_id = ? AND identifier = ?", accID, "fb_user_456").First(&contact).Error; err != nil {
-			t.Errorf("Facebook contact was not created: %v", err)
-		}
-		var msg domain.Message
-		if err := db.Where("account_id = ? AND echo_id = ?", accID, "mid_test_789").First(&msg).Error; err != nil {
-			t.Errorf("Facebook message was not created: %v", err)
+		// Explicitly disabled callbacks cannot create contacts or messages.
+		for _, model := range []any{&domain.Contact{}, &domain.Message{}} {
+			var count int64
+			query := db.Model(model).Where("account_id = ?", accID)
+			if _, ok := model.(*domain.Contact); ok {
+				query = query.Where("identifier = ?", "fb_user_456")
+			} else {
+				query = query.Where("echo_id = ?", "mid_test_789")
+			}
+			if err := query.Count(&count).Error; err != nil || count != 0 {
+				t.Fatalf("disabled Facebook callback wrote %T: count=%d err=%v", model, count, err)
+			}
 		}
 	})
 
@@ -792,12 +846,15 @@ func TestAllSystemGapsCovered(t *testing.T) {
 			t.Fatalf("List plans failed: %d", recPlans.Code)
 		}
 
-		// Create/Update subscription to pro
-		recSub := authReq(http.MethodPost, "/api/v1/accounts/"+accStr+"/subscription", map[string]string{
-			"plan_slug": "pro",
-		})
-		if recSub.Code != http.StatusOK {
-			t.Fatalf("Update subscription failed: %d", recSub.Code)
+		// Paid selection is not proof of payment, so unsupported recurring
+		// subscription checkout must never activate a paid plan.
+		recSub := authReq(http.MethodPost, "/api/v1/accounts/"+accStr+"/subscription", map[string]string{"plan_slug": "pro"})
+		if recSub.Code != http.StatusServiceUnavailable {
+			t.Fatalf("paid plan must remain unavailable: %d", recSub.Code)
+		}
+		recFree := authReq(http.MethodPost, "/api/v1/accounts/"+accStr+"/subscription", map[string]string{"plan_slug": "free"})
+		if recFree.Code != http.StatusOK {
+			t.Fatalf("free plan selection failed: %d", recFree.Code)
 		}
 
 		// Verify subscription
@@ -815,8 +872,8 @@ func TestAllSystemGapsCovered(t *testing.T) {
 		recWh.Header.Set("Content-Type", "application/json")
 		wWh := httptest.NewRecorder()
 		r.ServeHTTP(wWh, recWh)
-		if wWh.Code != http.StatusOK {
-			t.Fatalf("Subscription webhook failed: %d", wWh.Code)
+		if wWh.Code != http.StatusServiceUnavailable {
+			t.Fatalf("unconfigured unsigned webhook must not report processed: %d", wWh.Code)
 		}
 	})
 }

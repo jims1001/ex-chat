@@ -19,6 +19,14 @@
 | DELETE | /api/v1/accounts/{account_id}/automation_rules/{id} | 删除规则 | Administrator |
 | POST | /api/v1/accounts/{account_id}/automation_rules/{id}/clone | 复制规则 | Administrator |
 
+### 执行历史与取消（已实现接口）
+
+- GET `/api/v1/accounts/{account_id}/automation_rules/executions`：当前账户历史列表
+- GET `/api/v1/accounts/{account_id}/automation_rules/executions/{execution_id}`：执行详情
+- POST `/api/v1/accounts/{account_id}/automation_executions/{execution_id}/cancel`：durable 取消，需要 `automation_manage` 权限；legacy 模式返回 409
+
+GET 默认保留 `action_results` JSON 字符串与 `error`；取消默认保留 owner-step 数组与 `reason_code`。三个接口均可显式选择 `view=compat_v1`，获得逻辑动作的兼容字符串视图；不会把准备/查询成功当作完整动作成功，也不会把 queued/saved 说成已发送。`rule_id`、`conversation_id`、`status` 筛选支持旧/新状态别名；默认最近 100 条，可用 `limit=1..100`、`order=asc|desc` 和响应头 `X-Next-Cursor` 对应的 `cursor` 分页。完整类型、状态、取消及迁移边界见[历史兼容合同](../../architecture/automation-history-compatibility.md)。默认执行模式仍为 legacy，客户端需显式适配后再讨论切换。
+
 ### 2.1 Rule 字段
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -175,6 +183,14 @@ short_code 在 Account 内应保持唯一。快捷回复只是内容模板，发
 | read_at | time 或 null | 已读时间 |
 | snoozed_until | time 或 null | 延后时间 |
 | created_at | time | 创建时间 |
+
+### 6.2 当前通知状态变更与失败边界（第六十批）
+
+- 状态 PATCH 按 Account、当前用户和 ID 执行一次 UPDATE，最终对象回读与写入同事务；单条 read/unread/snooze/unsnooze 采用相同模式。失败回读不提交本次本地状态变更，不返回成功空对象。
+- 真正缺失或越界保持 404；状态、删除、全部已读和批量删除的存储故障返回通用 500，不包含原始数据库诊断。
+- 非空请求体必须完整解析，类型或时间格式错误、尾随内容在写入前返回 400。保留既有 PATCH read 优先于 read_at、null 字段不变以及延后 duration 默认/别名；没有新增时间政策。
+- 当前代码的批量删除入口为 POST `/notifications/batch_destroy` 和 DELETE `/notifications`，两者均应用 ids 与 only_read 的交集。空体/null/空对象和空 ids 仍按原合同不限制 ID，在当前 Account/User 内删除；此批不新增表中设计的 destroy_all 路由。
+- [本地实现与验收限制](../../architecture/ntf-notification-mutations.md)：INCOMPLETE / UNVERIFIED。事务可靠性不等于多端实时同步或完整模块验收。
 
 ## 7. Notification Settings API
 

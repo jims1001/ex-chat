@@ -143,11 +143,11 @@ func TestComprehensiveSecurityAudit(t *testing.T) {
 		}
 		db.Create(&inbox)
 
-		// Visitor attempts to connect with conversation_id 99999 that doesn't exist
+		// A visitor without a signed session is rejected before conversation lookup
 		wVis := httptest.NewRecorder()
 		reqVis, _ := http.NewRequest("GET", "/ws?website_token=audit_website_token_123&conversation_id=99999", nil)
 		r.ServeHTTP(wVis, reqVis)
-		assert.Equal(t, http.StatusNotFound, wVis.Code, "Visitor specifying invalid conversation should be 404")
+		assert.Equal(t, http.StatusForbidden, wVis.Code, "Visitor without a signed session should be forbidden")
 	})
 
 	// -------------------------------------------------------------
@@ -240,6 +240,7 @@ func TestComprehensiveSecurityAudit(t *testing.T) {
 	// 4. 生产模式密码重置 Token 隐蔽性 (防账号劫持)
 	// -------------------------------------------------------------
 	t.Run("Item4_Production_Password_Reset_Token_Masking", func(t *testing.T) {
+		t.Setenv("FRONTEND_URL", "") // uniform configuration failure before account lookup
 		// Setup separate environment in production mode
 		_, rProd, _, _, _, _, _, _, _ := setupAuditTestEnv(t, "production")
 
@@ -250,7 +251,7 @@ func TestComprehensiveSecurityAudit(t *testing.T) {
 		req, _ := http.NewRequest("POST", "/auth/password", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
 		rProd.ServeHTTP(w, req)
-		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 
 		var resp map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)

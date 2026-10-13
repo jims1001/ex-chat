@@ -16,12 +16,13 @@ import (
 )
 
 type MessageRepository struct {
-	db           *gorm.DB
-	conversation messageConversationPort
-	users        messageUserPort
-	contacts     messageContactPort
-	reconcileMu  sync.Mutex
-	reconcileID  uint
+	db                *gorm.DB
+	automationCapture bool
+	conversation      messageConversationPort
+	users             messageUserPort
+	contacts          messageContactPort
+	reconcileMu       sync.Mutex
+	reconcileID       uint
 }
 
 type MacroAttachmentSpec struct {
@@ -105,7 +106,48 @@ func NewMessageRepositoryWithPorts(db *gorm.DB, conversation messageConversation
 }
 
 func (r *MessageRepository) Create(msg *domain.Message) error {
-	if r.conversation == nil {
+	return r.create(msg, nil)
+}
+
+// CreateWithConversationReopen durably transfers the already authorized inbound
+// workflow to CON. The immutable intent travels with the message across restarts.
+// Legacy mode deliberately retains the handler's existing status-update path.
+func (r *MessageRepository) CreateWithConversationReopen(msg *domain.Message, expectedVersion int, reopen bool) error {
+	if !r.automationCapture {
+		return r.Create(msg)
+	}
+	if msg == nil || msg.MessageType != domain.MessageTypeIncoming || expectedVersion < 1 {
+		return gorm.ErrInvalidData
+	}
+	if _, ok := r.conversation.(messageReopenActivityPort); !ok {
+		return gorm.ErrInvalidData
+	}
+	return r.create(msg, &messageReopenIntent{ExpectedVersion: expectedVersion, Reopen: reopen})
+}
+
+func (r *MessageRepository) AutomationCaptureEnabled() bool { return r.automationCapture }
+
+type messageReopenIntent struct {
+	ExpectedVersion      int    `json:"expected_version"`
+	Reopen               bool   `json:"reopen"`
+	CreationWorkflowID   string `json:"creation_workflow_id,omitempty"`
+	CreationWorkflowStep int    `json:"creation_workflow_step,omitempty"`
+}
+
+type messageCreationActivityPort interface {
+	ApplyCreationMessageActivity(uint, uint, uint, bool, time.Time, string, int, string, int) error
+}
+
+type messageReopenActivityPort interface {
+	ApplyMessageActivityWithReopen(uint, uint, uint, bool, time.Time, string, int, bool) error
+}
+
+func (r *MessageRepository) create(msg *domain.Message, intent *messageReopenIntent) error {
+	return r.createWithOutbound(context.Background(), msg, intent, nil)
+}
+
+func (r *MessageRepository) createWithOutbound(ctx context.Context, msg *domain.Message, intent *messageReopenIntent, outbound *domain.OutboundMessageAttempt) error {
+	if r.conversation == nil || msg == nil {
 		return gorm.ErrInvalidData
 	}
 	exists, err := r.conversation.MessageTargetExists(msg.AccountID, msg.ConversationID)
@@ -116,7 +158,11 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 		return gorm.ErrRecordNotFound
 	}
 	changeID := foundation.GenerateUUID()
-	err = r.db.Transaction(func(tx *gorm.DB) error {
+	db := r.db.WithContext(ctx)
+	if outbound != nil {
+		db = r.outboundDB(ctx)
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(msg).Error; err != nil {
 			logger.WithComponent("message").Error("failed to persist message",
 				"account_id", msg.AccountID,
@@ -128,6 +174,11 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 			)
 			return err
 		}
+		if outbound != nil {
+			if err := persistOutboundIntent(tx, msg, outbound, 1); err != nil {
+				return err
+			}
+		}
 		change := domain.LocalChangeJournal{
 			ChangeID: changeID, SourceModule: "MSG", AccountID: msg.AccountID,
 			ObjectType: "Message", ObjectID: msg.ID, ObjectVersionBefore: 0, ObjectVersionAfter: 1,
@@ -136,7 +187,17 @@ func (r *MessageRepository) Create(msg *domain.Message) error {
 			CommandID: changeID, CorrelationID: changeID, Status: "pending",
 			OccurredAt: msg.CreatedAt,
 		}
-		return NewJournalRepository(tx).RecordLocalChange(tx, &change)
+		if intent != nil {
+			raw, err := json.Marshal(intent)
+			if err != nil {
+				return err
+			}
+			change.AfterState = string(raw)
+		}
+		if err := NewJournalRepository(tx).RecordLocalChange(tx, &change); err != nil {
+			return err
+		}
+		return r.captureAutomationMessage(tx, msg, changeID)
 	})
 	if err != nil {
 		return err
@@ -253,7 +314,35 @@ func (r *MessageRepository) cancelOrphanedCreate(msg *domain.Message, changeID s
 }
 
 func (r *MessageRepository) applyMessageActivity(msg *domain.Message, changeID string) error {
-	if err := r.conversation.ApplyMessageActivity(msg.AccountID, msg.ConversationID, msg.SenderID, msg.MessageType == domain.MessageTypeIncoming, msg.CreatedAt, changeID); err != nil {
+	// Read the committed journal on both immediate delivery and replay. No
+	// process-local handler state is allowed to complete the owner workflow.
+	var change domain.LocalChangeJournal
+	if err := r.db.Where("source_module = ? AND account_id = ? AND object_type = ? AND object_id = ? AND action = ? AND change_id = ?", "MSG", msg.AccountID, "Message", msg.ID, "create", changeID).First(&change).Error; err != nil {
+		return err
+	}
+	var err error
+	if change.AfterState != "" {
+		var intent messageReopenIntent
+		if json.Unmarshal([]byte(change.AfterState), &intent) != nil || intent.ExpectedVersion < 1 {
+			return gorm.ErrInvalidData
+		}
+		if intent.CreationWorkflowID != "" {
+			owner, ok := r.conversation.(messageCreationActivityPort)
+			if !ok || intent.Reopen || intent.CreationWorkflowStep < 0 {
+				return gorm.ErrInvalidData
+			}
+			err = owner.ApplyCreationMessageActivity(msg.AccountID, msg.ConversationID, msg.SenderID, msg.MessageType == domain.MessageTypeIncoming, msg.CreatedAt, changeID, intent.ExpectedVersion, intent.CreationWorkflowID, intent.CreationWorkflowStep)
+		} else {
+			owner, ok := r.conversation.(messageReopenActivityPort)
+			if !ok || msg.MessageType != domain.MessageTypeIncoming {
+				return gorm.ErrInvalidData
+			}
+			err = owner.ApplyMessageActivityWithReopen(msg.AccountID, msg.ConversationID, msg.SenderID, true, msg.CreatedAt, changeID, intent.ExpectedVersion, intent.Reopen)
+		}
+	} else {
+		err = r.conversation.ApplyMessageActivity(msg.AccountID, msg.ConversationID, msg.SenderID, msg.MessageType == domain.MessageTypeIncoming, msg.CreatedAt, changeID)
+	}
+	if err != nil {
 		return err
 	}
 	return r.db.Model(&domain.LocalChangeJournal{}).Where("change_id = ? AND source_module = ?", changeID, "MSG").Update("status", "delivered").Error
@@ -440,6 +529,9 @@ func (r *MessageRepository) ListSLATimeline(accountID, conversationID uint) ([]d
 	messages := make([]domain.Message, 0)
 	err := r.db.Model(&domain.Message{}).
 		Where("account_id = ? AND conversation_id = ?", accountID, conversationID).
+		// Queued/saved/failed local work is not an agent reply. Incoming
+		// observations remain eligible; transport acknowledgement is separate.
+		Where("message_type <> ? OR status IN ?", domain.MessageTypeOutgoing, []string{domain.MessageStatusSent, domain.MessageStatusDelivered, domain.MessageStatusRead}).
 		Order("created_at ASC, id ASC").Find(&messages).Error
 	return messages, err
 }
@@ -453,10 +545,10 @@ func (r *MessageRepository) ListForReport(accountID uint, conversationIDs []uint
 		query = query.Where("conversation_id IN ?", conversationIDs)
 	}
 	if since != nil {
-		query = query.Where("created_at >= ?", *since)
+		query = query.Where("created_at >= ?", ReportTimeBoundary(query, *since))
 	}
 	if until != nil {
-		query = query.Where("created_at <= ?", *until)
+		query = query.Where("created_at < ?", ReportTimeBoundary(query, *until))
 	}
 	var messages []domain.Message
 	err := query.Order("created_at ASC, id ASC").Find(&messages).Error
@@ -555,7 +647,7 @@ func (r *MessageRepository) FindCSATMessage(accountID, conversationID uint) (*do
 }
 
 func (r *MessageRepository) UpdateStatus(id uint, status string) error {
-	return r.db.Model(&domain.Message{}).Where("id = ?", id).Update("status", status).Error
+	return r.updateUntrackedMessageStatus(id, status)
 }
 
 func (r *MessageRepository) FindByIDAndConversation(accountID, conversationID, messageID uint) (*domain.Message, error) {
@@ -660,35 +752,26 @@ func (r *MessageRepository) DeleteMessage(accountID, conversationID, messageID u
 }
 
 func (r *MessageRepository) RetryMessage(accountID, conversationID, messageID uint) (*domain.Message, error) {
-	msg, err := r.FindByIDAndConversation(accountID, conversationID, messageID)
-	if err != nil {
-		return nil, err
-	}
-	if msg == nil {
-		return nil, gorm.ErrRecordNotFound
-	}
-	if msg.Deleted {
-		return nil, errors.New("cannot retry a deleted message")
-	}
-	if msg.Status != domain.MessageStatusFailed {
-		return nil, errors.New("only failed messages can be retried")
-	}
-
-	now := time.Now().UTC()
-	updates := map[string]any{
-		"status":     domain.MessageStatusSent,
-		"updated_at": now,
-	}
-	if err := r.db.Model(&domain.Message{}).Where("id = ?", msg.ID).Updates(updates).Error; err != nil {
-		return nil, err
-	}
-	msg.Status = domain.MessageStatusSent
-	msg.UpdatedAt = now
-	return msg, nil
+	message, _, err := r.RetryMessageAccepted(context.Background(), accountID, conversationID, messageID)
+	return message, err
 }
 
 func (r *MessageRepository) UpdateTranslations(accountID, id uint, translations string) error {
 	return r.db.Model(&domain.Message{}).
 		Where("account_id = ? AND id = ?", accountID, id).
 		Update("translations", translations).Error
+}
+
+// ListRecentConversationContext returns the latest MSG-owned content in chronological
+// order. It intentionally omits sender hydration; callers only need reference text.
+func (r *MessageRepository) ListRecentConversationContext(accountID, conversationID uint, limit int) ([]domain.Message, error) {
+	if limit < 1 || limit > 50 {
+		limit = 5
+	}
+	var messages []domain.Message
+	err := r.db.Where("account_id = ? AND conversation_id = ?", accountID, conversationID).Order("id DESC").Limit(limit).Find(&messages).Error
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+	return messages, err
 }

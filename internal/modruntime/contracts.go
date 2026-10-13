@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ const (
 )
 
 type CommandHandler func(context.Context, foundation.CommandEnvelope) (any, error)
+type CommandPreflight func(context.Context, foundation.CommandEnvelope) (context.Context, error)
 type QueryHandler func(context.Context, foundation.QueryEnvelope) (any, error)
 type EventHandler func(context.Context, foundation.EventEnvelope) error
 
@@ -34,16 +36,18 @@ type ContractFailure struct {
 func (e *ContractFailure) Error() string { return e.Message }
 
 type ContractRegistry struct {
-	moduleID string
-	commands map[string]CommandHandler
-	queries  map[string]QueryHandler
-	events   map[string]EventHandler
-	receipts *CommandReceiptStore
-	inbox    *EventInbox
+	moduleID    string
+	commands    map[string]CommandHandler
+	preflights  map[string]CommandPreflight
+	authorizers map[string]func(context.Context, foundation.CommandEnvelope) error
+	queries     map[string]QueryHandler
+	events      map[string]EventHandler
+	receipts    *CommandReceiptStore
+	inbox       *EventInbox
 }
 
 func NewContractRegistry(moduleID string) *ContractRegistry {
-	return &ContractRegistry{moduleID: strings.ToUpper(moduleID), commands: map[string]CommandHandler{}, queries: map[string]QueryHandler{}, events: map[string]EventHandler{}}
+	return &ContractRegistry{moduleID: strings.ToUpper(moduleID), commands: map[string]CommandHandler{}, preflights: map[string]CommandPreflight{}, authorizers: map[string]func(context.Context, foundation.CommandEnvelope) error{}, queries: map[string]QueryHandler{}, events: map[string]EventHandler{}}
 }
 
 func (r *ContractRegistry) Count() int { return len(r.commands) + len(r.queries) }
@@ -72,6 +76,19 @@ func (r *ContractRegistry) RegisterCommand(capability string, handler CommandHan
 		return errors.New("command handler is nil or already registered")
 	}
 	r.commands[capability] = handler
+	return nil
+}
+
+// RegisterCommandPreflight registers owner reads that must run before the local
+// receipt transaction. It cannot grant authority or replace in-transaction CAS.
+func (r *ContractRegistry) RegisterCommandPreflight(capability string, prepare CommandPreflight) error {
+	if err := r.validateCapability(capability); err != nil {
+		return err
+	}
+	if prepare == nil || r.preflights[capability] != nil {
+		return errors.New("command preflight is nil or already registered")
+	}
+	r.preflights[capability] = prepare
 	return nil
 }
 
@@ -172,9 +189,16 @@ func (r *ContractRegistry) handleCommand(w http.ResponseWriter, request *http.Re
 		return
 	}
 	var envelope foundation.CommandEnvelope
-	if err := decodeJSON(request, &envelope); err != nil || envelope.Validate() != nil || envelope.CommandType != capability || envelope.CorrelationID != correlationID {
+	if err := decodeContractJSON(request, &envelope, capability == savedFilterManage || capability == cannedResponseManage || capability == messageFromCannedPreview || capability == cannedResponsePrepareSend || capability == cannedResponseSend); err != nil || envelope.Validate() != nil || envelope.CommandType != capability || envelope.CorrelationID != correlationID {
 		w.WriteHeader(http.StatusBadRequest)
 		fail(http.StatusBadRequest, &ContractFailure{Type: "validation_failed", Message: "command envelope is invalid"})
+		return
+	}
+	// Reject sensitive confirmation bodies before even replaying a legacy
+	// generic-queue receipt. Dedicated confirmation submission owns this proof.
+	if failure := confirmationQueueRestriction(envelope); failure != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fail(http.StatusBadRequest, failure)
 		return
 	}
 	timeout := time.Duration(envelope.TimeoutPolicy.TimeoutMS) * time.Millisecond
@@ -182,10 +206,17 @@ func (r *ContractRegistry) handleCommand(w http.ResponseWriter, request *http.Re
 		timeout = cfg.MaxTimeout
 	}
 	invoke(w, request, timeout, correlationID, func(ctx context.Context) (any, error) {
+		// Authority checks opt in per capability and always precede cached output.
+		// Admission preflights keep their legacy receipt-first behavior.
+		if authorize := r.authorizers[capability]; authorize != nil {
+			if err := authorize(ctx, envelope); err != nil {
+				return nil, err
+			}
+		}
 		if r.receipts == nil {
 			return nil, &ContractFailure{Type: "dependency_unavailable", Message: "command receipt store is unavailable"}
 		}
-		return r.receipts.Execute(ctx, envelope, func(txContext context.Context) (any, error) { return handler(txContext, envelope) })
+		return r.receipts.ExecutePrepared(ctx, envelope, r.preflights[capability], func(txContext context.Context) (any, error) { return handler(txContext, envelope) })
 	}, fail)
 }
 
@@ -197,7 +228,7 @@ func (r *ContractRegistry) handleQuery(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	var envelope foundation.QueryEnvelope
-	if err := decodeJSON(request, &envelope); err != nil || envelope.Validate() != nil || envelope.QueryType != capability {
+	if err := decodeContractJSON(request, &envelope, capability == savedFilterGet || capability == publicSystemConfigurationQuery || capability == persistedFeatureFlagsQuery || capability == persistedAIUsageQuery || capability == boundAssistantQuery || capability == storedReportingEventsQuery || capability == cannedResponseGet || capability == cannedResponsePreview); err != nil || envelope.Validate() != nil || envelope.QueryType != capability {
 		w.WriteHeader(http.StatusBadRequest)
 		fail(http.StatusBadRequest, &ContractFailure{Type: "validation_failed", Message: "query envelope is invalid"})
 		return
@@ -234,14 +265,25 @@ func invoke(w http.ResponseWriter, request *http.Request, timeout time.Duration,
 }
 
 func decodeJSON(request *http.Request, target any) error {
+	return decodeContractJSON(request, target, false)
+}
+
+func decodeContractJSON(request *http.Request, target any, preciseNumbers bool) error {
 	decoder := json.NewDecoder(request.Body)
+	if preciseNumbers {
+		decoder.UseNumber()
+	}
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
 	var extra any
-	if decoder.Decode(&extra) == nil {
+	err := decoder.Decode(&extra)
+	if err == nil {
 		return errors.New("multiple JSON values")
+	}
+	if preciseNumbers && err != io.EOF {
+		return errors.New("invalid trailing JSON")
 	}
 	return nil
 }

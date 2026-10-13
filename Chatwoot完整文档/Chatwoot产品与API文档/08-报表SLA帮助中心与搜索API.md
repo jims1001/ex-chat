@@ -28,6 +28,8 @@
 | GET | /reports/first_response_time_distribution | 首次响应分布 |
 | GET | /reports/outgoing_messages_count | Outgoing 数量 |
 
+现有根路径的实际有限支持范围与错误/缺省/预算合同见 [报表字典 3.2](20-报表指标口径筛选与返回字典.md#32-有限-utc-日历计数序列合同phase47)。phase47 在 V1/V2 同步支持 Account 的三项记录计数及 UTC hour/day/month/year 分组，缺省 day，未知 group_by 回退 day；week、非零偏移、IANA 时区及其他维度仍不支持。最多选择相交的 400 个桶（包括部分桶和空桶），不以日历时长或返回点数代替预算。SQLite 不支持的实际裁剪查询边界返回 422，不支持的存储表示仍返回 503；本页其他通用参数不表示该入口已支持。
+
 ## 3. Summary Report API
 
 | 方法 | 路径 | 功能 |
@@ -42,8 +44,8 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| since | integer 或 date | 起始时间 |
-| until | integer 或 date | 结束时间 |
+| since | integer、RFC3339 或 date | 包含的起始时刻；纯日期取 UTC 零点 |
+| until | integer、RFC3339 或 date | 排他结束时刻；纯日期换算为次日 UTC 零点以包含完整指定日期 |
 | type | enum | account、agent、team、inbox、label 等 |
 | id | integer | 对应维度 ID |
 | business_hours | boolean | 是否只统计工作时间 |

@@ -406,7 +406,7 @@ func TestInboxManagementEnhancements(t *testing.T) {
 			Templates []map[string]any `json:"templates"`
 		}
 		_ = json.Unmarshal(w.Body.Bytes(), &syncResp)
-		if syncResp.Status != "synced" || len(syncResp.Templates) != 1 {
+		if syncResp.Status != "imported" || len(syncResp.Templates) != 1 {
 			t.Fatalf("unexpected sync response: %+v", syncResp)
 		}
 	})

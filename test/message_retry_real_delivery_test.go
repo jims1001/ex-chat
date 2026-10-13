@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,14 +29,14 @@ func (m *mockWebhookTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return m.roundTripFunc(req)
 }
 
-func TestMessageRetryActualDelivery(t *testing.T) {
+func TestMessageRetryLocalAcceptanceAndMockWebhookDelivery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{
 		Environment:        "test",
 		DBDriver:           "sqlite",
 		DBPath:             ":memory:",
-		JWTSecret:          "test_secret_message_retry_actual_delivery",
+		JWTSecret:          "test_secret_message_retry_mock_webhook",
 		JWTExpirationHours: 72,
 	}
 
@@ -43,6 +44,10 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to init db: %v", err)
 	}
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	var webhookHitCount atomic.Int64
 	var lastWebhookEvent atomic.Value
@@ -63,7 +68,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 	r := router.SetupRouterWithOptions(cfg, db, hub, router.Options{WebhookHTTPClient: mockClient})
 
 	// 1. Seed Account & User
-	account := domain.Account{Name: "Retry Actual Delivery Account"}
+	account := domain.Account{Name: "Retry Mock Webhook Account"}
 	db.Create(&account)
 
 	user := domain.User{
@@ -85,7 +90,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		AccountID:    account.ID,
 		Name:         "Retry Test Inbox",
 		ChannelType:  domain.ChannelWebWidget,
-		WebsiteToken: "tok_retry_actual_delivery",
+		WebsiteToken: "tok_retry_mock_webhook",
 	}
 	db.Create(&inbox)
 
@@ -116,7 +121,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 
 	token, _ := auth.GenerateToken(&user, cfg.JWTSecret, 24)
 
-	t.Run("Message Retry Actually Bumps Activity and Executes Real Delivery", func(t *testing.T) {
+	t.Run("Public Retry Queues Same Message and Dispatches Mock Webhook", func(t *testing.T) {
 		initialHits := webhookHitCount.Load()
 
 		// Create failed message
@@ -127,7 +132,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 			SenderID:       user.ID,
 			MessageType:    domain.MessageTypeOutgoing,
 			ContentType:    domain.ContentTypeText,
-			Content:        "Actual retransmission message",
+			Content:        "Queued retry message",
 			Status:         domain.MessageStatusFailed,
 		}
 		db.Create(&failedMsg)
@@ -142,12 +147,21 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 			t.Fatalf("expected 200 on retry, got %d body=%s", w.Code, w.Body.String())
 		}
 
-		// 1. Verify Message Status in DB is updated to 'sent'
+		// Local acceptance is queued; the injected transport only acknowledges a webhook.
 		var refreshedMsg domain.Message
 		db.First(&refreshedMsg, failedMsg.ID)
-		if refreshedMsg.Status != domain.MessageStatusSent {
-			t.Fatalf("expected status 'sent', got '%s'", refreshedMsg.Status)
+		if refreshedMsg.Status != domain.MessageStatusQueued {
+			t.Fatalf("expected status 'queued', got '%s'", refreshedMsg.Status)
 		}
+
+		var retryResponse struct {
+			Data domain.Message `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &retryResponse))
+		require.Equal(t, domain.MessageStatusQueued, retryResponse.Data.Status)
+		require.Equal(t, failedMsg.ID, retryResponse.Data.ID)
+		require.Equal(t, failedMsg.Content, retryResponse.Data.Content)
+		require.True(t, failedMsg.CreatedAt.Equal(retryResponse.Data.CreatedAt))
 
 		// 2. Verify Conversation Activity was bumped (not just status updated)
 		var refreshedConv domain.Conversation
@@ -156,7 +170,7 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 			t.Fatalf("expected conversation LastActivityAt to be bumped after %v, got %v", pastTime, refreshedConv.LastActivityAt)
 		}
 
-		// 3. Verify Webhook Delivery record was dispatched and executed via HTTP client
+		// Verify only mock webhook delivery, never channel/provider delivery.
 		require.Eventually(t, func() bool {
 			var count int64
 			return db.Model(&domain.WebhookDelivery{}).Where("account_id = ? AND event = ? AND status = ?", account.ID, "message_created", "delivered").Count(&count).Error == nil && count == 1
@@ -166,6 +180,12 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected webhook delivery record to be created: %v", err)
 		}
+		var webhookPayload struct {
+			Data domain.Message `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(del.Payload), &webhookPayload))
+		require.Equal(t, retryResponse.Data.ID, webhookPayload.Data.ID)
+		require.Equal(t, retryResponse.Data.Status, webhookPayload.Data.Status)
 		if del.URL != webhook.URL {
 			t.Fatalf("expected delivery url to be %s, got %s", webhook.URL, del.URL)
 		}
@@ -202,6 +222,16 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 			t.Fatalf("expected 200 on retry inbound, got %d body=%s", w.Code, w.Body.String())
 		}
 
+		var localResponse struct {
+			Data domain.Message `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &localResponse))
+		require.Equal(t, inboundFailedMsg.ID, localResponse.Data.ID)
+		require.Equal(t, domain.MessageStatusSaved, localResponse.Data.Status)
+		var savedIncoming domain.Message
+		require.NoError(t, db.First(&savedIncoming, inboundFailedMsg.ID).Error)
+		require.Equal(t, domain.MessageStatusSaved, savedIncoming.Status)
+
 		var reopenedConv domain.Conversation
 		db.First(&reopenedConv, conv.ID)
 		if reopenedConv.Status != domain.ConversationStatusOpen {
@@ -210,10 +240,10 @@ func TestMessageRetryActualDelivery(t *testing.T) {
 		require.Eventually(t, func() bool {
 			var count int64
 			return db.Model(&domain.WebhookDelivery{}).Where("account_id = ? AND event = ? AND status = ?", account.ID, "message_created", "delivered").Count(&count).Error == nil && count == 2
-		}, 2*time.Second, 10*time.Millisecond, "inbound retry delivery must finish before the next case")
+		}, 2*time.Second, 10*time.Millisecond, "inbound retry mock webhook must finish before the next case")
 	})
 
-	t.Run("Webhook Delivery Real HTTP Retransmission", func(t *testing.T) {
+	t.Run("Webhook Retry Uses Injected Mock HTTP Transport", func(t *testing.T) {
 		initialHits := webhookHitCount.Load()
 
 		failedDelivery := domain.WebhookDelivery{

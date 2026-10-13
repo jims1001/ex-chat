@@ -39,7 +39,12 @@ func AuthMiddleware(secret string, userRepo *repository.UserRepository, enterpri
 		tokenStr := parts[1]
 		if len(enterpriseRepos) > 0 && enterpriseRepos[0] != nil {
 			revoked, err := enterpriseRepos[0].IsTokenRevoked(tokenStr)
-			if err == nil && revoked {
+			if err != nil {
+				response.InternalError(c, "Unable to verify token revocation")
+				c.Abort()
+				return
+			}
+			if revoked {
 				response.Unauthorized(c, "Token has been revoked")
 				c.Abort()
 				return
@@ -54,7 +59,7 @@ func AuthMiddleware(secret string, userRepo *repository.UserRepository, enterpri
 		}
 
 		user, err := userRepo.FindByID(claims.UserID)
-		if err != nil || user == nil {
+		if err != nil || !auth.ClaimsMatchUser(claims, user) {
 			response.Unauthorized(c, "User not found")
 			c.Abort()
 			return
@@ -156,11 +161,11 @@ func RequireRole(allowedRoles ...string) gin.HandlerFunc {
 }
 
 // RequirePermission checks if the authenticated user in the account has the specified permission.
-// - Users with RoleAdministrator ("administrator") automatically have all permissions.
-// - If the user's role matches any fallbackRoles, access is granted.
-// - If the user has a CustomRole (either via CustomRoleID or CustomRole name matching),
-//   its Permissions JSON array is checked for the specified permission or "administrator".
-// - Otherwise, access is denied with 403 Forbidden.
+//   - Users with RoleAdministrator ("administrator") automatically have all permissions.
+//   - If the user's role matches any fallbackRoles, access is granted.
+//   - If the user has a CustomRole (either via CustomRoleID or CustomRole name matching),
+//     its Permissions JSON array is checked for the specified permission or "administrator".
+//   - Otherwise, access is denied with 403 Forbidden.
 func RequirePermission(accountRepo *repository.AccountRepository, permission string, fallbackRoles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rawMembership, exists := c.Get(ContextAccountMembership)
@@ -221,27 +226,23 @@ func RequirePermission(accountRepo *repository.AccountRepository, permission str
 // 1. user.IsSuperAdmin() is true (user.Type == "SuperAdmin" or user.Role == "super_admin")
 // 2. OR user's email matches one of the configured super admin emails (cfg.IsSuperAdminEmail)
 // If unauthorized, it returns 403 Forbidden with {"success": false, "error": "Super administrator access required"}.
+// IsSuperAdmin uses only the authenticated, freshly loaded user context and the
+// existing operator-configured email policy, never request body or JWT role hints.
+func IsSuperAdmin(c *gin.Context, cfg *config.Config) bool {
+	rawUser, exists := c.Get(ContextUser)
+	if !exists {
+		return false
+	}
+	user, ok := rawUser.(*domain.User)
+	return ok && user != nil && (user.IsSuperAdmin() || (cfg != nil && cfg.IsSuperAdminEmail(user.Email)))
+}
+
 func RequireSuperAdmin(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rawUser, exists := c.Get(ContextUser)
-		if !exists {
-			response.Forbidden(c, "Super administrator access required")
-			c.Abort()
-			return
-		}
-
-		user, ok := rawUser.(*domain.User)
-		if !ok || user == nil {
-			response.Forbidden(c, "Super administrator access required")
-			c.Abort()
-			return
-		}
-
-		if user.IsSuperAdmin() || (cfg != nil && cfg.IsSuperAdminEmail(user.Email)) {
+		if IsSuperAdmin(c, cfg) {
 			c.Next()
 			return
 		}
-
 		response.Forbidden(c, "Super administrator access required")
 		c.Abort()
 	}

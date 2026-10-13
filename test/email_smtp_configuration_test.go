@@ -95,10 +95,13 @@ func TestEmailSMTPConfigurationAndRejection(t *testing.T) {
 	inboxID := inboxResp.Data.ID
 	websiteToken := inboxResp.Data.WebsiteToken
 
+	_, visitorSession, visitorContactID := bootstrapWidgetVisitor(t, r, websiteToken)
+
 	// 3. Create Conversation
 	conv := domain.Conversation{
 		AccountID: accountID,
 		InboxID:   inboxID,
+		ContactID: visitorContactID,
 		Status:    domain.ConversationStatusOpen,
 	}
 	db.Create(&conv)
@@ -178,6 +181,7 @@ func TestEmailSMTPConfigurationAndRejection(t *testing.T) {
 		}
 		body, _ := json.Marshal(widgetPayload)
 		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/widget/conversations/transcript?website_token=%s", websiteToken), bytes.NewReader(body))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -402,6 +406,7 @@ func TestEmailSMTPConfigurationAndRejection(t *testing.T) {
 	})
 
 	t.Run("Confirmation_Email_Dispatch", func(t *testing.T) {
+		t.Setenv("FRONTEND_URL", "https://confirmation.example.test")
 		mockSender := service.NewMockEmailSender()
 		emailSvc := service.NewEmailService(db)
 		emailSvc.SetSender(mockSender)
@@ -412,15 +417,20 @@ func TestEmailSMTPConfigurationAndRejection(t *testing.T) {
 		}
 		db.Create(&testUser)
 
-		logItem, err := emailSvc.SendConfirmationEmail(context.Background(), &testUser, "sample_token_abc_123")
+		confirmationToken := strings.Repeat("a", 64)
+		deliveryState, err := emailSvc.SendConfirmationEmail(context.Background(), &testUser, confirmationToken, time.Now().Add(24*time.Hour))
 		if err != nil {
 			t.Fatalf("SendConfirmationEmail failed: %v", err)
 		}
-		if logItem == nil || logItem.Status != "sent" {
-			t.Fatalf("expected sent status, got %+v", logItem)
+		if deliveryState != "captured_mock" {
+			t.Fatalf("expected captured_mock state, got %s", deliveryState)
 		}
-		if logItem.EmailType != "confirmation" {
-			t.Fatalf("expected email_type 'confirmation', got %s", logItem.EmailType)
+		var persisted int64
+		if err := db.Model(&domain.EmailLog{}).Where("email_type = ?", "confirmation").Count(&persisted).Error; err != nil {
+			t.Fatal(err)
+		}
+		if persisted != 0 {
+			t.Fatalf("confirmation credentials must not enter email logs, got %d rows", persisted)
 		}
 
 		sentEmails := mockSender.GetSentEmails()
@@ -431,7 +441,7 @@ func TestEmailSMTPConfigurationAndRejection(t *testing.T) {
 				if !strings.Contains(e.Subject, "ExChat") {
 					t.Errorf("expected subject to contain 'ExChat', got %s", e.Subject)
 				}
-				if !strings.Contains(e.HTMLBody, "sample_token_abc_123") {
+				if !strings.Contains(e.HTMLBody, confirmationToken) {
 					t.Errorf("expected confirmation token in body")
 				}
 				break

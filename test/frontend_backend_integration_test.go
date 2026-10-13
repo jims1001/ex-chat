@@ -171,9 +171,9 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 			t.Fatalf("expected created webhook with ID, got %+v", hookResp)
 		}
 
-		// 2. Real Webhook Delivery Retry API (POST /webhooks/deliveries/:id/retry)
+		// 2. Legacy no-ID retry creates a manual attempt when only a webhook exists.
 		wRetry := httptest.NewRecorder()
-		reqRetry, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/webhooks/deliveries/1/retry", accountID), nil)
+		reqRetry, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/webhooks/deliveries/retry", accountID), nil)
 		reqRetry.Header.Set("Authorization", authHeader)
 		engine.ServeHTTP(wRetry, reqRetry)
 		if wRetry.Code != http.StatusOK {
@@ -454,6 +454,23 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 		reqMsg.Header.Set("Authorization", authHeader)
 		reqMsg.Header.Set("Content-Type", "application/json")
 		engine.ServeHTTP(wMsg, reqMsg)
+		// An unconfigured external inbox must not fabricate delivery. Keep the
+		// generic list/create linkage check on the existing local webchat path.
+		if wMsg.Code != http.StatusServiceUnavailable {
+			t.Fatalf("unconfigured WhatsApp send should fail closed: %d", wMsg.Code)
+		}
+		var unsent int64
+		if err := db.Model(&domain.Message{}).Where("conversation_id = ?", conv.ID).Count(&unsent).Error; err != nil || unsent != 0 {
+			t.Fatalf("unconfigured provider created message: count=%d error=%v", unsent, err)
+		}
+		if err := db.Model(&inbox).Update("channel_type", domain.ChannelWebWidget).Error; err != nil {
+			t.Fatal(err)
+		}
+		wMsg = httptest.NewRecorder()
+		reqMsg, _ = http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/messages", accountID, conv.ID), bytes.NewBuffer(msgBody))
+		reqMsg.Header.Set("Authorization", authHeader)
+		reqMsg.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(wMsg, reqMsg)
 		if wMsg.Code != http.StatusCreated && wMsg.Code != http.StatusOK {
 			t.Fatalf("POST messages failed: %d, body: %s", wMsg.Code, wMsg.Body.String())
 		}
@@ -495,6 +512,16 @@ func TestFrontendBackend7GapsIntegration(t *testing.T) {
 		defer wsConn.Close()
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			t.Fatalf("expected status 101 Switching Protocols, got %d", resp.StatusCode)
+		}
+
+		// The HTTP upgrade can finish before the asynchronous hub registration.
+		// Wait for registration rather than racing the first broadcast against it.
+		registrationDeadline := time.Now().Add(2 * time.Second)
+		for hub.ClientCount() == 0 && time.Now().Before(registrationDeadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if hub.ClientCount() == 0 {
+			t.Fatal("WebSocket client was not registered with the hub")
 		}
 
 		// Broadcast an event to Hub

@@ -89,8 +89,8 @@ func TestInboxTemplatePersistenceAndSync(t *testing.T) {
 			Templates []map[string]any `json:"templates"`
 		}
 		_ = json.Unmarshal(w.Body.Bytes(), &syncResp)
-		if syncResp.Status != "synced" {
-			t.Fatalf("expected synced status, got %s", syncResp.Status)
+		if syncResp.Status != "imported" {
+			t.Fatalf("expected local imported status, got %s", syncResp.Status)
 		}
 		// Without provider_config templates, sync should return 0 templates (no fake templates!)
 		if len(syncResp.Templates) != 0 {

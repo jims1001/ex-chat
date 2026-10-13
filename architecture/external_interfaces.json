@@ -29,5 +29,6 @@
   "callbackRules": {"requireSignature":true,"requireTimeWindow":true,"requireReceiptDeduplication":true,"requireStandardFactConversion":true,"requireCompensation":true,"forbidArbitraryAccountID":true},
   "versionRules": ["optional_addition_compatible","removal_requires_major","semantic_change_requires_major","unknown_enum_tolerated","permission_change_requires_reauthorization","side_effect_change_requires_major"],
   "entrypointRule": "transport_to_public_contract_only",
-  "directInternalStorageAccessAllowed": false
+  "directInternalStorageAccessAllowed": false,
+  "readOnlyPostQueries": {"invitationHandler.PreviewAgentInvitation":"ten.invitation.get.v1"}
 }

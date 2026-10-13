@@ -2,9 +2,11 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,13 +14,17 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
+	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
 )
 
 func TestAuthLifecycleFull(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("SMTP_ADDRESS", "")
+	t.Setenv("FRONTEND_URL", "https://support.example.test")
 
 	cfg := &config.Config{
 		Environment:        "test",
@@ -129,12 +135,31 @@ func TestAuthLifecycleFull(t *testing.T) {
 			t.Fatalf("failed to reload user: %v", err)
 		}
 		currentToken := userInDB.ConfirmationToken
-		if currentToken == "" {
-			t.Fatalf("confirmation token is empty after resend")
+		if !strings.HasPrefix(currentToken, "sha256:") || currentToken == firstToken || userInDB.ConfirmationIssuedAt == nil {
+			t.Fatalf("resend must replace and activate a digest-only confirmation proof")
+		}
+		// Stored digests are not bearer credentials. Obtain a known raw fixture
+		// through the same prepare/send/activate contract using an explicit mock.
+		if got := makeReq("", http.MethodGet, "/auth/confirmation?confirmation_token="+currentToken, nil); got.Code != http.StatusUnprocessableEntity {
+			t.Fatal("stored digest authenticated as a raw confirmation token")
+		}
+		iam := repository.NewChannelAuthEnterpriseRepository(db)
+		proof, raw, err := iam.GenerateConfirmationToken(userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		emails := service.NewEmailService(db)
+		emails.SetSender(service.NewMockEmailSender())
+		state, err := emails.SendConfirmationEmail(context.Background(), proof, raw, *proof.ConfirmationExpiresAt)
+		if err != nil || state != "captured_mock" {
+			t.Fatalf("mock confirmation submit: %s %v", state, err)
+		}
+		if err := iam.ActivateConfirmationToken(userID, raw); err != nil {
+			t.Fatal(err)
 		}
 
 		// Perform confirmation via GET /auth/confirmation
-		confirmRes := makeReq("", http.MethodGet, "/auth/confirmation?confirmation_token="+currentToken, nil)
+		confirmRes := makeReq("", http.MethodGet, "/auth/confirmation?confirmation_token="+raw, nil)
 		if confirmRes.Code != http.StatusOK {
 			t.Fatalf("confirm email via GET failed with %d: %s", confirmRes.Code, confirmRes.Body.String())
 		}
@@ -200,7 +225,7 @@ func TestAuthLifecycleFull(t *testing.T) {
 	// ----------------------------------------------------
 	t.Run("MFA Setup, Activation, Backup Codes and Sign In Challenge", func(t *testing.T) {
 		// 1. Get MFA profile setup info
-		mfaInitRes := makeReq(token, http.MethodGet, "/api/v1/profile/mfa", nil)
+		mfaInitRes := makeReq(token, http.MethodPost, "/api/v1/profile/mfa/setup", map[string]string{"current_password": userPassword})
 		if mfaInitRes.Code != http.StatusOK {
 			t.Fatalf("get mfa profile failed with %d: %s", mfaInitRes.Code, mfaInitRes.Body.String())
 		}
@@ -227,7 +252,8 @@ func TestAuthLifecycleFull(t *testing.T) {
 		}
 
 		verifyRes := makeReq(token, http.MethodPost, "/api/v1/profile/mfa/verify", map[string]string{
-			"otp_code": totpCode,
+			"otp_code":         totpCode,
+			"current_password": userPassword,
 		})
 		if verifyRes.Code != http.StatusOK {
 			t.Fatalf("mfa activation verify failed with %d: %s", verifyRes.Code, verifyRes.Body.String())
@@ -247,7 +273,7 @@ func TestAuthLifecycleFull(t *testing.T) {
 		}
 
 		// 3. Test Generate New Backup Codes (POST /api/v1/profile/mfa/backup_codes)
-		newCodesRes := makeReq(token, http.MethodPost, "/api/v1/profile/mfa/backup_codes", nil)
+		newCodesRes := makeReq(token, http.MethodPost, "/api/v1/profile/mfa/backup_codes", map[string]string{"current_password": userPassword, "backup_code": verifyData.Data.BackupCodes[0]})
 		if newCodesRes.Code != http.StatusOK {
 			t.Fatalf("generate backup codes failed with %d: %s", newCodesRes.Code, newCodesRes.Body.String())
 		}
@@ -261,6 +287,10 @@ func TestAuthLifecycleFull(t *testing.T) {
 			t.Fatalf("expected 8 refreshed backup codes, got %d", len(newCodesData.Data.BackupCodes))
 		}
 		testBackupCode := newCodesData.Data.BackupCodes[0]
+		// Model a later login session after the shared five-minute setup budget.
+		if err := db.Model(&domain.MFAProfile{}).Where("user_id = ?", userID).Update("verification_window_started_at", time.Now().Add(-6*time.Minute)).Error; err != nil {
+			t.Fatal(err)
+		}
 
 		// 4. Test Sign In with MFA enabled:
 		// Attempt A: Sign in with password only -> should return 206 Partial Content + mfa_token
@@ -310,12 +340,11 @@ func TestAuthLifecycleFull(t *testing.T) {
 			t.Fatalf("expected 401 when reusing consumed backup code, got %d: %s", step3Res.Code, step3Res.Body.String())
 		}
 
-		// Attempt D: Direct sign in with fresh TOTP code in one shot
-		freshTOTP, _ := auth.GenerateTOTPCode(mfaInitData.Data.Secret, time.Now())
+		// Attempt D: Direct sign in with another unused recovery code in one shot
 		oneShotRes := makeReq("", http.MethodPost, "/auth/sign_in", map[string]string{
-			"email":    userEmail,
-			"password": userPassword,
-			"otp_code": freshTOTP,
+			"email":       userEmail,
+			"password":    userPassword,
+			"backup_code": newCodesData.Data.BackupCodes[1],
 		})
 		if oneShotRes.Code != http.StatusOK {
 			t.Fatalf("direct sign in with otp_code failed with %d: %s", oneShotRes.Code, oneShotRes.Body.String())
@@ -354,11 +383,14 @@ func TestAuthLifecycleFull(t *testing.T) {
 		// Sign in to get a fresh token
 		var mfaProfile domain.MFAProfile
 		_ = db.Where("user_id = ?", userID).First(&mfaProfile)
-		freshTOTP, _ := auth.GenerateTOTPCode(mfaProfile.Secret, time.Now())
+		var remainingBackupCodes []string
+		if err := json.Unmarshal([]byte(mfaProfile.BackupCodes), &remainingBackupCodes); err != nil || len(remainingBackupCodes) == 0 {
+			t.Fatal("expected unused backup codes for a distinct second-factor login")
+		}
 		signInRes := makeReq("", http.MethodPost, "/auth/sign_in", map[string]string{
-			"email":    userEmail,
-			"password": userPassword,
-			"otp_code": freshTOTP,
+			"email":       userEmail,
+			"password":    userPassword,
+			"backup_code": remainingBackupCodes[0],
 		})
 		if signInRes.Code != http.StatusOK {
 			t.Fatalf("sign in failed: %s", signInRes.Body.String())

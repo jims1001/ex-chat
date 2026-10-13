@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -136,17 +137,10 @@ func (r *CaptainRepository) GetBoundInboxIDs(accountID, assistantID uint) ([]uin
 	return ids, err
 }
 
-// FindAssistantByInbox retrieves the CaptainAssistant bound to an inbox
-func (r *CaptainRepository) FindAssistantByInbox(accountID, inboxID uint) (*domain.CaptainAssistant, error) {
-	var binding domain.CaptainInbox
-	err := r.db.Where("account_id = ? AND inbox_id = ?", accountID, inboxID).First(&binding).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return r.FindByID(accountID, binding.CaptainAssistantID)
+// FindAssistantByInbox is the shared owner read for gateway and module callers.
+// Callers authenticate current account/resource access before this lookup.
+func (r *CaptainRepository) FindAssistantByInbox(ctx context.Context, accountID, inboxID uint) (*BoundAssistantSummary, error) {
+	return r.readBoundAssistant(ctx, accountID, inboxID)
 }
 
 // ----------------- FAQ / Assistant Responses -----------------

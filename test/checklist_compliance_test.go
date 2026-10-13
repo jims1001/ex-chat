@@ -243,11 +243,11 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 	// -------------------------------------------------------------
 	t.Run("Item6_Push_DeliveryLog", func(t *testing.T) {
 		subBody, _ := json.Marshal(map[string]any{
-			"device_token":  "fcm_mock_device_token_999",
-			"platform":      "android",
-			"endpoint":      "https://fcm.googleapis.com/fcm/send",
-			"auth_key":      "auth_sample_key",
-			"p256dh":        "p256dh_sample_key",
+			"device_token": "fcm_mock_device_token_999",
+			"platform":     "android",
+			"endpoint":     "https://fcm.googleapis.com/fcm/send",
+			"auth_key":     "auth_sample_key",
+			"p256dh":       "p256dh_sample_key",
 		})
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/notification_subscriptions", bytes.NewReader(subBody))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -268,10 +268,12 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 	})
 
 	// -------------------------------------------------------------
-	// Item 7: RFC 6238 TOTP MFA & SAML XML Verification
+	// Item 7: RFC 6238 TOTP MFA & untrusted SAML XML extraction
 	// -------------------------------------------------------------
 	t.Run("Item7_TOTP_MFA_And_SAML", func(t *testing.T) {
-		req = httptest.NewRequest(http.MethodGet, "/api/v1/profile/mfa", nil)
+		setupMFA, _ := json.Marshal(map[string]string{"current_password": "Password123!"})
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/profile/mfa/setup", bytes.NewReader(setupMFA))
+		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -292,7 +294,7 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 			t.Fatalf("failed to generate TOTP code: %v", err)
 		}
 
-		enableBody, _ := json.Marshal(map[string]string{"otp_code": realCode})
+		enableBody, _ := json.Marshal(map[string]string{"otp_code": realCode, "current_password": "Password123!"})
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/profile/mfa", bytes.NewReader(enableBody))
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
@@ -567,38 +569,30 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 		req = httptest.NewRequest(http.MethodGet, "/omniauth/google_oauth2/callback?code=mock_code&email=hacker@evil.com", nil)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected Google query bypass to be blocked with 401, got %d", w.Code)
-		}
+		assertSSOLoginRejected(t, w, http.StatusUnauthorized)
 
-		// 2. Google OAuth valid JWT succeeds
-		googleToken := auth.GenerateMockGoogleIDToken("verified_google_user@corp.com", "Verified User")
-		req = httptest.NewRequest(http.MethodGet, "/omniauth/google_oauth2/callback?credential="+googleToken, nil)
+		// 2. A forged Google JWT in a GET callback is rejected.
+		forgedGoogleToken := auth.GenerateMockGoogleIDToken("verified_google_user@corp.com", "Verified User")
+		req = httptest.NewRequest(http.MethodGet, "/omniauth/google_oauth2/callback?credential="+forgedGoogleToken, nil)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("valid Google ID token login failed: code=%d body=%s", w.Code, w.Body.String())
-		}
+		assertSSOLoginRejected(t, w, http.StatusUnauthorized)
 
-		// 3. SAML corrupted response rejected
+		// 3. SAML callbacks remain unavailable for corrupted input.
 		req = httptest.NewRequest(http.MethodPost, "/omniauth/saml/callback?SAMLResponse=corrupted_invalid_xml", nil)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected corrupted SAML to be rejected with 401, got %d", w.Code)
-		}
+		assertSSOLoginRejected(t, w, http.StatusServiceUnavailable)
 
-		// 4. SAML valid XML succeeds
-		validSAML := auth.GenerateMockSAMLResponse("verified_saml_user@corp.com", "SAML", "User")
+		// 4. Well-formed unsigned SAML cannot authenticate either.
+		unsignedSAML := auth.GenerateMockSAMLResponse("verified_saml_user@corp.com", "SAML", "User")
 		samlForm := url.Values{}
-		samlForm.Set("SAMLResponse", validSAML)
+		samlForm.Set("SAMLResponse", unsignedSAML)
 		req = httptest.NewRequest(http.MethodPost, "/omniauth/saml/callback", strings.NewReader(samlForm.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("valid SAML login failed: code=%d body=%s", w.Code, w.Body.String())
-		}
+		assertSSOLoginRejected(t, w, http.StatusServiceUnavailable)
 	})
 
 	// -------------------------------------------------------------
@@ -703,6 +697,15 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 		db.Create(c1)
 		db.Create(c2)
 
+		const c1SourceID = "checklist-public-c1"
+		if err := db.Create(&domain.ContactInbox{InboxID: inboxID, ContactID: c1.ID, SourceID: c1SourceID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&domain.ContactInbox{InboxID: inboxID, ContactID: c2.ID, SourceID: "checklist-public-c2"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		visitorSession := signWidgetVisitorSession(t, inboxID, c1.ID, c1SourceID, cfg.JWTSecret)
+
 		conv1 := &domain.Conversation{AccountID: accountID, InboxID: inboxID, ContactID: c1.ID, Status: "open"}
 		conv2 := &domain.Conversation{AccountID: accountID, InboxID: inboxID, ContactID: c2.ID, Status: "open"}
 		db.Create(conv1)
@@ -713,6 +716,7 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 		inboxWebsiteToken := inboxResp.Data.WebsiteToken
 		spoofURL := "/public/api/v1/inboxes/" + inboxWebsiteToken + "/contacts/" + strconv.Itoa(int(c1.ID)) + "/conversations/" + strconv.Itoa(int(conv2.ID)) + "/messages"
 		req = httptest.NewRequest(http.MethodPost, spoofURL, bytes.NewReader(spoofMsg))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -724,6 +728,7 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 		validMsg, _ := json.Marshal(map[string]string{"content": "Legitimate message from c1"})
 		validURL := "/public/api/v1/inboxes/" + inboxWebsiteToken + "/contacts/" + strconv.Itoa(int(c1.ID)) + "/conversations/" + strconv.Itoa(int(conv1.ID)) + "/messages"
 		req = httptest.NewRequest(http.MethodPost, validURL, bytes.NewReader(validMsg))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -810,8 +815,8 @@ func TestChecklistCompliance_AllItems(t *testing.T) {
 
 		// 2. Create a Captain Assistant
 		botBody, _ := json.Marshal(map[string]any{
-			"name":        "售后知识客服助手",
-			"model_name":  "gpt-4o-mini",
+			"name":          "售后知识客服助手",
+			"model_name":    "gpt-4o-mini",
 			"system_prompt": "你是一个专业的售后客服助手",
 		})
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts/"+accIDStr+"/captain/assistants", bytes.NewReader(botBody))
@@ -1155,7 +1160,7 @@ func TestBusinessScenarioVerifications(t *testing.T) {
 		_ = convRepo.Create(&convOld)
 		_ = db.Model(&convOld).Updates(map[string]any{
 			"last_activity_at": oneHourAgo,
-			"created_at":        oneHourAgo,
+			"created_at":       oneHourAgo,
 		}).Error
 
 		// Create Macro that sends a customer reply
@@ -1196,4 +1201,3 @@ func TestBusinessScenarioVerifications(t *testing.T) {
 		}
 	})
 }
-

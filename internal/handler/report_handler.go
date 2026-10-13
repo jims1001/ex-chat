@@ -40,7 +40,7 @@ func parseTimeParam(param string, isEnd bool) *time.Time {
 	}
 	if t, err := time.Parse("2006-01-02", param); err == nil {
 		if isEnd {
-			utc := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
+			utc := t.AddDate(0, 0, 1).UTC()
 			return &utc
 		}
 		utc := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)

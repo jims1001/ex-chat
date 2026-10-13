@@ -2,7 +2,7 @@ package router
 
 import (
 	"context"
-	"fmt"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,29 +11,66 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
+	"github.com/OracleBetX-Projects/ex-chat/internal/billingportal"
+	"github.com/OracleBetX-Projects/ex-chat/internal/channel"
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
 	"github.com/OracleBetX-Projects/ex-chat/internal/handler"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
+	"github.com/OracleBetX-Projects/ex-chat/internal/modruntime"
+	"github.com/OracleBetX-Projects/ex-chat/internal/payment"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/ratelimit"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/uploadpath"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type Options struct {
-	WebhookHTTPClient  *http.Client
-	AdvancedHTTPClient *http.Client
+	BillingPortalProvider billingportal.Provider
+	BillingPortalConfig   *billingportal.Config
+	ChannelTextTransport  channel.TextTransport
+	ChannelConfig         *channel.Config
+	WebhookHTTPClient     *http.Client
+	AdvancedHTTPClient    *http.Client
+	EmailSender           service.EmailSender
+	BackgroundContext     context.Context
+	background            *routerBackground
 }
 
 func SetupRouter(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 	return SetupRouterWithOptions(cfg, db, hub, Options{})
 }
 
+// SetupRouterWithLifecycle preserves router behavior and returns an idempotent
+// stop function. Stop cancels and joins router-owned background work; callers
+// must stop serving requests before calling it, and close the database afterward.
+func SetupRouterWithLifecycle(cfg *config.Config, db *gorm.DB, hub *ws.Hub, options Options) (*gin.Engine, func()) {
+	background := newRouterBackground(options.BackgroundContext)
+	options.background = background
+	engine := SetupRouterWithOptions(cfg, db, hub, options)
+	return engine, background.stop
+}
+
 func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, options Options) *gin.Engine {
+	background := options.background
+	if background == nil {
+		background = newRouterBackground(options.BackgroundContext)
+	}
+	composed := false
+	defer func() {
+		if !composed {
+			background.stop()
+		}
+	}()
+	// Start only after composition succeeds, so a setup panic cannot leak workers.
+	if err := modruntime.ClaimAutomationMode(context.Background(), db, cfg.AutomationExecutionMode); err != nil {
+		panic(err)
+	}
 	r := gin.New()
 	if len(cfg.TrustedProxies) == 0 {
 		_ = r.SetTrustedProxies(nil)
@@ -44,7 +81,9 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	// 1. 全局拦截器：统一上下文与全链路跟踪 (API-03 规范)
 	r.Use(foundation.UnifiedContextMiddleware())
 	r.Use(middleware.RequestLogger())
+	r.Use(middleware.ReportCountErrorAdapter())
 	r.Use(middleware.RecoveryLogger())
+	r.Use(middleware.ReportCountRecovery())
 
 	// 2. CORS 跨域治理
 	r.Use(func(c *gin.Context) {
@@ -86,7 +125,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	portalRepo := repository.NewPortalRepositoryWithUserPort(db, userRepo)
 	webhookRepo := repository.NewWebhookRepository(db)
 	enterpriseRepo := repository.NewEnterpriseRepository(db)
-	macroRepo := repository.NewMacroRepository(db)
+	macroRepo := repository.NewMacroRepositoryWithOwnerPorts(db, convRepo, accountRepo, teamRepo, labelRepo, msgRepo)
 	notificationRepo := repository.NewNotificationRepository(db)
 	csatRepo := repository.NewCSATRepository(db)
 	platformRepo := repository.NewPlatformRepository(db)
@@ -95,7 +134,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	campaignRepo := repository.NewCampaignRepository(db)
 	slaRepo := repository.NewSLARepository(db)
 	agentBotRepo := repository.NewAgentBotRepository(db)
-	attachmentRepo := repository.NewAttachmentRepository(db)
+	attachmentRepo := repository.NewAttachmentRepositoryWithOwnerPorts(db, msgRepo, convRepo, contactRepo, inboxRepo)
 	channelEnterpriseRepo := repository.NewChannelAuthEnterpriseRepository(db)
 	assignmentPolicyRepo := repository.NewAssignmentPolicyRepository(db)
 	agentCapacityPolicyRepo := repository.NewAgentCapacityPolicyRepository(db)
@@ -108,7 +147,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	captainRepo := repository.NewCaptainRepository(db)
 	aiCustomToolRepo := repository.NewAICustomToolRepository(db)
 	widgetRepo := repository.NewWidgetRepository(db)
-	publicRepo := repository.NewPublicRepository(db)
+	publicRepo := repository.NewPublicRepositoryWithOwnerPorts(inboxRepo, contactRepo, convRepo, msgRepo)
 	dashboardAppRepo := repository.NewDashboardAppRepository(db)
 	ticketRepo := repository.NewTicketRepository(db)
 	qaRepo := repository.NewQARepositoryWithOwnerPortsAndUsers(db, ticketRepo, convRepo, userRepo)
@@ -122,9 +161,30 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	reportService.SetOwnerRepositories(convRepo, inboxRepo, msgRepo, contactRepo, labelRepo)
 	reportService.SetWorkforceRepositories(accountRepo, teamRepo, userRepo)
 	reportService.SetBotOwner(agentBotRepo)
+	reportService.SetCountOwners(convRepo, msgRepo)
+	reportService.SetSummaryMessageOwner(msgRepo)
 	pushService := service.NewPushService(db, deviceRepo)
+	pushService.SetFirebaseConfigOwner(repository.NewSystemConfigRepository(db))
 	pushService.SetUserRepo(userRepo)
+	var automationBridge *modruntime.AutomationBridge
 	automationService := service.NewAutomationServiceWithOwnerPorts(db, convRepo, msgRepo, labelRepo, accountRepo, teamRepo, contactRepo)
+	automationService.SetAutomationHistoryProjector(modruntime.AutomationHistoryCompatibilityView)
+	automationService.SetAutomationCompatibilityProjector(modruntime.AutomationRuleCompatibilityView)
+	if cfg.AutomationExecutionMode == "durable" {
+		automationService.SetDurableExecution(true)
+		if err := automationService.PrepareDurableRules(); err != nil {
+			panic("automation rule freeze failed: " + err.Error())
+		}
+		convRepo.SetAutomationCapture(true)
+		msgRepo.SetAutomationCapture(true)
+		bridge, err := modruntime.NewMonolithAutomation(db, repository.NewCreationWorkflowCoordinator(convRepo, msgRepo), convRepo, msgRepo)
+		if err != nil {
+			panic("automation contract initialization failed: " + err.Error())
+		}
+		automationService.SetAutomationCanceller(bridge)
+		automationBridge = bridge
+	}
+
 	webhookService := service.NewWebhookService(db, webhookRepo)
 	if options.WebhookHTTPClient != nil {
 		webhookService.SetHTTPClient(options.WebhookHTTPClient)
@@ -140,11 +200,24 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	if cfg != nil && cfg.Environment == "test" {
 		emailService.SetAllowMock(true)
 	}
+	if options.EmailSender != nil {
+		emailService.SetSender(options.EmailSender)
+	}
 	emailLogHandler := handler.NewEmailLogHandler(emailLogRepo, emailService)
+	accountTranscripts, err := modruntime.NewAccountTranscriptBridge(db, os.Getenv)
+	if err != nil {
+		panic(err)
+	}
+	emailLogHandler.SetDeliveryQueue(accountTranscripts)
+	widgetTranscripts, err := modruntime.NewWidgetTranscriptBridge(db, os.Getenv)
+	if err != nil {
+		panic(err)
+	}
 
 	// API 处理器 (Handlers)
 	authHandler := handler.NewAuthHandler(cfg, userRepo, accountRepo)
 	accountHandler := handler.NewAccountHandler(accountRepo, userRepo)
+	invitationHandler := handler.NewAgentInvitationHandler(accountRepo, userRepo, emailService)
 	inboxHandler := handler.NewInboxHandler(inboxRepo, userRepo)
 	inboxHandler.SetJWTSecret(cfg.JWTSecret)
 	inboxHandler.SetCaptainRepo(captainRepo)
@@ -153,15 +226,19 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	inboxHandler.SetAssignmentPolicyRepo(assignmentPolicyRepo)
 	inboxHandler.SetContactRepo(contactRepo)
 	contactHandler := handler.NewContactHandler(contactRepo, inboxRepo)
+	contactHandler.SetJWTSecret(cfg.JWTSecret)
 	contactHandler.SetExtraRepos(labelRepo, companyRepo)
 	contactExtensionHandler := handler.NewContactExtensionHandler(contactRepo, contactExtensionRepo)
 	companyExtensionHandler := handler.NewCompanyExtensionHandler(companyRepo, companyExtensionRepo)
 	convHandler := handler.NewConversationHandler(convRepo, msgRepo, inboxRepo, contactRepo, routingService, hub)
+	convHandler.SetJWTSecret(cfg.JWTSecret)
 	convHandler.SetAutomationAndWebhook(automationService, webhookService)
 	convHandler.SetPushService(pushService)
 	convHandler.SetNotificationRepo(notificationRepo)
 	convHandler.SetSLAService(slaService)
 	convHandler.SetEmailService(emailService)
+	convHandler.SetAccountTranscriptQueue(accountTranscripts)
+	convHandler.SetWidgetTranscriptQueue(widgetTranscripts, channelEnterpriseRepo)
 	convHandler.SetCampaignService(campaignService)
 	convHandler.SetCaptainRepo(captainRepo)
 	convHandler.SetEnterpriseRepo(channelEnterpriseRepo)
@@ -182,6 +259,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	platformHandler := handler.NewPlatformHandler(platformRepo, userRepo)
 	platformHandler.SetJWTSecret(cfg.JWTSecret)
 	publicHandler := handler.NewPublicHandler(inboxRepo, contactRepo, convRepo, msgRepo)
+	publicHandler.SetJWTSecret(cfg.JWTSecret)
 	publicHandler.SetPublicRepository(publicRepo)
 	publicHandler.SetAutomationAndWebhook(automationService, webhookService)
 	publicHandler.SetPushAndHub(pushService, hub)
@@ -189,6 +267,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	deviceHandler := handler.NewDeviceHandler(deviceRepo)
 	advancedHandler := handler.NewAdvancedHandler(db, companyRepo, campaignRepo, slaRepo, agentBotRepo, attachmentRepo)
 	advancedHandler.SetServices(campaignService, slaService)
+	advancedHandler.SetDurableAutomation(cfg.AutomationExecutionMode == "durable")
 	advancedHandler.SetEventServices(convRepo, routingService, automationService, webhookService, pushService, notificationRepo, hub)
 	storageService := service.NewLocalStorageService("uploads", cfg.JWTSecret)
 	advancedHandler.SetStorageService(storageService)
@@ -206,7 +285,45 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		advancedHandler.SetHTTPClient(options.AdvancedHTTPClient)
 	}
 	channelDriverHandler := handler.NewChannelDriverHandler(channelEnterpriseRepo, inboxRepo, contactRepo, convRepo, msgRepo)
+	channelDriverHandler.SetRecordingStorage(storageService)
+	channelDriverHandler.SetCallReadAuthorization(accountRepo, teamRepo)
+	channelConfig := channel.ConfigFromEnvironment()
+	if options.ChannelConfig != nil {
+		channelConfig = *options.ChannelConfig
+	}
+	channelDriverHandler.SetChannelIngressService(service.NewChannelIngressService(channelConfig, nil, inboxRepo, contactRepo, convRepo, msgRepo))
+	channelTextOwner := service.NewChannelTextOwner(channelConfig, options.ChannelTextTransport, inboxRepo)
+	channelOutbound := service.NewChannelOutboundService(channelTextOwner, convRepo, msgRepo)
+	channelDriverHandler.SetChannelOutboundService(channelOutbound)
+	convHandler.SetChannelOutboundService(channelOutbound)
+	if options.BackgroundContext != nil && channelConfig.OutboundEnabled {
+		background.add(func(ctx context.Context) {
+			channelOutbound.Run(ctx, func(error) { logger.WithComponent("channel").Warn("outbound text work pending") })
+		})
+	}
 	authEnterpriseHandler := handler.NewAuthEnterpriseHandler(channelEnterpriseRepo, userRepo, accountRepo, portalRepo, contactRepo, inboxRepo, convRepo, cfg)
+	authEnterpriseHandler.SetEmailService(emailService)
+	billingProvider := options.BillingPortalProvider
+	if billingProvider == nil {
+		billingProvider = billingportal.ProviderFromEnvironment()
+	}
+	billingConfig := billingportal.ConfigFromEnvironment()
+	if options.BillingPortalConfig != nil {
+		billingConfig = *options.BillingPortalConfig
+	}
+	authEnterpriseHandler.SetBillingPortalService(billingportal.NewService(repository.NewBillingCustomerRepository(db), billingProvider, billingConfig))
+
+	paymentService := payment.NewService(repository.NewPaymentBILRepository(db), repository.NewPaymentENTRepository(db),
+		payment.NewStripeProvider(os.Getenv("STRIPE_SECRET_KEY"), os.Getenv("STRIPE_WEBHOOK_SECRET")), payment.ConfigFromEnvironment())
+	authEnterpriseHandler.SetPaymentService(paymentService)
+	if options.BackgroundContext != nil {
+		background.add(func(ctx context.Context) {
+			paymentService.RunPending(ctx, func(error) {
+				// Provider/DB error bodies may contain sensitive data; retry remains durable.
+				logger.WithComponent("payment_reconcile").Warn("verified payment fulfillment remains pending; will retry")
+			})
+		})
+	}
 	migrationService := service.NewMigrationService(db)
 	authEnterpriseHandler.SetMigrationService(migrationService)
 	dataImportService := service.NewDataImportServiceWithContactOwner(db, contactRepo)
@@ -220,6 +337,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	agentCapacityPolicyHandler := handler.NewAgentCapacityPolicyHandler(agentCapacityPolicyRepo)
 	agentCapacityPolicyHandler.SetOwnerRepositories(accountRepo, inboxRepo)
 	csatHandler := handler.NewCSATHandler(csatExtensionRepo, msgRepo, convRepo, inboxRepo, contactRepo, accountRepo)
+	csatHandler.SetAuthRepositories(userRepo, channelEnterpriseRepo)
 	csatHandler.SetJWTSecret(cfg.JWTSecret)
 	appliedSLAHandler := handler.NewAppliedSLAHandler(db, appliedSLARepo, slaService, convRepo)
 	copilotThreadHandler := handler.NewCopilotThreadHandler(db, copilotThreadRepo, convRepo, msgRepo, captainRepo)
@@ -235,13 +353,13 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 	qaHandler := handler.NewQAHandler(qaRepo)
 
 	// 后台周期巡检与调度引擎 (Background Schedulers)
-	campaignService.StartScheduledCampaignWorker(context.Background(), 1*time.Minute)
-	slaService.StartSLAScheduler(context.Background(), 1*time.Minute)
-	emailService.StartEmailRetryWorker(context.Background(), 1*time.Minute)
+	background.add(func(ctx context.Context) { <-campaignService.StartScheduledCampaignWorker(ctx, 1*time.Minute) })
+	background.add(func(ctx context.Context) { <-slaService.StartSLAScheduler(ctx, 1*time.Minute) })
+	background.add(func(ctx context.Context) { <-emailService.StartEmailRetryWorker(ctx, 1*time.Minute) })
 
 	// 安全上传资源服务与下载控制 (Secure Uploads Serving)
 	_ = os.MkdirAll("uploads", 0755)
-	r.GET("/uploads/*filepath", serveSecureUploadFile(storageService, userRepo, accountRepo, inboxRepo, cfg))
+	r.GET("/uploads/*filepath", serveSecureUploadFile(storageService, userRepo, accountRepo, attachmentRepo, channelEnterpriseRepo, cfg))
 
 	// 1. 健康检查与就绪探针
 	r.GET("/health", func(c *gin.Context) {
@@ -278,23 +396,24 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 			},
 		})
 	})
-	r.GET("/super_admin/instance_status", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":   "online",
-			"version":  "4.16.0",
-			"database": "sqlite",
-		})
-	})
+	instanceStatusHandler := handler.NewInstanceStatusHandler(db)
+	// Installation diagnostics use the same live SuperAdmin policy as the
+	// management API, while retaining the documented root-level route.
+	r.GET("/super_admin/instance_status",
+		middleware.AuthMiddleware(cfg.JWTSecret, userRepo, channelEnterpriseRepo),
+		middleware.RequireSuperAdmin(cfg), instanceStatusHandler.Get)
 
 	// 2. 实时通信 WebSocket 长连接 (RTM)
-	r.GET("/cable", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, convRepo, channelEnterpriseRepo))
-	r.GET("/ws", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, convRepo, channelEnterpriseRepo))
+	r.GET("/cable", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, convRepo, contactRepo, channelEnterpriseRepo))
+	r.GET("/ws", ws.ServeWS(hub, cfg, userRepo, accountRepo, inboxRepo, convRepo, contactRepo, channelEnterpriseRepo))
 
 	// 3. 访客侧 Public Widget 接口
 	widget := r.Group("/api/v1/widget")
+	widget.Use(middleware.VisitorTokenRevocation(channelEnterpriseRepo))
+	widgetLimiter := ratelimit.New(60, 120)
 	{
 		widget.GET("/config", inboxHandler.WidgetConfig)
-		widget.POST("/config", inboxHandler.WidgetConfigCreate)
+		widget.POST("/config", middleware.IPRateLimit(widgetLimiter), inboxHandler.WidgetConfigCreate)
 
 		// 访客联系人识别与读取
 		widget.GET("/contact", widgetHandler.GetContact)
@@ -305,8 +424,6 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		widget.POST("/contact/custom_attributes", widgetHandler.MergeContactCustomAttributes)
 		widget.POST("/contact/destroy_custom_attributes", widgetHandler.DestroyContactCustomAttributes)
 		widget.DELETE("/contact/custom_attributes", widgetHandler.DestroyContactCustomAttributes)
-
-		widgetLimiter := ratelimit.New(60, 120)
 
 		// 访客会话历史列表与单条会话详情
 		widget.GET("/conversations", widgetHandler.ListConversations)
@@ -326,6 +443,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		widget.POST("/conversations/update_last_seen", convHandler.WidgetUpdateLastSeen)
 		widget.POST("/conversations/toggle_typing", convHandler.WidgetToggleTyping)
 		widget.POST("/conversations/transcript", convHandler.WidgetSendTranscript)
+		widget.GET("/conversations/:id/transcript/:email_log_id", convHandler.WidgetTranscriptStatus)
 
 		// 收件箱成员列表
 		widget.GET("/inbox_members", widgetHandler.ListInboxMembers)
@@ -364,6 +482,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 
 	// 4.1 客户侧公开接口 (Public API & CSAT)
 	publicGroup := r.Group("/public/api/v1")
+	publicGroup.Use(middleware.VisitorTokenRevocation(channelEnterpriseRepo))
 	{
 		publicGroup.GET("/inboxes/:identifier", publicHandler.GetPublicInbox)
 
@@ -471,16 +590,19 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		authGroup.DELETE("/sign_out", authHandler.SignOut)
 		authGroup.POST("/sign_out", authHandler.SignOut)
 		authGroup.GET("/validate_token", middleware.AuthMiddleware(cfg.JWTSecret, userRepo, channelEnterpriseRepo), authHandler.ValidateToken)
+		authGroup.POST("/invitations/preview", middleware.IPRateLimit(authLimiter), invitationHandler.PreviewAgentInvitation)
+		authGroup.POST("/invitations/activate", middleware.IPRateLimit(authLimiter), invitationHandler.ActivateAgentInvitation)
 		authGroup.GET("/confirmation", authHandler.ConfirmEmail)
 		authGroup.POST("/confirmation", authHandler.ConfirmEmail)
 		authGroup.POST("/confirmation/resend", authHandler.ResendConfirmation)
-		authGroup.POST("/mfa/verify", authHandler.VerifyMFAForLogin)
+		authGroup.POST("/mfa/verify", middleware.IPRateLimit(authLimiter), authHandler.VerifyMFAForLogin)
 		authGroup.POST("/password", middleware.IPRateLimit(authLimiter), authEnterpriseHandler.RequestPasswordReset)
-		authGroup.PUT("/password", authEnterpriseHandler.ResetPassword)
+		authGroup.PUT("/password", middleware.IPRateLimit(authLimiter), authEnterpriseHandler.ResetPassword)
 	}
 
 	// 5.1 第三方单点登录与 OAuth 回调 (SSO / OAuth)
 	r.GET("/omniauth/google_oauth2/callback", authEnterpriseHandler.GoogleOAuthCallback)
+	r.POST("/omniauth/google_oauth2/callback", authEnterpriseHandler.GoogleOAuthCallback)
 	r.POST("/api/v1/auth/saml_login", authEnterpriseHandler.InitiateSAMLLogin)
 	r.POST("/omniauth/saml/callback", authEnterpriseHandler.SAMLCallback)
 
@@ -490,14 +612,16 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		channelWebhook.GET("/whatsapp/callback", channelDriverHandler.VerifyWhatsAppWebhook)
 		channelWebhook.POST("/whatsapp/callback", channelDriverHandler.HandleWhatsAppWebhook)
 		channelWebhook.POST("/twilio/callback", channelDriverHandler.HandleTwilioWebhook)
+		channelWebhook.POST("/twilio/status/:attempt_id", channelDriverHandler.HandleTwilioStatus)
 		channelWebhook.GET("/callbacks", channelDriverHandler.VerifyFacebookWebhook)
 		channelWebhook.POST("/callbacks", channelDriverHandler.HandleFacebookWebhook)
 	}
 
 	// 6. 鉴权与租户保护接口
 	api := r.Group("/")
-	api.Use(middleware.AuthMiddleware(cfg.JWTSecret, userRepo, channelEnterpriseRepo))
+	api.Use(middleware.ReportCountAuthAdapter(cfg.JWTSecret, userRepo, channelEnterpriseRepo, middleware.AuthMiddleware(cfg.JWTSecret, userRepo, channelEnterpriseRepo)))
 	{
+		api.POST("/api/v1/agent_invitations/accept", invitationHandler.AcceptAgentInvitation)
 		api.GET("/api/v1/profile", authHandler.Profile)
 		api.PUT("/api/v1/profile", authHandler.UpdateProfile)
 		api.DELETE("/api/v1/profile/sign_out", authHandler.SignOut)
@@ -506,6 +630,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		api.POST("/api/v1/profile/resend_confirmation", authHandler.ResendConfirmation)
 		api.POST("/api/v1/profile/availability", authHandler.UpdateAvailability)
 		api.GET("/api/v1/profile/mfa", authEnterpriseHandler.GetMFAProfile)
+		api.POST("/api/v1/profile/mfa/setup", authEnterpriseHandler.SetupMFA)
 		api.POST("/api/v1/profile/mfa", authEnterpriseHandler.EnableMFA)
 		api.POST("/api/v1/profile/mfa/verify", authEnterpriseHandler.VerifyMFA)
 		api.POST("/api/v1/profile/mfa/backup_codes", authEnterpriseHandler.GenerateBackupCodes)
@@ -524,7 +649,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 
 		// 租户空间路由组 (严格多租户数据隔离)
 		tenant := api.Group("/api/v1/accounts/:account_id")
-		tenant.Use(middleware.TenantMiddleware(accountRepo))
+		tenant.Use(middleware.ReportCountTenantAdapter(accountRepo, middleware.TenantMiddleware(accountRepo)))
 		reqPerm := func(permission string) gin.HandlerFunc {
 			return middleware.RequirePermission(accountRepo, permission)
 		}
@@ -536,7 +661,9 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 			tenant.GET("", accountHandler.GetAccount)
 			tenant.PUT("", reqPerm(domain.PermissionSettingsManage), accountHandler.UpdateAccount)
 			tenant.GET("/agents", accountHandler.ListAgents)
-			tenant.POST("/agents", reqPerm(domain.PermissionAgentManage), accountHandler.AddAgent)
+			tenant.POST("/agents", reqPerm(domain.PermissionAgentManage), invitationHandler.AddAgent)
+			tenant.GET("/agent_invitations", reqPerm(domain.PermissionAgentManage), invitationHandler.ListAgentInvitations)
+			tenant.DELETE("/agent_invitations/:id", reqPerm(domain.PermissionAgentManage), invitationHandler.RevokeAgentInvitation)
 			tenant.PUT("/agents/:id", reqPerm(domain.PermissionAgentManage), accountHandler.UpdateAgent)
 			tenant.DELETE("/agents/:id", reqPerm(domain.PermissionAgentManage), accountHandler.RemoveAgent)
 
@@ -679,6 +806,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 			tenant.PATCH("/conversations/:id/custom_attributes", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.UpdateCustomAttributes)
 			tenant.GET("/conversations/:id/attachments", convHandler.ListConversationAttachments)
 			tenant.GET("/conversations/:id/assistant", convHandler.GetConversationAssistant)
+			tenant.GET("/conversations/:id/inbox_assistant", convHandler.GetConversationInboxAssistant)
 			tenant.GET("/conversations/:id/reporting_events", convHandler.ListConversationReportingEvents)
 			tenant.POST("/conversations/:id/toggle_status", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.ToggleStatus)
 			tenant.POST("/conversations/:id/assignments", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.Assign)
@@ -688,6 +816,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 			tenant.PATCH("/conversations/:id/messages/:message_id", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.UpdateMessage)
 			tenant.DELETE("/conversations/:id/messages/:message_id", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.DeleteMessage)
 			tenant.POST("/conversations/:id/messages/:message_id/retry", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.RetryMessage)
+			tenant.POST("/conversations/:id/messages/:message_id/reconcile", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.ReconcileMessage)
 			tenant.POST("/conversations/:id/messages/:message_id/translate", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.TranslateMessage)
 			tenant.POST("/messages/:id/translate", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.TranslateMessage)
 			tenant.POST("/conversations/:id/update_last_seen", reqPermFallback(domain.PermissionConversationManage, domain.RoleAgent, domain.RoleAdministrator), convHandler.UpdateLastSeen)
@@ -827,6 +956,8 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 
 			// 自动化规则 (OPS / Automation Rules)
 			tenant.GET("/automation_rules", advancedHandler.ListAutomationRules)
+			tenant.GET("/automation_rules/compatibility", reqPerm(domain.PermissionAutomationManage), advancedHandler.ListAutomationRuleCompatibility)
+			tenant.POST("/automation_executions/:execution_id/cancel", reqPerm(domain.PermissionAutomationManage), advancedHandler.CancelAutomationRuleExecution)
 			tenant.GET("/automation_rules/executions", advancedHandler.ListAutomationRuleExecutions)
 			tenant.GET("/automation_rules/executions/:execution_id", advancedHandler.GetAutomationRuleExecution)
 			tenant.POST("/automation_rules", reqPerm(domain.PermissionAutomationManage), advancedHandler.CreateAutomationRule)
@@ -1108,9 +1239,9 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 			tenant.GET("/audit_integrity/verifications/:verification_id", reqPerm(domain.PermissionAuditManage), auditHandler.GetIntegrityVerification)
 
 			// 外部渠道命令与授权 (CHAN)
-			tenant.POST("/whatsapp/authorization", channelDriverHandler.WhatsAppAuthorization)
-			tenant.POST("/whatsapp/csat_template", channelDriverHandler.SetWhatsAppCSATTemplate)
-			tenant.POST("/channels/twilio_channel", channelDriverHandler.CreateTwilioChannel)
+			tenant.POST("/whatsapp/authorization", reqPerm(domain.PermissionInboxManage), channelDriverHandler.WhatsAppAuthorization)
+			tenant.POST("/whatsapp/csat_template", reqPerm(domain.PermissionInboxManage), channelDriverHandler.SetWhatsAppCSATTemplate)
+			tenant.POST("/channels/twilio_channel", reqPerm(domain.PermissionInboxManage), channelDriverHandler.CreateTwilioChannel)
 
 			// 语音呼叫与 WebRTC 会议 (CHAN / Calls & Conference)
 			tenant.GET("/calls", channelDriverHandler.ListCalls)
@@ -1208,6 +1339,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 
 			// 邮件投递记录、退信与重试 (Email Logs Lifecycle)
 			tenant.GET("/email_logs", emailLogHandler.List)
+			tenant.GET("/email_logs/:id", emailLogHandler.Detail)
 			tenant.POST("/email_logs/:id/retry", reqPerm(domain.PermissionSettingsManage), emailLogHandler.Retry)
 			tenant.POST("/email_logs/:id/bounce", reqPerm(domain.PermissionSettingsManage), emailLogHandler.Bounce)
 
@@ -1224,6 +1356,7 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 
 		// 业务度量报表路由注册器 (支持 V1 与 V2 路径全面兼容)
 		registerReports := func(rg *gin.RouterGroup) {
+			rg.GET("", reportHandler.GetCountSeries)
 			rg.GET("/summary", reportHandler.GetSummary)
 			rg.GET("/agents", reportHandler.GetAgentMetrics)
 			rg.GET("/csat", macroHandler.GetCSATReport)
@@ -1261,13 +1394,13 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 
 		// 业务度量报表 (RPT / V2 API)
 		reports := api.Group("/api/v2/accounts/:account_id/reports")
-		reports.Use(middleware.TenantMiddleware(accountRepo))
-		reports.Use(middleware.RequirePermission(accountRepo, domain.PermissionReportView))
+		reports.Use(middleware.ReportCountTenantAdapter(accountRepo, middleware.TenantMiddleware(accountRepo)))
+		reports.Use(middleware.ReportCountPermissionAdapter(accountRepo, middleware.RequirePermission(accountRepo, domain.PermissionReportView)))
 		registerReports(reports)
 
 		// V1 兼容路由
 		reportsV1 := tenant.Group("/reports")
-		reportsV1.Use(middleware.RequirePermission(accountRepo, domain.PermissionReportView))
+		reportsV1.Use(middleware.ReportCountPermissionAdapter(accountRepo, middleware.RequirePermission(accountRepo, domain.PermissionReportView)))
 		registerReports(reportsV1)
 
 		// V2 汇总报表 (Summary Reports: agent, team, inbox, label, channel)
@@ -1320,141 +1453,182 @@ func SetupRouterWithOptions(cfg *config.Config, db *gorm.DB, hub *ws.Hub, option
 		}
 	}
 
+	// Start only after every handler, owner port, and setter is composed. A
+	// restarted worker may immediately recover a pending creation workflow.
+	if options.BackgroundContext != nil {
+		background.add(func(ctx context.Context) { <-routingService.StartSnoozeScheduler(ctx, service.DefaultSnoozeInterval) })
+	}
+	if automationBridge != nil && options.BackgroundContext != nil {
+		background.add(func(ctx context.Context) {
+			automationBridge.Run(ctx, func(err error) {
+				logger.WithComponent("automation_bridge").Warn("durable automation deferred", "error", err.Error())
+			})
+		})
+	}
+	background.start()
+	composed = true
 	return r
 }
 
-func serveSecureUploadFile(storageService service.StorageService, userRepo *repository.UserRepository, accountRepo *repository.AccountRepository, inboxRepo *repository.InboxRepository, cfg *config.Config) gin.HandlerFunc {
+// uploadTokenRevocations deliberately fails closed if the durable revocation
+// check is unavailable. File downloads must enforce the same session lifecycle
+// as ordinary authenticated API requests.
+type uploadTokenRevocations interface {
+	IsTokenRevoked(string) (bool, error)
+}
+
+func serveSecureUploadFile(storageService service.StorageService, userRepo *repository.UserRepository, accountRepo *repository.AccountRepository, attachmentRepo *repository.AttachmentRepository, revocations uploadTokenRevocations, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rawPath := c.Param("filepath")
-		cleanRelPath := filepath.Clean(strings.TrimPrefix(rawPath, "/"))
-		if strings.HasPrefix(cleanRelPath, "..") || strings.Contains(cleanRelPath, "/../") {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "path traversal detected"})
+		key, err := uploadpath.CanonicalKey(strings.TrimPrefix(c.Param("filepath"), "/"))
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid upload path"})
 			return
 		}
-
-		fullPath := filepath.Join("uploads", cleanRelPath)
-		fileInfo, err := os.Stat(fullPath)
-		if err != nil || fileInfo.IsDir() {
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "file not found"})
-			return
-		}
-
-		// Security Headers (mitigate Stored XSS & MIME sniffing)
-		c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
-		c.Writer.Header().Set("X-Frame-Options", "DENY")
-		c.Writer.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
-
-		ext := strings.ToLower(filepath.Ext(cleanRelPath))
-		dangerousExts := map[string]bool{
-			".html": true, ".htm": true, ".svg": true, ".xml": true,
-			".js": true, ".sh": true, ".exe": true, ".php": true,
-			".py": true, ".rb": true, ".bat": true, ".cmd": true,
-		}
-		if dangerousExts[ext] {
-			c.Writer.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(cleanRelPath)+"\"")
-			c.Writer.Header().Set("Content-Type", "application/octet-stream")
-		}
-
-		// 1. Signed URL Check:
-		expiresStr := c.Query("expires")
-		sig := c.Query("signature")
-		if sig == "" {
-			sig = c.Query("sig")
-		}
-		if expiresStr != "" && sig != "" {
-			exp, err := strconv.ParseInt(expiresStr, 10, 64)
-			if err == nil {
-				key := "/" + filepath.ToSlash(fullPath)
-				if storageService != nil && (storageService.VerifySignedURL(c.Request.Context(), key, exp, sig) ||
-					storageService.VerifySignedURL(c.Request.Context(), cleanRelPath, exp, sig)) {
-					c.File(fullPath)
-					return
-				}
+		// A signature is a capability for this exact canonical file, not an inbox.
+		// Explicit malformed credentials never downgrade to another auth branch.
+		q := c.Request.URL.Query()
+		_, expiresPresent := q["expires"]
+		_, sigPresent := q["sig"]
+		_, signaturePresent := q["signature"]
+		authorized := false
+		if expiresPresent || sigPresent || signaturePresent {
+			sig := c.Query("sig")
+			if signaturePresent {
+				sig = c.Query("signature")
 			}
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired signature"})
-			return
-		}
-
-		// 2. JWT Bearer Token Check (Header or ?token=):
-		tokenStr := ""
-		authHeader := c.GetHeader("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			tokenStr = strings.TrimPrefix(authHeader, "Bearer ")
-		} else if qToken := c.Query("token"); qToken != "" {
-			tokenStr = qToken
-		}
-
-		if tokenStr != "" {
-			claims, err := auth.ValidateToken(tokenStr, cfg.JWTSecret)
-			if err == nil && claims != nil {
-				if !strings.HasPrefix(cleanRelPath, "widget/inbox_") && !strings.HasPrefix(cleanRelPath, "account_") {
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "signed URL required for this file"})
-					return
-				}
-				if strings.HasPrefix(cleanRelPath, "widget/inbox_") {
-					var inboxID uint64
-					if _, err := fmt.Sscanf(cleanRelPath, "widget/inbox_%d/", &inboxID); err != nil || inboxID == 0 {
-						c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid widget upload path"})
-						return
-					}
-					inbox, err := inboxRepo.FindByGlobalID(uint(inboxID))
-					if err != nil || inbox == nil {
-						c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "inbox not found"})
-						return
-					}
-					membership, _ := accountRepo.GetMembership(inbox.AccountID, claims.UserID)
-					if membership == nil {
-						c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: no access to this inbox's files"})
-						return
-					}
-				}
-				// Verify user belongs to the account if path contains account_X
-				parts := strings.Split(cleanRelPath, string(filepath.Separator))
-				if len(parts) > 0 && strings.HasPrefix(parts[0], "account_") {
-					var accID uint64
-					if _, err := fmt.Sscanf(parts[0], "account_%d", &accID); err == nil && accID > 0 {
-						accounts, _ := accountRepo.ListAccountsForUser(claims.UserID)
-						var hasAccess bool
-						for _, acc := range accounts {
-							if acc.ID == uint(accID) {
-								hasAccess = true
-								break
-							}
-						}
-						if !hasAccess {
-							c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: no access to this account's files"})
-							return
-						}
-					}
-				}
-				c.File(fullPath)
+			exp, parseErr := strconv.ParseInt(c.Query("expires"), 10, 64)
+			if parseErr != nil || sig == "" || storageService == nil || !storageService.VerifySignedURL(c.Request.Context(), key, exp, sig) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired signature"})
 				return
 			}
-		}
-
-		// 3. Visitor Token Check (?visitor_token= or ?contact_token=):
-		visToken := c.Query("visitor_token")
-		if visToken == "" {
-			visToken = c.Query("contact_token")
-		}
-		if visToken != "" {
-			claims, err := auth.ParseVisitorToken(visToken, cfg.JWTSecret)
-			if err == nil && claims != nil {
-				var inboxID uint64
-				if _, err := fmt.Sscanf(cleanRelPath, "widget/inbox_%d/", &inboxID); err == nil && uint(inboxID) == claims.InboxID {
-					c.File(fullPath)
+			authorized = true
+		} else if header := c.GetHeader("Authorization"); header != "" || c.Query("token") != "" {
+			token := c.Query("token")
+			if header != "" {
+				parts := strings.Split(header, " ")
+				if len(parts) != 2 || parts[0] != "Bearer" || parts[1] == "" {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header"})
 					return
 				}
+				token = parts[1]
 			}
+			if cfg == nil || userRepo == nil || accountRepo == nil || attachmentRepo == nil || revocations == nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "file authorization unavailable"})
+				return
+			}
+			claims, err := auth.ValidateToken(token, cfg.JWTSecret)
+			if err != nil || claims == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired access token"})
+				return
+			}
+			revoked, err := revocations.IsTokenRevoked(token)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "file authorization unavailable"})
+				return
+			}
+			if revoked {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
+				return
+			}
+			user, err := userRepo.FindByID(claims.UserID)
+			if err != nil || !auth.ClaimsMatchUser(claims, user) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+				return
+			}
+			accountID, err := attachmentRepo.UploadAccount(c.Request.Context(), key)
+			if err != nil || accountID == 0 {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "file account ownership cannot be established; a signed URL is required"})
+				return
+			}
+			account, err := accountRepo.FindByID(accountID)
+			if err != nil || account == nil {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "file account no longer exists"})
+				return
+			}
+			membership, err := accountRepo.GetMembership(accountID, user.ID)
+			if err != nil || membership == nil {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no access to this account's files"})
+				return
+			}
+			authorized = true
+		} else {
+			// Match widget credential precedence, including explicit invalid/empty
+			// sessions. Source IDs and other unsigned identity hints grant no access.
+			visitorToken := ""
+			for _, name := range []string{"visitor_session", "visitor_token", "contact_token"} {
+				if _, exists := q[name]; exists {
+					visitorToken = c.Query(name)
+					break
+				}
+			}
+			if visitorToken == "" && !q.Has("visitor_session") && !q.Has("visitor_token") && !q.Has("contact_token") {
+				visitorToken = c.GetHeader("X-Visitor-Session")
+				if visitorToken == "" {
+					visitorToken = c.GetHeader("X-Visitor-Token")
+				}
+			}
+			if visitorToken == "" || cfg == nil || attachmentRepo == nil || accountRepo == nil || revocations == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication or a valid per-file signature is required"})
+				return
+			}
+			claims, err := auth.ParseVisitorToken(visitorToken, cfg.JWTSecret)
+			if err != nil || claims == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired visitor session"})
+				return
+			}
+			revoked, err := revocations.IsTokenRevoked(visitorToken)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "file authorization unavailable"})
+				return
+			}
+			if revoked {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "visitor session has been revoked"})
+				return
+			}
+			identity, err := attachmentRepo.UploadVisitorIdentity(c.Request.Context(), claims.InboxID, claims.ContactID, claims.SourceID)
+			if err != nil || identity == nil {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "visitor session no longer matches this profile"})
+				return
+			}
+			account, err := accountRepo.FindByID(identity.AccountID)
+			if err != nil || account == nil {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "file account no longer exists"})
+				return
+			}
+			owner, err := attachmentRepo.VisitorUploadOwner(c.Request.Context(), key)
+			if err != nil || owner == nil || owner.AccountID != identity.AccountID || owner.InboxID != identity.InboxID || owner.ContactID != identity.ContactID {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "file ownership cannot be established for this visitor"})
+				return
+			}
+			authorized = true
 		}
-
-		// Compatibility fallback for automated unit tests:
-		if cfg.Environment == "test" && c.Query("test_direct_access") == "true" {
-			c.File(fullPath)
+		if !authorized {
 			return
 		}
-
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication or valid signature required to access file"})
+		// Serve the already-open descriptor, never reopen a checked path. O_NOFOLLOW
+		// is enforced for every directory and the final file by uploadpath.Open.
+		file, err := uploadpath.Open("uploads", key)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "file not found or unsafe upload path"})
+			return
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "file unavailable"})
+			return
+		}
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
+		c.Header("Cache-Control", "private, no-store")
+		c.Header("Referrer-Policy", "no-referrer")
+		dangerousExts := map[string]bool{".html": true, ".htm": true, ".svg": true, ".xml": true, ".js": true, ".sh": true, ".exe": true, ".php": true, ".py": true, ".rb": true, ".bat": true, ".cmd": true}
+		if dangerousExts[strings.ToLower(filepath.Ext(key))] {
+			c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(key)}))
+			c.Header("Content-Type", "application/octet-stream")
+		}
+		http.ServeContent(c.Writer, c.Request, filepath.Base(key), info.ModTime(), file)
 	}
 }
 

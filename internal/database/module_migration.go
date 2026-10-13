@@ -40,7 +40,8 @@ func ModuleModels(module string) ([]any, error) {
 // recursively follows associations, which would create other owners' tables.
 // Disable that traversal on a private config copy, leaving the combined server
 // unchanged. Cross-module IDs remain scalar references, not database constraints.
-// This is schema preparation only; it does not move data or split repositories.
+// This does not move data or split repositories. Owner-local security cleanup
+// invalidates obsolete credentials after schema preparation.
 func AutoMigrateModule(db *gorm.DB, module string) error {
 	models, err := ModuleModels(module)
 	if err != nil {
@@ -52,5 +53,8 @@ func AutoMigrateModule(db *gorm.DB, module string) error {
 	isolated := db.Session(&gorm.Session{NewDB: true})
 	isolated.Config.IgnoreRelationshipsWhenMigrating = true
 	isolated.Config.DisableForeignKeyConstraintWhenMigrating = true
-	return isolated.AutoMigrate(models...)
+	if err := isolated.AutoMigrate(models...); err != nil {
+		return err
+	}
+	return migrateConfirmationSecurity(isolated, module)
 }

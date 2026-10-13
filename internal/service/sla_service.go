@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -56,33 +57,36 @@ func (s *SLAService) SetOwnerRepositories(inboxes slaInboxPort, messages slaMess
 	}
 }
 
-func (s *SLAService) loadInbox(conv *domain.Conversation) *domain.Inbox {
+func (s *SLAService) loadInbox(conv *domain.Conversation) (*domain.Inbox, error) {
 	if conv == nil || conv.InboxID == 0 {
-		return nil
+		return nil, nil
 	}
 	if conv.Inbox != nil && conv.Inbox.ID == conv.InboxID && conv.Inbox.AccountID == conv.AccountID {
-		return conv.Inbox
+		return conv.Inbox, nil
 	}
 	if s.inboxes == nil {
-		return nil
+		return nil, errors.New("SLA inbox source is not configured")
 	}
 	inbox, err := s.inboxes.FindSummaryByID(conv.AccountID, conv.InboxID)
-	if err != nil || inbox == nil {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	conv.Inbox = inbox
-	return inbox
+	// Healthy missing configuration retains the existing wall-clock fallback.
+	return inbox, nil
 }
 
-func (s *SLAService) loadMessages(conv *domain.Conversation) []domain.Message {
-	if conv == nil || s.messages == nil {
-		return nil
+func (s *SLAService) loadMessages(conv *domain.Conversation) ([]domain.Message, error) {
+	if conv == nil {
+		return nil, nil
+	}
+	if s.messages == nil {
+		return nil, errors.New("SLA message source is not configured")
 	}
 	messages, err := s.messages.ListSLATimeline(conv.AccountID, conv.ID)
 	if err != nil {
-		return nil
+		return nil, err // discard partial rows as well as empty failed reads
 	}
-	return messages
+	return messages, nil
 }
 
 func firstCustomerMessage(messages []domain.Message) *domain.Message {
@@ -94,10 +98,23 @@ func firstCustomerMessage(messages []domain.Message) *domain.Message {
 	return nil
 }
 
+// isSLAHumanResponse excludes known automated senders without redefining
+// unknown historical sender types. Delivery eligibility belongs to ListSLATimeline.
+func isSLAHumanResponse(m *domain.Message) bool {
+	if m.MessageType != domain.MessageTypeOutgoing || m.Private || m.ContentType == "activity" || m.ContentType == "internal_note" || strings.EqualFold(m.SenderType, "contact") {
+		return false
+	}
+	switch m.SenderType {
+	case "AgentBot", "CaptainAssistant", "Captain::Assistant":
+		return false
+	}
+	return true
+}
+
 func firstAgentMessageAfter(messages []domain.Message, after time.Time) *domain.Message {
 	for i := range messages {
 		m := &messages[i]
-		if !m.CreatedAt.Before(after) && m.MessageType == domain.MessageTypeOutgoing && !m.Private && m.ContentType != "activity" && m.ContentType != "internal_note" && !strings.EqualFold(m.SenderType, "contact") {
+		if !m.CreatedAt.Before(after) && isSLAHumanResponse(m) {
 			return m
 		}
 	}
@@ -159,14 +176,21 @@ func (s *SLAService) CalculateBusinessSeconds(inbox *domain.Inbox, startTime, en
 	return CalculateBusinessSeconds(inbox, startTime, endTime)
 }
 
-// EvaluateNextResponse analyzes conversation message history to calculate next response deadline and breach status
-func (s *SLAService) EvaluateNextResponse(conv *domain.Conversation, effectiveInbox *domain.Inbox, threshold int, now time.Time) (nrtDeadline *time.Time, isNRTBreached bool, actualSec int, breachTime time.Time) {
+// EvaluateNextResponse reads one timeline and reports required-source failures.
+// Evaluations that already loaded their facts use evaluateNextResponseMessages.
+func (s *SLAService) EvaluateNextResponse(conv *domain.Conversation, effectiveInbox *domain.Inbox, threshold int, now time.Time) (nrtDeadline *time.Time, isNRTBreached bool, actualSec int, breachTime time.Time, err error) {
 	if threshold <= 0 || conv == nil {
-		return nil, false, 0, time.Time{}
+		return nil, false, 0, time.Time{}, nil
 	}
+	messages, err := s.loadMessages(conv)
+	if err != nil {
+		return nil, false, 0, time.Time{}, err
+	}
+	nrtDeadline, isNRTBreached, actualSec, breachTime = s.evaluateNextResponseMessages(messages, effectiveInbox, threshold, now)
+	return nrtDeadline, isNRTBreached, actualSec, breachTime, nil
+}
 
-	messages := s.loadMessages(conv)
-
+func (s *SLAService) evaluateNextResponseMessages(messages []domain.Message, effectiveInbox *domain.Inbox, threshold int, now time.Time) (nrtDeadline *time.Time, isNRTBreached bool, actualSec int, breachTime time.Time) {
 	type turnMsg struct {
 		isCustomer bool
 		createdAt  time.Time
@@ -175,7 +199,7 @@ func (s *SLAService) EvaluateNextResponse(conv *domain.Conversation, effectiveIn
 	for _, m := range messages {
 		if m.MessageType == domain.MessageTypeIncoming || strings.EqualFold(m.SenderType, "contact") {
 			seq = append(seq, turnMsg{isCustomer: true, createdAt: m.CreatedAt})
-		} else if m.MessageType == domain.MessageTypeOutgoing && !m.Private && m.ContentType != "activity" && m.ContentType != "internal_note" && !strings.EqualFold(m.SenderType, "contact") {
+		} else if isSLAHumanResponse(&m) {
 			seq = append(seq, turnMsg{isCustomer: false, createdAt: m.CreatedAt})
 		}
 	}
@@ -235,31 +259,28 @@ func (s *SLAService) EvaluateNextResponse(conv *domain.Conversation, effectiveIn
 }
 
 // GetConversationSLADeadlines computes deadlines and current breach status for a single conversation
-func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frtDeadline, nrtDeadline, resDeadline *time.Time, isFRTBreached, isNRTBreached, isResBreached bool, policy *domain.SLAPolicy) {
+func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frtDeadline, nrtDeadline, resDeadline *time.Time, isFRTBreached, isNRTBreached, isResBreached bool, policy *domain.SLAPolicy, err error) {
 	if conv == nil {
-		return nil, nil, nil, false, false, false, nil
+		return nil, nil, nil, false, false, false, nil, nil
 	}
-
-	var policies []domain.SLAPolicy
-	_ = s.db.Where("account_id = ?", conv.AccountID).Find(&policies).Error
-	applicablePolicy := s.resolvePolicy(conv, policies)
-	if applicablePolicy.ID == 0 {
-		return nil, nil, nil, false, false, false, nil
+	facts, err := s.loadSLAFacts(conv)
+	if err != nil {
+		return nil, nil, nil, false, false, false, nil, err
 	}
+	if facts.policy.ID == 0 {
+		return nil, nil, nil, false, false, false, nil, nil
+	}
+	applicablePolicy := facts.policy
 	policy = &applicablePolicy
-
-	s.loadInbox(conv)
-
-	var effectiveInbox *domain.Inbox
-	if applicablePolicy.OnlyDuringBusinessHours {
-		effectiveInbox = conv.Inbox
+	effectiveInbox, messages := facts.inbox, facts.messages
+	if facts.loadedInbox != nil {
+		conv.Inbox = facts.loadedInbox
 	}
 
 	now := time.Now().UTC()
 
 	// 1. First Response Deadline
 	startTime := conv.CreatedAt
-	messages := s.loadMessages(conv)
 	if firstCustomerMsg := firstCustomerMessage(messages); firstCustomerMsg != nil {
 		startTime = firstCustomerMsg.CreatedAt
 	}
@@ -268,10 +289,7 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		fDue := s.CalculateDeadline(effectiveInbox, startTime, applicablePolicy.FirstResponseTimeThreshold)
 		frtDeadline = &fDue
 
-		var existingBreach int64
-		_ = s.db.Model(&domain.SLABreachLog{}).
-			Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "first_response").
-			Count(&existingBreach).Error
+		existingBreach := facts.breaches["first_response"]
 
 		if existingBreach > 0 {
 			isFRTBreached = true
@@ -295,12 +313,9 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 
 	// 2. Next Response Deadline
 	if applicablePolicy.NextResponseTimeThreshold > 0 {
-		var existingNRTBreach int64
-		_ = s.db.Model(&domain.SLABreachLog{}).
-			Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "next_response").
-			Count(&existingNRTBreach).Error
+		existingNRTBreach := facts.breaches["next_response"]
 
-		nDue, breached, _, _ := s.EvaluateNextResponse(conv, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
+		nDue, breached, _, _ := s.evaluateNextResponseMessages(messages, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
 		nrtDeadline = nDue
 		if existingNRTBreach > 0 || breached {
 			isNRTBreached = true
@@ -312,10 +327,7 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		rDue := s.CalculateDeadline(effectiveInbox, conv.CreatedAt, applicablePolicy.ResolutionTimeThreshold)
 		resDeadline = &rDue
 
-		var existingResBreach int64
-		_ = s.db.Model(&domain.SLABreachLog{}).
-			Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "resolution").
-			Count(&existingResBreach).Error
+		existingResBreach := facts.breaches["resolution"]
 
 		if existingResBreach > 0 {
 			isResBreached = true
@@ -331,7 +343,7 @@ func (s *SLAService) GetConversationSLADeadlines(conv *domain.Conversation) (frt
 		}
 	}
 
-	return frtDeadline, nrtDeadline, resDeadline, isFRTBreached, isNRTBreached, isResBreached, policy
+	return frtDeadline, nrtDeadline, resDeadline, isFRTBreached, isNRTBreached, isResBreached, policy, nil
 }
 
 // EvaluateConversation evaluates SLA breaches for a single conversation and records logs/updates status
@@ -340,20 +352,29 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 		return nil, nil
 	}
 
-	var policies []domain.SLAPolicy
-	if err := s.db.Where("account_id = ?", conv.AccountID).Find(&policies).Error; err != nil {
+	// Required facts must be complete before EnsureAppliedSLA or any mutation.
+	facts, err := s.loadSLAFacts(conv)
+	if err != nil {
 		return nil, err
 	}
-	applicablePolicy := s.resolvePolicy(conv, policies)
+	applicablePolicy := facts.policy
 	if applicablePolicy.ID == 0 {
 		return nil, nil
 	}
+	effectiveInbox, messages := facts.inbox, facts.messages
 
-	s.loadInbox(conv)
+	// Read existing historical events before creating or changing an application.
+	var existingApplied *domain.AppliedSLA
+	if s.appliedSLARepo != nil {
+		existingApplied, err = s.appliedSLARepo.GetAppliedSLAByConversation(conv.AccountID, conv.ID)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
 
-	var effectiveInbox *domain.Inbox
-	if applicablePolicy.OnlyDuringBusinessHours {
-		effectiveInbox = conv.Inbox
+	// Retain healthy owner hydration, but only after all required facts succeed.
+	if facts.loadedInbox != nil {
+		conv.Inbox = facts.loadedInbox
 	}
 
 	now := time.Now().UTC()
@@ -361,12 +382,14 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 	var appliedSLA *domain.AppliedSLA
 	if s.appliedSLARepo != nil {
-		appliedSLA, _ = s.appliedSLARepo.EnsureAppliedSLA(conv.AccountID, conv.ID, applicablePolicy.ID)
+		appliedSLA, err = s.appliedSLARepo.EnsureAppliedSLA(conv.AccountID, conv.ID, applicablePolicy.ID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 1. First Response Time Evaluation
 	startTime := conv.CreatedAt
-	messages := s.loadMessages(conv)
 	if firstCustomerMsg := firstCustomerMessage(messages); firstCustomerMsg != nil {
 		startTime = firstCustomerMsg.CreatedAt
 	}
@@ -416,10 +439,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 				})
 			}
 
-			var existing int64
-			_ = s.db.Model(&domain.SLABreachLog{}).
-				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "first_response").
-				Count(&existing).Error
+			existing := facts.breaches["first_response"]
 
 			if existing == 0 {
 				breach := domain.SLABreachLog{
@@ -449,7 +469,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 	// 2. Next Response Time Evaluation
 	isNRTBreached := false
 	if applicablePolicy.NextResponseTimeThreshold > 0 {
-		nDue, breached, actualNRTSec, nrtBreachTime := s.EvaluateNextResponse(conv, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
+		nDue, breached, actualNRTSec, nrtBreachTime := s.evaluateNextResponseMessages(messages, effectiveInbox, applicablePolicy.NextResponseTimeThreshold, now)
 		isNRTBreached = breached
 		updates["next_response_due_at"] = nDue
 
@@ -471,10 +491,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 				})
 			}
 
-			var existing int64
-			_ = s.db.Model(&domain.SLABreachLog{}).
-				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "next_response").
-				Count(&existing).Error
+			existing := facts.breaches["next_response"]
 
 			if existing == 0 {
 				breach := domain.SLABreachLog{
@@ -536,10 +553,7 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 				})
 			}
 
-			var existing int64
-			_ = s.db.Model(&domain.SLABreachLog{}).
-				Where("account_id = ? AND conversation_id = ? AND breach_type = ?", conv.AccountID, conv.ID, "resolution").
-				Count(&existing).Error
+			existing := facts.breaches["resolution"]
 
 			if existing == 0 {
 				breach := domain.SLABreachLog{
@@ -570,12 +584,8 @@ func (s *SLAService) EvaluateConversation(conv *domain.Conversation) ([]domain.S
 
 	// 4. Status determination for AppliedSLA and Conversation
 	hasAnyBreach := isFRTBreached || isNRTBreached || isResBreached
-	if !hasAnyBreach && appliedSLA != nil {
-		var count int64
-		_ = s.db.Model(&domain.SLAEvent{}).Where("applied_sla_id = ?", appliedSLA.ID).Count(&count).Error
-		if count > 0 {
-			hasAnyBreach = true
-		}
+	if !hasAnyBreach && existingApplied != nil && len(existingApplied.SLAEvents) > 0 {
+		hasAnyBreach = true
 	}
 
 	var appliedStatus string
@@ -617,13 +627,16 @@ func (s *SLAService) EvaluateAccountSLAs(accountID uint) ([]domain.SLABreachLog,
 	}
 
 	var allBreaches []domain.SLABreachLog
+	var failures []error
 	for _, conv := range conversations {
 		breaches, err := s.EvaluateConversation(&conv)
-		if err == nil && len(breaches) > 0 {
-			allBreaches = append(allBreaches, breaches...)
+		allBreaches = append(allBreaches, breaches...)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("conversation %d: %w", conv.ID, err))
 		}
 	}
-	return allBreaches, nil
+	// Independent conversations can succeed; a partial pass is still a failure.
+	return allBreaches, errors.Join(failures...)
 }
 
 // ListBreaches returns recorded SLA breach logs for auditing
@@ -634,19 +647,25 @@ func (s *SLAService) ListBreaches(accountID uint) ([]domain.SLABreachLog, error)
 }
 
 // StartSLAScheduler periodically processes SLA breaches across all accounts
-func (s *SLAService) StartSLAScheduler(ctx context.Context, interval time.Duration) {
+func (s *SLAService) StartSLAScheduler(ctx context.Context, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	ticker := time.NewTicker(interval)
 	go func() {
+		defer close(done)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				ticker.Stop()
 				return
 			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
 				s.ProcessAllBreaches()
 			}
 		}
 	}()
+	return done
 }
 
 // ProcessAllBreaches runs SLA checks across all tenant accounts
@@ -660,8 +679,10 @@ func (s *SLAService) ProcessAllBreaches() int {
 	}
 	totalBreaches := 0
 	for _, accountID := range accountIDs {
-		if b, err := s.EvaluateAccountSLAs(accountID); err == nil {
-			totalBreaches += len(b)
+		b, err := s.EvaluateAccountSLAs(accountID)
+		totalBreaches += len(b)
+		if err != nil {
+			logger.WithComponent("sla").Error("sla account evaluation incomplete", "account_id", accountID)
 		}
 	}
 	logger.WithComponent("sla").Info("sla periodic evaluation executed",

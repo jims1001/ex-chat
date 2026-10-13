@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
@@ -51,20 +52,28 @@ func GenerateTOTPCode(secret string, t time.Time) (string, error) {
 
 // VerifyTOTPCode verifies a 6-digit code against secret with +/- 1 time-step clock drift allowance
 func VerifyTOTPCode(secret, code string) bool {
+	_, valid := MatchTOTPStep(secret, code, time.Now())
+	return valid
+}
+
+// MatchTOTPStep returns the latest matching RFC 6238 time step within the
+// +/- one-step drift allowance. Callers implementing authentication must
+// atomically persist it and reject steps that are not newer than the last use.
+func MatchTOTPStep(secret, code string, at time.Time) (int64, bool) {
 	cleanCode := strings.TrimSpace(code)
-	if len(cleanCode) != totpDigits {
-		return false
+	if len(cleanCode) != totpDigits || strings.TrimSpace(secret) == "" {
+		return 0, false
 	}
 
-	now := time.Now()
-	// Check intervals: t-1, t, t+1
-	for _, offset := range []time.Duration{-totpTimeStep * time.Second, 0, totpTimeStep * time.Second} {
-		expected, err := GenerateTOTPCode(secret, now.Add(offset))
-		if err == nil && expected == cleanCode {
-			return true
+	// Prefer the newest match in the unlikely event of a code collision.
+	for _, offset := range []time.Duration{totpTimeStep * time.Second, 0, -totpTimeStep * time.Second} {
+		candidateTime := at.Add(offset)
+		expected, err := GenerateTOTPCode(secret, candidateTime)
+		if err == nil && subtle.ConstantTimeCompare([]byte(expected), []byte(cleanCode)) == 1 {
+			return candidateTime.Unix() / totpTimeStep, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // GenerateBackupCodes generates n secure 8-digit numeric backup codes
@@ -80,4 +89,3 @@ func GenerateBackupCodes(count int) ([]string, error) {
 	}
 	return codes, nil
 }
-

@@ -74,7 +74,7 @@ func TestPublicAPILifecycle(t *testing.T) {
 		t.Fatalf("failed to create inbox: %v", err)
 	}
 
-	contactIdentifier := "pub_cust_999"
+	var visitorSourceID, visitorSession string
 	var contactID uint
 	var conv1ID, conv2ID uint
 
@@ -84,10 +84,10 @@ func TestPublicAPILifecycle(t *testing.T) {
 	t.Run("Scenario 1: Contact Show & Update with Custom Attributes", func(t *testing.T) {
 		// 1. Create Contact
 		createPayload := map[string]any{
-			"name":        "Charlie Brown",
-			"email":       "charlie@example.com",
+			"name":         "Charlie Brown",
+			"email":        "charlie@example.com",
 			"phone_number": "+1-555-0100",
-			"identifier":  contactIdentifier,
+			"identifier":   "pub_cust_999",
 			"custom_attributes": map[string]any{
 				"plan":   "basic",
 				"locale": "en",
@@ -103,16 +103,36 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		var cResp struct {
-			Data domain.Contact `json:"data"`
+			Data struct {
+				domain.Contact
+				SourceID     string `json:"source_id"`
+				VisitorToken string `json:"visitor_token"`
+			} `json:"data"`
 		}
-		_ = json.Unmarshal(w.Body.Bytes(), &cResp)
-		contactID = cResp.Data.ID
-		if contactID == 0 {
-			t.Fatalf("expected contactID > 0")
+		if err := json.Unmarshal(w.Body.Bytes(), &cResp); err != nil {
+			t.Fatalf("decode public bootstrap: %v", err)
+		}
+		contactID, visitorSourceID, visitorSession = cResp.Data.ID, cResp.Data.SourceID, cResp.Data.VisitorToken
+		if contactID == 0 || visitorSourceID == "" || visitorSourceID == "pub_cust_999" || visitorSession == "" {
+			t.Fatalf("expected server-generated public visitor session, got %+v", cResp.Data)
+		}
+		if cResp.Data.Email != "" || cResp.Data.Identifier != "" {
+			t.Fatal("anonymous public bootstrap claimed supplied identity hints")
 		}
 
-		// 2. Query contact by string identifier / source_id
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, contactIdentifier), nil)
+		// Once authenticated, the visitor may set attributes on their own profile.
+		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, visitorSourceID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
+		req.Header.Set("Content-Type", "application/json")
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("identify owned public contact failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+
+		// 2. Query contact by server-generated source_id with its signed session
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -128,6 +148,7 @@ func TestPublicAPILifecycle(t *testing.T) {
 
 		// 3. Query contact by numeric ID (Dual ID/source_id compatibility test)
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%d", websiteToken, contactID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -143,7 +164,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			},
 		}
 		b, _ = json.Marshal(updatePayload)
-		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, contactIdentifier), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, visitorSourceID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -172,6 +194,7 @@ func TestPublicAPILifecycle(t *testing.T) {
 	t.Run("Scenario 2: Public Conversation List and Detail Retrieval", func(t *testing.T) {
 		// 1. Create Conversation 1 using numeric contact ID
 		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%d/conversations", websiteToken, contactID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusCreated {
@@ -183,8 +206,9 @@ func TestPublicAPILifecycle(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &c1Resp)
 		conv1ID = c1Resp.Data.ID
 
-		// 2. Create Conversation 2 using string contact identifier
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations", websiteToken, contactIdentifier), nil)
+		// 2. Create Conversation 2 using server-generated source_id
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusCreated {
@@ -197,7 +221,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		conv2ID = c2Resp.Data.ID
 
 		// 3. Query Conversation List
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations", websiteToken, contactIdentifier), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -221,7 +246,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		// 4. Query Conversation Detail
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d", websiteToken, contactIdentifier, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d", websiteToken, visitorSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -246,7 +272,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			"echo_id": "echo_public_001",
 		}
 		b, _ := json.Marshal(m1)
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -260,7 +287,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			"echo_id": "echo_public_002",
 		}
 		b, _ = json.Marshal(m2)
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -301,7 +329,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		// 5. Query Message History via Public API
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, contactIdentifier, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, visitorSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -333,7 +362,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		// Test pagination with page_size=2
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages?page=1&page_size=2", websiteToken, contactIdentifier, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages?page=1&page_size=2", websiteToken, visitorSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		_ = json.Unmarshal(w.Body.Bytes(), &msgsResp)
@@ -347,7 +377,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 	// =========================================================================
 	t.Run("Scenario 4: Conversation Status Toggle and Setting", func(t *testing.T) {
 		// Conv1 is currently open. Calling toggle_status with no body should resolve it.
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, contactIdentifier, conv1ID), nil)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, visitorSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -362,7 +393,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		// Calling toggle_status again should automatically toggle back to open.
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, contactIdentifier, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, visitorSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -378,7 +410,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			"status": domain.ConversationStatusSnoozed,
 		}
 		b, _ := json.Marshal(setPayload)
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -395,7 +428,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			"status": "invalid_status_xyz",
 		}
 		b, _ = json.Marshal(badPayload)
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -413,7 +447,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			"typing_status": "on",
 		}
 		b, _ := json.Marshal(typingPayload)
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_typing", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_typing", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -424,7 +459,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		// 2. Send Typing Off
 		typingPayload["typing_status"] = "off"
 		b, _ = json.Marshal(typingPayload)
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_typing", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_typing", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -440,7 +476,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			},
 		}
 		b, _ = json.Marshal(attrPayload)
-		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/custom_attributes", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/custom_attributes", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -456,7 +493,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 			},
 		}
 		b, _ = json.Marshal(attrPayload2)
-		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/custom_attributes", websiteToken, contactIdentifier, conv1ID), bytes.NewReader(b))
+		req = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/custom_attributes", websiteToken, visitorSourceID, conv1ID), bytes.NewReader(b))
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		req.Header.Set("Content-Type", "application/json")
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -481,20 +519,30 @@ func TestPublicAPILifecycle(t *testing.T) {
 	// Scenario 6: 租户安全隔离与越权访问防御 (Security & Boundary Isolation)
 	// =========================================================================
 	t.Run("Scenario 6: Security and Boundary Isolation", func(t *testing.T) {
+		// Knowing a contact's generated source does not authorize anonymous access.
+		anonymous := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, visitorSourceID), nil)
+		anonymousResponse := httptest.NewRecorder()
+		r.ServeHTTP(anonymousResponse, anonymous)
+		if anonymousResponse.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for public raw-source impersonation, got %d", anonymousResponse.Code)
+		}
+
 		// 1. Invalid inbox identifier -> 404
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/invalid_inbox_token_999/contacts/%s", contactIdentifier), nil)
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/invalid_inbox_token_999/contacts/%s", visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("expected 404 for invalid inbox identifier, got %d", w.Code)
 		}
 
-		// 2. Non-existent contact -> 404
+		// 2. A contact route outside the signed identity -> 403
 		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/non_existent_contact_uuid", websiteToken), nil)
+		req.Header.Set("X-Visitor-Session", visitorSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("expected 404 for non-existent contact, got %d", w.Code)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a contact route outside the signed identity, got %d", w.Code)
 		}
 
 		// 3. Contact attempting to access another contact's conversation
@@ -511,8 +559,32 @@ func TestPublicAPILifecycle(t *testing.T) {
 			t.Fatalf("create stranger bob failed: code=%d body=%s", w.Code, w.Body.String())
 		}
 
+		var otherResp struct {
+			Data struct {
+				SourceID     string `json:"source_id"`
+				VisitorToken string `json:"visitor_token"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &otherResp); err != nil {
+			t.Fatalf("decode second public visitor: %v", err)
+		}
+		otherSourceID, otherSession := otherResp.Data.SourceID, otherResp.Data.VisitorToken
+		if otherSourceID == "" || otherSession == "" || otherSourceID == visitorSourceID {
+			t.Fatal("expected a distinct second public visitor session")
+		}
+
+		// Bob cannot substitute Charlie's route source, even with a valid session.
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s", websiteToken, visitorSourceID), nil)
+		req.Header.Set("X-Visitor-Session", otherSession)
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a signed cross-contact route override, got %d", w.Code)
+		}
+
 		// Stranger Bob attempts to read Charlie's Conv 1 detail -> MUST BE 404
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/stranger_bob_777/conversations/%d", websiteToken, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d", websiteToken, otherSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", otherSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -520,7 +592,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		// Stranger Bob attempts to read Charlie's Conv 1 messages -> MUST BE 404
-		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/stranger_bob_777/conversations/%d/messages", websiteToken, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/messages", websiteToken, otherSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", otherSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
@@ -528,7 +601,8 @@ func TestPublicAPILifecycle(t *testing.T) {
 		}
 
 		// Stranger Bob attempts to toggle Charlie's Conv 1 status -> MUST BE 404
-		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/stranger_bob_777/conversations/%d/toggle_status", websiteToken, conv1ID), nil)
+		req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/public/api/v1/inboxes/%s/contacts/%s/conversations/%d/toggle_status", websiteToken, otherSourceID, conv1ID), nil)
+		req.Header.Set("X-Visitor-Session", otherSession)
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {

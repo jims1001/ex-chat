@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -150,6 +149,9 @@ func (h *CopilotThreadHandler) CreateThread(c *gin.Context) {
 		return
 	}
 
+	if !h.validateCopilotReferences(c, accountID, req) {
+		return
+	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		if req.ConversationID != nil {
@@ -351,7 +353,10 @@ func (h *CopilotThreadHandler) CreateConversationThread(c *gin.Context) {
 	}
 
 	var req CreateThreadReq
-	_ = c.ShouldBindJSON(&req)
+	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
+		response.BadRequest(c, "Invalid thread payload")
+		return
+	}
 	uConv := uint(convID)
 	req.ConversationID = &uConv
 
@@ -359,6 +364,9 @@ func (h *CopilotThreadHandler) CreateConversationThread(c *gin.Context) {
 	accountID := h.getAccountID(c)
 	userID := h.getUserID(c)
 
+	if !h.validateCopilotReferences(c, accountID, req) {
+		return
+	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		title = fmt.Sprintf("会话 #%d 专属辅助", convID)
@@ -433,253 +441,6 @@ type SendMessageReq struct {
 }
 
 // SendMessage handles POST /copilot/threads/:id/messages & POST /copilot/threads/:id/chat
-func (h *CopilotThreadHandler) SendMessage(c *gin.Context) {
-	accountID := h.getAccountID(c)
-	threadID, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil || threadID == 0 {
-		response.BadRequest(c, "Invalid thread ID")
-		return
-	}
-
-	thread, err := h.threadRepo.GetThread(accountID, uint(threadID))
-	if err != nil || thread == nil {
-		response.NotFound(c, "Copilot thread not found")
-		return
-	}
-
-	var req SendMessageReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	userRole := domain.CopilotRoleUser
-	if req.Role != "" {
-		userRole = req.Role
-	}
-
-	userMsg := domain.CopilotThreadMessage{
-		AccountID:        accountID,
-		ThreadID:         uint(threadID),
-		Role:             userRole,
-		Content:          req.Content,
-		Citations:        req.Citations,
-		SuggestedActions: req.SuggestedActions,
-		TokenCount:       len(req.Content)/4 + 5,
-		Feedback:         domain.CopilotFeedbackNone,
-	}
-
-	if err := h.threadRepo.AddMessage(&userMsg); err != nil {
-		logger.WithComponent("copilot").Error("failed to append user message to thread",
-			"account_id", accountID,
-			"thread_id", threadID,
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to record message")
-		return
-	}
-
-	// If client requested not to auto-generate assistant reply
-	if req.NoGenerateReply {
-		response.Success(c, gin.H{"message": userMsg})
-		return
-	}
-
-	// ---------------- Multi-turn Dialogue Engine ----------------
-	// 1. Fetch recent turns for contextual awareness
-	historyMsgs, _ := h.threadRepo.GetRecentThreadContext(accountID, uint(threadID), 8)
-
-	// 2. Fetch conversation context if thread is attached to a customer conversation
-	var conversationContext string
-	if thread.ConversationID != nil {
-		conv, convErr := h.convRepo.FindByID(accountID, *thread.ConversationID)
-		if convErr == nil && conv != nil {
-			conversationContext = fmt.Sprintf("【关联客户会话 #%d】客户名称：%s，渠道ID：%d",
-				conv.ID, conv.Contact.Name, conv.InboxID)
-			// Fetch last incoming message
-			recentMsgs, _, _ := h.msgRepo.ListByConversation(accountID, conv.ID, true, 1, 5)
-			for _, m := range recentMsgs {
-				if m.MessageType == domain.MessageTypeIncoming {
-					conversationContext += fmt.Sprintf("\n客户最近咨询内容：“%s”", m.Content)
-					break
-				}
-			}
-		}
-	}
-
-	// 3. Search Knowledge Base / FAQ for relevant citations
-	type CitationItem struct {
-		Source  string  `json:"source"`
-		Title   string  `json:"title"`
-		Snippet string  `json:"snippet"`
-		Score   float64 `json:"score"`
-	}
-	var citations []CitationItem
-
-	lowerPrompt := strings.ToLower(req.Content)
-
-	asstID := uint(0)
-	if thread.AssistantID != nil {
-		asstID = *thread.AssistantID
-	}
-	if h.captainRepo != nil {
-		faqs, _ := h.captainRepo.SearchMatchingFAQs(accountID, asstID, req.Content, 2)
-		for _, f := range faqs {
-			citations = append(citations, CitationItem{
-				Source:  "Captain FAQ",
-				Title:   f.Question,
-				Snippet: f.Answer,
-				Score:   0.88,
-			})
-		}
-	}
-
-	if len(citations) == 0 {
-		var docs []domain.CaptainKnowledgeDoc
-		if h.db != nil {
-			_ = h.db.Where("account_id = ?", accountID).Limit(2).Find(&docs)
-			for _, d := range docs {
-				if strings.Contains(strings.ToLower(d.Title), lowerPrompt) ||
-					strings.Contains(strings.ToLower(d.Content), lowerPrompt) {
-					snippet := d.Content
-					if len([]rune(snippet)) > 80 {
-						snippet = string([]rune(snippet)[:80]) + "..."
-					}
-					citations = append(citations, CitationItem{
-						Source:  "知识库文档",
-						Title:   d.Title,
-						Snippet: snippet,
-						Score:   0.82,
-					})
-				}
-			}
-		}
-	}
-
-	// 4. Synthesize intelligent multi-turn assistant answer
-	var generatedReply string
-	type ActionItem struct {
-		Type    string `json:"type"`
-		Label   string `json:"label"`
-		Payload string `json:"payload,omitempty"`
-	}
-	var actions []ActionItem
-
-	// Check multi-turn continuity
-	turnCount := len(historyMsgs)
-	if turnCount > 2 {
-		// Multi-turn context response
-		prevUserTurn := ""
-		for i := len(historyMsgs) - 2; i >= 0; i-- {
-			if historyMsgs[i].Role == domain.CopilotRoleUser {
-				prevUserTurn = historyMsgs[i].Content
-				break
-			}
-		}
-
-		if strings.Contains(lowerPrompt, "语气") || strings.Contains(lowerPrompt, "温和") || strings.Contains(lowerPrompt, "官方") {
-			generatedReply = fmt.Sprintf("已为您将回复改写为更加委婉友善的语气：\n“您好，非常理解您的焦急心情，我们正在全力协助您跟进处理，请您放心，稍后有最新进展会第一时间同步给您。”")
-			actions = append(actions, ActionItem{
-				Type:    "insert_reply",
-				Label:   "填入回复框",
-				Payload: "您好，非常理解您的焦急心情，我们正在全力协助您跟进处理，请您放心，稍后有最新进展会第一时间同步给您。",
-			})
-		} else if strings.Contains(lowerPrompt, "工单") || strings.Contains(lowerPrompt, "升级") {
-			generatedReply = "已为您生成内部工单升级建议：由于该问题涉及多部门协同，建议将本会话关联升级至二线技术支持组。"
-			actions = append(actions, ActionItem{
-				Type:  "create_ticket",
-				Label: "创建二线工单",
-			})
-		} else {
-			generatedReply = fmt.Sprintf("结合前序对话（关于“%s”）以及您的最新指示，我的建议如下：\n1. 优先确认客户核心诉求；\n2. 依据服务政策提供明确的解决时间节点（SLA）；\n3. 保持耐心与专业安抚语气。", prevUserTurn)
-			actions = append(actions, ActionItem{
-				Type:    "insert_reply",
-				Label:   "采用此建议",
-				Payload: "请您放心，我们已记录您的具体诉求并优先安排专员核实，预计在今天下午给您回复。",
-			})
-		}
-	} else {
-		// Initial turn response
-		if len(citations) > 0 {
-			generatedReply = fmt.Sprintf("根据相关知识库《%s》：\n%s\n\n建议您可以这样向客户说明情况：",
-				citations[0].Title, citations[0].Snippet)
-			replyDraft := fmt.Sprintf("您好！关于您咨询的%s，我们核实到：%s，如有疑问随时告知。", citations[0].Title, citations[0].Snippet)
-			actions = append(actions, ActionItem{
-				Type:    "insert_reply",
-				Label:   "填入回复框",
-				Payload: replyDraft,
-			})
-		} else if conversationContext != "" {
-			generatedReply = fmt.Sprintf("已为您解析会话背景：\n%s\n\n针对客户问题，建议回复：\n“您好！已经为您查询并确认当前进度，请您稍候片刻，我们将尽快为您处理完毕。”",
-				conversationContext)
-			actions = append(actions, ActionItem{
-				Type:    "insert_reply",
-				Label:   "填入回复框",
-				Payload: "您好！已经为您查询并确认当前进度，请您稍候片刻，我们将尽快为您处理完毕。",
-			})
-		} else {
-			generatedReply = fmt.Sprintf("您好！我是 Copilot 智能辅助助手。关于您提出的“%s”，建议可从排查原因、核验权限以及提供替代解决方案三个维度展开。", req.Content)
-			actions = append(actions, ActionItem{
-				Type:    "insert_reply",
-				Label:   "复制建议",
-				Payload: "您好，关于此问题我们建议您先刷新页面或重新登录尝试。",
-			})
-		}
-	}
-
-	citationsJSON, _ := json.Marshal(citations)
-	actionsJSON, _ := json.Marshal(actions)
-
-	consumedTokens := (len(req.Content)+len(generatedReply))/3 + 20
-
-	assistantMsg := domain.CopilotThreadMessage{
-		AccountID:        accountID,
-		ThreadID:         uint(threadID),
-		Role:             domain.CopilotRoleAssistant,
-		Content:          generatedReply,
-		Citations:        string(citationsJSON),
-		SuggestedActions: string(actionsJSON),
-		TokenCount:       consumedTokens,
-		Feedback:         domain.CopilotFeedbackNone,
-	}
-
-	if err := h.threadRepo.AddMessage(&assistantMsg); err != nil {
-		logger.WithComponent("copilot").Error("failed to record assistant message",
-			"account_id", accountID,
-			"thread_id", threadID,
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to record assistant message")
-		return
-	}
-
-	// 5. Deduct tokens from AI usage quota if exists
-	var quota domain.AIUsageQuota
-	if h.db != nil && h.db.Where("account_id = ?", accountID).First(&quota).Error == nil {
-		_ = h.db.Model(&quota).Updates(map[string]any{
-			"used_tokens":   gorm.Expr("used_tokens + ?", consumedTokens),
-			"used_requests": gorm.Expr("used_requests + ?", 1),
-		}).Error
-	}
-
-	logger.WithComponent("copilot").Info("copilot message generated successfully",
-		"account_id", accountID,
-		"thread_id", threadID,
-		"tokens", consumedTokens,
-		"citations_count", len(citations),
-		"actions_count", len(actions),
-	)
-
-	// Fetch updated thread info
-	updatedThread, _ := h.threadRepo.GetThread(accountID, uint(threadID))
-
-	response.Success(c, gin.H{
-		"user_message":      userMsg,
-		"assistant_message": assistantMsg,
-		"thread":            updatedThread,
-	})
-}
-
 // GetMessage handles GET /copilot/threads/:id/messages/:msg_id
 func (h *CopilotThreadHandler) GetMessage(c *gin.Context) {
 	accountID := h.getAccountID(c)

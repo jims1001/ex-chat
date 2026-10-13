@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/gin-gonic/gin"
 )
@@ -64,6 +66,16 @@ func TestCopilotThreadLifecycle(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &authResp)
 	token := authResp.Data.Token
 	accountID := authResp.Data.Accounts[0].ID
+
+	// Test transport executes the real provider serialization/parsing without paid calls.
+	service.SetGlobalAIHTTPClient(&http.Client{Transport: copilotTestTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"model":"gpt-4o","choices":[{"message":{"content":"您好，我理解您的问题。这是会话的安抚回复。"}}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`)), Header: make(http.Header)}, nil
+	})})
+	t.Cleanup(func() { service.SetGlobalAIHTTPClient(nil) })
+	assistant := domain.CaptainAssistant{AccountID: accountID, Name: "Test provider", Model: "gpt-4o", Config: `{"api_key":"test-only"}`}
+	if err := db.Create(&assistant).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	// 2. Sign up Account 2 (for tenant isolation check)
 	signUpPayload2 := map[string]string{
@@ -118,8 +130,9 @@ func TestCopilotThreadLifecycle(t *testing.T) {
 	var standaloneThreadID uint
 	t.Run("Scenario1_Thread_Basic_CRUD", func(t *testing.T) {
 		createPayload := map[string]any{
-			"title":   "订单异常问题专项分析",
-			"context": "针对高频支付故障的协同排查",
+			"assistant_id": assistant.ID,
+			"title":        "订单异常问题专项分析",
+			"context":      "针对高频支付故障的协同排查",
 		}
 		cBody, _ := json.Marshal(createPayload)
 		reqCreate := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/accounts/%d/copilot/threads", accountID), bytes.NewReader(cBody))
@@ -320,7 +333,7 @@ func TestCopilotThreadLifecycle(t *testing.T) {
 		}).Error
 
 		// Create thread scoped to this conversation via POST /conversations/:id/copilot/threads
-		reqConvThread := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/copilot/threads", accountID, conv.ID), bytes.NewReader([]byte(`{"title":"会话10086专属辅助"}`)))
+		reqConvThread := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/accounts/%d/conversations/%d/copilot/threads", accountID, conv.ID), bytes.NewReader([]byte(fmt.Sprintf(`{"title":"会话10086专属辅助","assistant_id":%d}`, assistant.ID))))
 		reqConvThread.Header.Set("Authorization", "Bearer "+token)
 		reqConvThread.Header.Set("Content-Type", "application/json")
 		wConvThread := httptest.NewRecorder()
@@ -537,3 +550,7 @@ func TestCopilotThreadLifecycle(t *testing.T) {
 		}
 	})
 }
+
+type copilotTestTransport func(*http.Request) (*http.Response, error)
+
+func (f copilotTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

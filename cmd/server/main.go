@@ -12,14 +12,19 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/config"
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
+	"github.com/OracleBetX-Projects/ex-chat/internal/modruntime"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/router"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 )
 
 func main() {
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("configuration error: %v", err)
+	}
 
 	logger.SetOutput(os.Stdout, logger.ParseLevel(cfg.LogLevel), cfg.LogFormat)
 	srvLog := logger.WithComponent("server")
@@ -33,9 +38,20 @@ func main() {
 
 	hub := ws.GetHub()
 
-	engine := router.SetupRouter(cfg, db, hub)
 	activityCtx, stopActivity := context.WithCancel(context.Background())
 	defer stopActivity()
+	mailCfg, err := modruntime.LoadOrdinaryEmailConfig(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mailRuntime := modruntime.Runtime{DB: db, Config: modruntime.Config{ModuleID: "MSG", ContractVersion: "v1", OrdinaryEmail: mailCfg}, OrdinaryEmailTransport: service.NewSMTPEmailSender(mailCfg.Host, mailCfg.Port, mailCfg.Username, mailCfg.Password), InboxTranscriptSMTP: service.NewInboxTranscriptSMTP(repository.NewInboxRepository(db), mailCfg.From)}
+	mailDone := make(chan struct{})
+	go func() {
+		defer close(mailDone)
+		mailRuntime.RunOrdinaryEmail(activityCtx, func(error) { srvLog.Warn("ordinary email checkpoint remains pending") })
+	}()
+	engine, stopRouter := router.SetupRouterWithLifecycle(cfg, db, hub, router.Options{BackgroundContext: activityCtx})
+	defer stopRouter()
 	go reconcileMessageActivity(activityCtx, repository.NewMessageRepository(db))
 	go reconcileConversationDeletes(activityCtx, repository.NewConversationRepository(db))
 
@@ -61,6 +77,7 @@ func main() {
 
 	srvLog.Info("shutting down server gracefully...")
 	stopActivity()
+	<-mailDone
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -70,6 +87,7 @@ func main() {
 		log.Fatalf("server forced to shutdown: %v", err)
 	}
 
+	stopRouter()
 	srvLog.Info("server exited cleanly")
 }
 

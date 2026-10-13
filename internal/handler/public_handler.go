@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
-	"fmt"
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/internal/service"
@@ -30,6 +32,7 @@ type PublicHandler struct {
 	pushService       *service.PushService
 	campaignService   *service.CampaignService
 	hub               *ws.Hub
+	jwtSecret         string
 }
 
 // NewPublicHandler creates a new PublicHandler instance
@@ -46,6 +49,11 @@ func NewPublicHandler(
 		msgRepo:     m,
 		publicRepo:  repository.NewPublicRepositoryWithOwnerPorts(i, c, cv, m),
 	}
+}
+
+// SetJWTSecret configures signed visitor sessions for public API access.
+func (h *PublicHandler) SetJWTSecret(secret string) {
+	h.jwtSecret = secret
 }
 
 // SetPublicRepository sets the public repository
@@ -81,18 +89,28 @@ func (h *PublicHandler) resolveInboxAndContact(c *gin.Context) (*domain.Inbox, *
 		return nil, nil, gorm.ErrRecordNotFound
 	}
 
+	identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// The route is a resource selector, never an authentication credential.
+	// Keep legacy source-form URLs only when the exact signed source matches;
+	// numeric contact routes must refer to the signed session's contact ID.
 	contactParam := c.Param("contact_id")
 	if contactParam == "" {
 		contactParam = c.Param("source_id")
 	}
-
-	contact, _, err := h.publicRepo.ResolveContact(c.Request.Context(), inbox.ID, inbox.AccountID, contactParam)
-	if err != nil || contact == nil {
-		response.NotFound(c, "contact not found in this inbox or account")
-		return nil, nil, gorm.ErrRecordNotFound
+	matches := contactParam != "" && contactParam == identity.claims.SourceID
+	if contactID, parseErr := strconv.ParseUint(contactParam, 10, 64); parseErr == nil {
+		matches = contactID != 0 && contactID == uint64(identity.contact.ID)
+	}
+	if !matches {
+		response.Forbidden(c, "Contact does not match the visitor session")
+		return nil, nil, auth.ErrInvalidVisitorToken
 	}
 
-	return inbox, contact, nil
+	return inbox, identity.contact, nil
 }
 
 // ----------------- Inbox & Contact Endpoints -----------------
@@ -123,12 +141,18 @@ type PublicCreateContactReq struct {
 	CustomAttributes map[string]any `json:"custom_attributes"`
 }
 
-// CreateContact handles OPEN-02: creates or finds contact
+// CreateContact bootstraps a fresh anonymous visitor, or resumes the owner of
+// a supplied signed session. Identity hints cannot recover existing profiles;
+// authenticated profile changes belong to UpdateContact.
 func (h *PublicHandler) CreateContact(c *gin.Context) {
 	identifier := c.Param("identifier")
 	inbox, err := h.publicRepo.FindInboxByIdentifier(c.Request.Context(), identifier)
 	if err != nil || inbox == nil {
 		response.NotFound(c, "inbox not found")
+		return
+	}
+	if h.contactRepo == nil || strings.TrimSpace(h.jwtSecret) == "" {
+		response.InternalError(c, "Visitor session service is not configured")
 		return
 	}
 
@@ -138,36 +162,46 @@ func (h *PublicHandler) CreateContact(c *gin.Context) {
 		return
 	}
 
-	contact := domain.Contact{
-		AccountID:   inbox.AccountID,
-		Name:        req.Name,
-		Email:       strings.ToLower(strings.TrimSpace(req.Email)),
-		PhoneNumber: req.PhoneNumber,
-		Identifier:  req.Identifier,
+	var contact *domain.Contact
+	var sourceID string
+	if visitorSessionToken(c) != "" {
+		identity, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret)
+		if err != nil {
+			return
+		}
+		contact, sourceID = identity.contact, identity.claims.SourceID
+	} else {
+		// Unverified identifier, email, source and contact IDs are deliberately
+		// ignored. A random server-owned mapping prevents identity fixation.
+		randomSource := make([]byte, 32)
+		if _, err := rand.Read(randomSource); err != nil {
+			response.InternalError(c, "Failed to initialize visitor identity")
+			return
+		}
+		sourceID = hex.EncodeToString(randomSource)
+		contact = &domain.Contact{AccountID: inbox.AccountID, Name: "Visitor " + sourceID[:8]}
+		if err := h.contactRepo.Create(contact); err != nil {
+			response.InternalError(c, "Failed to create visitor profile")
+			return
+		}
+		if err := h.contactRepo.CreateContactInbox(&domain.ContactInbox{ContactID: contact.ID, InboxID: inbox.ID, SourceID: sourceID}); err != nil {
+			response.InternalError(c, "Failed to initialize visitor identity")
+			return
+		}
 	}
-
-	if err := h.contactRepo.Create(&contact); err != nil {
-		response.Error(c, http.StatusInternalServerError, err.Error())
+	visitorToken, err := auth.GenerateVisitorToken(inbox.ID, contact.ID, sourceID, h.jwtSecret, 72*time.Hour)
+	if err != nil {
+		response.InternalError(c, "Failed to authorize visitor session")
 		return
 	}
 
-	sourceID := req.Identifier
-	if sourceID == "" {
-		sourceID = fmt.Sprintf("pub_%d_%d", contact.ID, time.Now().UnixNano())
-	}
-
-	_, _ = h.contactRepo.FindOrCreateContactInbox(contact.ID, inbox.ID, sourceID)
-
-	if len(req.CustomAttributes) > 0 {
-		updated, err := h.publicRepo.UpdateContact(c.Request.Context(), inbox.AccountID, contact.ID, nil, req.CustomAttributes)
-		if err != nil {
-			response.InternalError(c, "Failed to update contact attributes")
-			return
-		}
-		contact = *updated
-	}
-
-	response.Created(c, contact)
+	// Preserve the existing flattened contact response while returning the
+	// credentials required for subsequent public API requests.
+	response.Created(c, struct {
+		*domain.Contact
+		SourceID     string `json:"source_id"`
+		VisitorToken string `json:"visitor_token"`
+	}{Contact: contact, SourceID: sourceID, VisitorToken: visitorToken})
 }
 
 // GetContact retrieves contact details for a public visitor
@@ -190,6 +224,7 @@ type PublicUpdateContactReq struct {
 	PhoneNumber      string         `json:"phone_number"`
 	AvatarURL        string         `json:"avatar_url"`
 	Identifier       string         `json:"identifier"`
+	IdentifierHash   string         `json:"identifier_hash"`
 	CustomAttributes map[string]any `json:"custom_attributes"`
 }
 
@@ -201,8 +236,15 @@ func (h *PublicHandler) UpdateContact(c *gin.Context) {
 	}
 
 	var req PublicUpdateContactReq
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
+		return
+	}
+
+	if !validateWidgetIdentifierProof(c, inbox, req.Identifier, req.IdentifierHash) {
+		return
+	}
+	if !validateVisitorIdentityUpdate(c, h.contactRepo, contact, req.Identifier, req.Email) {
 		return
 	}
 
@@ -386,7 +428,9 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 		Status:         domain.MessageStatusSent,
 	}
 
-	if err := h.msgRepo.Create(&msg); err != nil {
+	isMutedOrBlocked := conv.Muted || contact.Blocked
+	reopen := !isMutedOrBlocked && conv.Status == domain.ConversationStatusResolved
+	if err := h.msgRepo.CreateWithConversationReopen(&msg, conv.ObjectVersion, reopen); err != nil {
 		logger.WithComponent("message").Error("failed to create public message",
 			"conversation_id", conv.ID,
 			"account_id", conv.AccountID,
@@ -405,14 +449,10 @@ func (h *PublicHandler) CreateMessage(c *gin.Context) {
 		"echo_id", msg.EchoID,
 	)
 
-	isMutedOrBlocked := conv.Muted || contact.Blocked
-
-	// Re-open conversation if it was resolved (only if conversation is not muted and contact is not blocked)
-	if !isMutedOrBlocked && conv.Status == domain.ConversationStatusResolved {
+	// Durable mode completes this transition in CON's message activity receipt.
+	if !h.msgRepo.AutomationCaptureEnabled() && reopen {
 		_ = h.convRepo.UpdateStatus(conv.AccountID, conv.ID, domain.ConversationStatusOpen, nil)
 		conv.Status = domain.ConversationStatusOpen
-	} else {
-		_ = h.convRepo.TouchActivity(conv.AccountID, conv.ID)
 	}
 
 	// Trigger automation rules, webhooks, push notifications and WebSocket broadcasts
@@ -683,7 +723,7 @@ func (h *PublicHandler) UpdateConversationCustomAttributes(c *gin.Context) {
 	var req struct {
 		CustomAttributes map[string]any `json:"custom_attributes" binding:"required"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid payload: "+err.Error())
 		return
 	}

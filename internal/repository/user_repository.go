@@ -105,7 +105,22 @@ func (r *UserRepository) FindByIDs(ids []uint) ([]domain.User, error) {
 }
 
 func (r *UserRepository) Update(user *domain.User) error {
-	return r.db.Save(user).Error
+	if user == nil || user.ID == 0 {
+		return errors.New("invalid user update")
+	}
+	// A profile loaded before a password reset must not restore its old
+	// credential or authentication version. Conditional UPDATE also avoids
+	// GORM Save's insert-on-missing-row behavior.
+	result := r.db.Model(&domain.User{}).
+		Where("id = ? AND auth_version = ?", user.ID, user.AuthVersion).
+		Select("*").Omit("id", "auth_version", "confirmed_at", "confirmation_token", "confirmation_email", "confirmation_auth_version", "confirmation_sent_at", "confirmation_expires_at", "confirmation_issued_at").Updates(user)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("user changed or no longer exists; reload before updating")
+	}
+	return nil
 }
 
 func (r *UserRepository) UpdateAvailability(userID uint, availability string) error {

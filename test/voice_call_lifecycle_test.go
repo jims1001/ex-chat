@@ -20,6 +20,7 @@ import (
 )
 
 func TestVoiceCallLifecycle(t *testing.T) {
+	t.Chdir(t.TempDir())
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{
@@ -133,13 +134,13 @@ func TestVoiceCallLifecycle(t *testing.T) {
 
 		var resp struct {
 			Data struct {
-				ID             uint   `json:"id"`
-				CallID         string `json:"call_id"`
-				Provider       string `json:"provider"`
-				Status         string `json:"status"`
-				Direction      string `json:"direction"`
-				SDPOffer       string `json:"sdp_offer"`
-				Caller         struct {
+				ID        uint   `json:"id"`
+				CallID    string `json:"call_id"`
+				Provider  string `json:"provider"`
+				Status    string `json:"status"`
+				Direction string `json:"direction"`
+				SDPOffer  string `json:"sdp_offer"`
+				Caller    struct {
 					Name  string `json:"name"`
 					Phone string `json:"phone"`
 				} `json:"caller"`
@@ -176,7 +177,7 @@ func TestVoiceCallLifecycle(t *testing.T) {
 	// 2. 录音上传 (Recording Upload) via JSON & Multipart Form
 	// -------------------------------------------------------------
 	t.Run("2. Upload Call Recording", func(t *testing.T) {
-		// Test JSON upload to /calls/:id/recordings
+		// JSON provider URL is metadata only; no uploaded bytes are claimed.
 		recPayload := map[string]any{
 			"recording_url": "https://storage.exchat.internal/recordings/call_12345.mp3",
 			"recording_sid": "RE1234567890abcdef",
@@ -200,8 +201,8 @@ func TestVoiceCallLifecycle(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to unmarshal recording upload response: %v", err)
 		}
-		if resp.Data.Status != "uploaded" {
-			t.Fatalf("expected status uploaded, got %s", resp.Data.Status)
+		if resp.Data.Status != "updated" {
+			t.Fatalf("expected metadata status updated, got %s", resp.Data.Status)
 		}
 		if resp.Data.Duration != 125 {
 			t.Fatalf("expected duration 125, got %d", resp.Data.Duration)
@@ -214,7 +215,7 @@ func TestVoiceCallLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create form file: %v", err)
 		}
-		_, _ = part.Write([]byte("RIFFmockaudiobytes"))
+		_, _ = part.Write(append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), make([]byte, 64)...))
 		_ = writer.Close()
 
 		req, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/accounts/%d/whatsapp_calls/%d/upload_recording", account.ID, call.ID), bodyBuf)

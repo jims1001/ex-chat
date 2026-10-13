@@ -27,13 +27,23 @@ type PushPayload struct {
 	NotificationType string `json:"notification_type,omitempty"`
 }
 
+// FirebasePushConfigPort is the narrow, private SYS-owned persisted pair read.
+// It is injected by composition; NTF never reads SYS tables.
+type FirebasePushConfigPort interface {
+	FirebasePushConfiguration(context.Context) (projectID string, credentials string, err error)
+}
+
 type PushService struct {
-	db               *gorm.DB
-	deviceRepo       *repository.DeviceRepository
-	notificationRepo *repository.NotificationRepository
-	userRepo         *repository.UserRepository
-	httpClient       *http.Client
-	dedupCache       sync.Map
+	firebaseConfig    FirebasePushConfigPort
+	nativeMu          sync.Mutex
+	native            *nativeFCM
+	nativeFingerprint [32]byte
+	db                *gorm.DB
+	deviceRepo        *repository.DeviceRepository
+	notificationRepo  *repository.NotificationRepository
+	userRepo          *repository.UserRepository
+	httpClient        *http.Client
+	dedupCache        sync.Map
 }
 
 func NewPushService(db *gorm.DB, deviceRepo *repository.DeviceRepository) *PushService {
@@ -49,6 +59,10 @@ func NewPushService(db *gorm.DB, deviceRepo *repository.DeviceRepository) *PushS
 			Timeout: 4 * time.Second,
 		},
 	}
+}
+
+func (s *PushService) SetFirebaseConfigOwner(owner FirebasePushConfigPort) {
+	s.firebaseConfig = owner
 }
 
 func (s *PushService) SetNotificationRepo(repo *repository.NotificationRepository) {
@@ -155,6 +169,27 @@ func (s *PushService) Dispatch(ctx context.Context, userID, accountID uint, payl
 
 	successCount := 0
 	for _, sub := range subs {
+		// Native selection is only for FCM subscriptions. Config/auth/provider
+		// failures never fall through to the compatibility gateway.
+		if sub.SubscriptionType == "fcm" {
+			native, selected, configErr := s.selectNativeFCM(ctx)
+			if selected {
+				result := fcmResult{Status: "rejected", Category: "configuration_unavailable"}
+				if configErr == nil {
+					if s.db == nil {
+						return successCount, &PushOutcomePersistenceError{Outcome: "not_attempted"}
+					}
+					result = native.send(ctx, s.httpClient, sub.PushToken, payload)
+				}
+				if result.Status == "accepted" {
+					successCount++
+				}
+				if err := s.recordNativeFCM(ctx, sub, payload, result); err != nil {
+					return successCount, err
+				}
+				continue
+			}
+		}
 		status := "delivered"
 		httpCode := 200
 		var errorDetail string

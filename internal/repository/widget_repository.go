@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
@@ -283,7 +282,7 @@ func (r *WidgetRepository) UpdateMessageSubmittedValues(ctx context.Context, mes
 func decodeAttributes(raw string) map[string]any {
 	result := map[string]any{}
 	if strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &result)
+		_ = unmarshalCustomAttributeObject(raw, &result)
 	}
 	return result
 }

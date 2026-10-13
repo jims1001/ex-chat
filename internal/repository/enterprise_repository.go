@@ -5,6 +5,7 @@ import (
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type EnterpriseRepository struct {
@@ -32,13 +33,14 @@ func (r *EnterpriseRepository) GetAccountFeatures(accountID uint) (map[string]bo
 }
 
 func (r *EnterpriseRepository) SetAccountFeature(accountID uint, featureName string, enabled bool) error {
-	af := domain.AccountFeature{
-		AccountID:   accountID,
-		FeatureName: featureName,
-		Enabled:     enabled,
-		UpdatedAt:   time.Now().UTC(),
-	}
-	return r.db.Where(domain.AccountFeature{AccountID: accountID, FeatureName: featureName}).
-		Assign(domain.AccountFeature{Enabled: enabled, UpdatedAt: time.Now().UTC()}).
-		FirstOrCreate(&af).Error
+	// Explicit map values bypass the model's default:true on creates. The one
+	// statement upsert also preserves false updates and resolves concurrent
+	// creates without changing row identity or account/key scope.
+	return r.db.Model(&domain.AccountFeature{}).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "account_id"}, {Name: "feature_name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"enabled", "updated_at"}),
+	}).Create(map[string]any{
+		"account_id": accountID, "feature_name": featureName,
+		"enabled": enabled, "updated_at": time.Now().UTC(),
+	}).Error
 }

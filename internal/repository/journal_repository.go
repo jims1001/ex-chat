@@ -369,27 +369,11 @@ func (r *JournalRepository) GetIntegrityVerification(accountID uint, verificatio
 	return &v, nil
 }
 
-// ListIntegrityVerifications retrieves all integrity verifications for an account
+// ListIntegrityVerifications reads stored historical claims without creating a result.
 func (r *JournalRepository) ListIntegrityVerifications(accountID uint) ([]domain.IntegrityVerification, error) {
-	var list []domain.IntegrityVerification
+	list := make([]domain.IntegrityVerification, 0)
 	if err := r.db.Where("account_id = ?", accountID).Order("created_at DESC").Find(&list).Error; err != nil {
 		return nil, err
-	}
-	if len(list) == 0 {
-		defaultVerif := domain.IntegrityVerification{
-			AccountID:      accountID,
-			VerificationID: "VERIF-ARCH-01",
-			PartitionID:    "platform-core-partition",
-			CheckpointID:   "CP-20260912-001",
-			Verified:       true,
-			GapCount:       0,
-			ConflictCount:  0,
-			Status:         "completed",
-			Details:        "全链路密码学哈希账本防篡改校验通过，无断链或分叉记录",
-			CreatedAt:      time.Now().UTC(),
-		}
-		_ = r.db.Create(&defaultVerif)
-		list = append(list, defaultVerif)
 	}
 	return list, nil
 }

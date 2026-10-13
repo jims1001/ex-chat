@@ -1,10 +1,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"strconv"
-	"strings"
 
-	"github.com/OracleBetX-Projects/ex-chat/internal/auth"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/middleware"
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
@@ -32,18 +31,20 @@ type CreateAccountRequest struct {
 }
 
 type AddAgentRequest struct {
-	Name         string `json:"name" binding:"required"`
-	Email        string `json:"email" binding:"required,email"`
-	Role         string `json:"role"`
-	CustomRoleID *uint  `json:"custom_role_id"`
-	Password     string `json:"password"`
+	Name         string          `json:"name"`
+	Email        string          `json:"email" binding:"required,email"`
+	Role         string          `json:"role"`
+	CustomRoleID *uint           `json:"custom_role_id"`
+	Password     json.RawMessage `json:"password"`
 }
 
 type UpdateAgentRequest struct {
-	Role         string `json:"role"`
-	CustomRoleID *uint  `json:"custom_role_id"`
-	Availability string `json:"availability"`
-	Name         string `json:"name"`
+	Role         string          `json:"role"`
+	CustomRoleID *uint           `json:"custom_role_id"`
+	Availability string          `json:"availability"`
+	Name         json.RawMessage `json:"name"`
+	Password     json.RawMessage `json:"password"`
+	Email        json.RawMessage `json:"email"`
 }
 
 type CreateCustomRoleRequest struct {
@@ -179,186 +180,54 @@ func (h *AccountHandler) ListAgents(c *gin.Context) {
 	response.Success(c, members)
 }
 
-func (h *AccountHandler) AddAgent(c *gin.Context) {
-	rawAccountID, _ := c.Get(middleware.ContextAccountID)
-	accountID := rawAccountID.(uint)
-
-	var req AddAgentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request payload: "+err.Error())
-		return
-	}
-
-	role := req.Role
-	if role == "" {
-		role = domain.RoleAgent
-	}
-
-	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-
-	user, err := h.userRepo.FindByEmail(req.Email)
-	if err != nil {
-		logger.WithComponent("agent").Error("failed to check user by email",
-			"account_id", accountID,
-			"email", req.Email,
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to check user")
-		return
-	}
-
-	if user == nil {
-		pwd := req.Password
-		if pwd == "" {
-			pwd = "Password123!"
-		}
-		hash, err := auth.HashPassword(pwd)
-		if err != nil {
-			logger.WithComponent("agent").Error("failed to hash agent password",
-				"email", req.Email,
-				"error", err.Error(),
-			)
-			response.InternalError(c, "Failed to process password")
-			return
-		}
-		newUser := domain.User{
-			Name:         req.Name,
-			Email:        req.Email,
-			PasswordHash: hash,
-			Role:         role,
-			Availability: domain.AvailabilityOnline,
-		}
-		if err := h.userRepo.Create(&newUser); err != nil {
-			logger.WithComponent("agent").Error("failed to create user for agent",
-				"account_id", accountID,
-				"email", req.Email,
-				"error", err.Error(),
-			)
-			response.InternalError(c, "Failed to create user for agent")
-			return
-		}
-		user = &newUser
-	}
-
-	// Check if already member
-	existingMembership, _ := h.accountRepo.GetMembership(accountID, user.ID)
-	if existingMembership != nil {
-		response.BadRequest(c, "Agent already exists in this account")
-		return
-	}
-
-	if err := h.accountRepo.AddMemberWithRole(accountID, user.ID, role, req.CustomRoleID); err != nil {
-		logger.WithComponent("agent").Error("failed to add agent to account",
-			"account_id", accountID,
-			"user_id", user.ID,
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to add agent to account")
-		return
-	}
-
-	logger.WithComponent("agent").Info("agent added to account successfully",
-		"account_id", accountID,
-		"user_id", user.ID,
-		"email", user.Email,
-		"role", role,
-	)
-
-	membership, _ := h.accountRepo.GetMembership(accountID, user.ID)
-	membership.User = user
-	response.Created(c, membership)
-}
-
+// UpdateAgent only changes tenant membership fields. IAM profile and credential
+// management belong to the authenticated user's profile/auth flows.
 func (h *AccountHandler) UpdateAgent(c *gin.Context) {
-	rawAccountID, _ := c.Get(middleware.ContextAccountID)
-	accountID := rawAccountID.(uint)
-
+	accountID := c.MustGet(middleware.ContextAccountID).(uint)
+	actorID := c.MustGet(middleware.ContextUserID).(uint)
 	agentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
+	if err != nil || agentID == 0 {
 		response.BadRequest(c, "Invalid agent ID")
 		return
 	}
-
-	membership, err := h.accountRepo.GetMembership(accountID, uint(agentID))
-	if err != nil || membership == nil {
-		response.NotFound(c, "Agent not found in account")
-		return
-	}
-
 	var req UpdateAgentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
+		response.BadRequest(c, "Invalid request payload")
 		return
 	}
-
-	if req.Role != "" {
-		membership.Role = req.Role
-	}
-	if req.CustomRoleID != nil {
-		if *req.CustomRoleID == 0 {
-			membership.CustomRoleID = nil
-		} else {
-			membership.CustomRoleID = req.CustomRoleID
-		}
-	}
-	if req.Availability != "" {
-		membership.Availability = req.Availability
-	}
-
-	if err := h.accountRepo.UpdateMember(membership); err != nil {
-		logger.WithComponent("agent").Error("failed to update agent",
-			"account_id", accountID,
-			"agent_id", uint(agentID),
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to update agent")
+	if req.Name != nil || req.Password != nil || req.Email != nil {
+		response.BadRequest(c, "Global profile and credentials must be managed by the user")
 		return
 	}
-
-	if req.Name != "" {
-		user, _ := h.userRepo.FindByID(uint(agentID))
-		if user != nil {
-			user.Name = req.Name
-			_ = h.userRepo.Update(user)
-		}
+	membership, err := h.accountRepo.UpdateAgentMembership(accountID, actorID, uint(agentID), req.Role, req.CustomRoleID, req.Availability)
+	if err != nil {
+		respondAgentInvitationError(c, err)
+		return
 	}
-
-	logger.WithComponent("agent").Info("agent updated successfully",
-		"account_id", accountID,
-		"agent_id", uint(agentID),
-		"role", membership.Role,
-		"availability", membership.Availability,
-	)
-
-	membership, _ = h.accountRepo.GetMembership(accountID, uint(agentID))
 	response.Success(c, membership)
 }
 
 func (h *AccountHandler) RemoveAgent(c *gin.Context) {
-	rawAccountID, _ := c.Get(middleware.ContextAccountID)
-	accountID := rawAccountID.(uint)
-
-	agentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
+	accountID := c.MustGet(middleware.ContextAccountID).(uint)
+	actorID := c.MustGet(middleware.ContextUserID).(uint)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
 		response.BadRequest(c, "Invalid agent ID")
 		return
 	}
-
-	if err := h.accountRepo.RemoveMember(accountID, uint(agentID)); err != nil {
-		logger.WithComponent("agent").Error("failed to remove agent from account",
-			"account_id", accountID,
-			"agent_id", uint(agentID),
-			"error", err.Error(),
-		)
-		response.InternalError(c, "Failed to remove agent")
+	user, err := h.userRepo.FindByID(uint(id))
+	if err != nil {
+		response.InternalError(c, "Unable to check agent identity")
 		return
 	}
-
-	logger.WithComponent("agent").Info("agent removed from account successfully",
-		"account_id", accountID,
-		"agent_id", uint(agentID),
-	)
-
+	email := ""
+	if user != nil {
+		email = user.Email
+	}
+	if err := h.accountRepo.RemoveAgentMembership(accountID, actorID, uint(id), email); err != nil {
+		respondAgentInvitationError(c, err)
+		return
+	}
 	response.Success(c, gin.H{"deleted": true})
 }
 

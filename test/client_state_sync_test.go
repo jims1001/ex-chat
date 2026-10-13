@@ -50,13 +50,18 @@ func (e *wsRec) has(name string) bool {
 	return false
 }
 
-// hook wires hub.OnBroadcast to capture events and returns a cleanup func.
-func (e *wsRec) hook(hub *ws.Hub) func() {
+// Reset the recorder without changing the callback while Hub.Run reads it.
+func (e *wsRec) hook(_ *ws.Hub) func() {
 	e.mu.Lock()
 	e.events = nil
 	e.mu.Unlock()
-	hub.OnBroadcast = func(ev *ws.Event) { e.add(ev) }
-	return func() { hub.OnBroadcast = nil }
+	return func() {}
+}
+
+func (e *wsRec) snapshot() []*ws.Event {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]*ws.Event(nil), e.events...)
 }
 
 // TestClientStateSync verifies that after edit, delete, mark-read, and assign operations
@@ -77,6 +82,8 @@ func TestClientStateSync(t *testing.T) {
 	}
 
 	hub := ws.NewHub()
+	rec := &wsRec{}
+	hub.OnBroadcast = rec.add // Immutable after the hub goroutine starts
 	go hub.Run()
 	r := router.SetupRouter(cfg, db, hub)
 
@@ -149,8 +156,6 @@ func TestClientStateSync(t *testing.T) {
 		return w
 	}
 
-	rec := &wsRec{}
-
 	// ═══════════════════════════════════════════════════════════════════════
 	// Scenario 1: 消息编辑 (UpdateMessage)
 	//   PUT /api/v1/accounts/:id/conversations/:id/messages/:message_id
@@ -170,7 +175,9 @@ func TestClientStateSync(t *testing.T) {
 		}
 
 		var resp struct {
-			Data struct{ Content string `json:"content"` } `json:"data"`
+			Data struct {
+				Content string `json:"content"`
+			} `json:"data"`
 		}
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
 		if resp.Data.Content != "edited content" {
@@ -447,7 +454,7 @@ func TestClientStateSync(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 
 		var found *ws.Event
-		for _, ev := range rec.events {
+		for _, ev := range rec.snapshot() {
 			if ev.Name == ws.EventMessageUpdated {
 				found = ev
 				break

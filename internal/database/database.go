@@ -53,7 +53,10 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 }
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(allModels()...)
+	if err := db.AutoMigrate(allModels()...); err != nil {
+		return err
+	}
+	return migrateConfirmationSecurity(db, "")
 }
 
 func allModels() []any {
@@ -61,7 +64,14 @@ func allModels() []any {
 		&domain.Account{},
 		&domain.User{},
 		&domain.AccountUser{},
+		&domain.AgentInvitation{},
+		&domain.InvitationIdentity{},
 		&domain.Inbox{},
+		&domain.ChannelConnection{},
+		&domain.ChannelContactIdentity{},
+		&domain.ChannelConversationSession{},
+		&domain.ChannelMessageReceipt{},
+		&domain.OutboundMessageAttempt{},
 		&domain.InboxMember{},
 		&domain.Contact{},
 		&domain.ContactInbox{},
@@ -120,6 +130,8 @@ func allModels() []any {
 		&domain.Call{},
 		&domain.Conference{},
 		&domain.SAMLSetting{},
+		&domain.SAMLAuthnRequest{},
+		&domain.SAMLReplay{},
 		&domain.UserSession{},
 		&domain.PasswordResetToken{},
 		&domain.MFAProfile{},
@@ -129,10 +141,15 @@ func allModels() []any {
 		&domain.ReportingEvent{},
 		&domain.AccountLimit{},
 		&domain.AccountBilling{},
+		&domain.PaymentCheckoutIntent{},
+		&domain.BillingCustomer{},
+		&domain.PaymentWebhookReceipt{},
 		&domain.Onboarding{},
 		&domain.BrandedEmailLayout{},
 		&domain.EmailChannelMigration{},
 		&domain.EmailLog{},
+		&domain.OrdinaryEmailIntent{},
+		&domain.OrdinaryEmailAttempt{},
 		&domain.WebhookDelivery{},
 		&domain.IntegrationInstallation{},
 		&domain.SLABreachLog{},

@@ -157,8 +157,8 @@ func TestOps_MacroNotificationAndCSAT(t *testing.T) {
 	if updatedConv.Status != domain.ConversationStatusResolved {
 		t.Errorf("expected status resolved, got %s", updatedConv.Status)
 	}
-	if updatedConv.ObjectVersion != 2 {
-		t.Errorf("expected object_version 2, got %d", updatedConv.ObjectVersion)
+	if updatedConv.ObjectVersion != 3 {
+		t.Errorf("expected object_version 3 (label and status changes), got %d", updatedConv.ObjectVersion)
 	}
 
 	// 6. Test Notifications (OPS-14 ~ OPS-16)

@@ -49,18 +49,26 @@ type ExternalWriteActionPolicy struct {
 	Action           string
 }
 
+// These explicit POST queries carry confidential read credentials in JSON
+// rather than the URL. They create neither a business write nor a workflow.
+// Keep this allowlist identical to the frozen external-interface inventory.
+var ExternalReadOnlyPostQueries = map[string]string{
+	"invitationHandler.PreviewAgentInvitation": "ten.invitation.get.v1",
+}
+
 var ExternalWriteDispatchOverrides = map[string]ExternalWriteActionPolicy{
-	"accountHandler.CreateAccount": {ActionType: "command", Action: "ten.account.create.v1"},
-	"accountHandler.AddAgent":      {ActionType: "command", Action: "ten.membership.add.v1"},
-	"accountHandler.UpdateAgent":   {ActionType: "command", Action: "ten.role.change.v1"},
-	"contactHandler.CreateContact": {ActionType: "command", Action: "cus.contact.create.v1"},
-	"contactHandler.UpdateContact": {ActionType: "command", Action: "cus.contact.update.v1"},
-	"contactHandler.DeleteContact": {ActionType: "command", Action: "cus.contact.delete.v1"},
-	"contactHandler.MergeContact":  {ActionType: "command", Action: "cus.contact.merge.v1"},
-	"emailLogHandler.Retry":        {ActionType: "command", Action: "msg.message.retry.v1"},
-	"emailLogHandler.Bounce":       {ActionType: "command", Action: "msg.provider_status.update.v1"},
-	"ticketHandler.Create":         {ActionType: "command", Action: "tkt.ticket.create.v1"},
-	"webhookHandler.Create":        {ActionType: "command", Action: "ext.webhook.manage.v1"},
+	"accountHandler.CreateAccount":            {ActionType: "command", Action: "ten.account.create.v1"},
+	"invitationHandler.AddAgent":              {ActionType: "command", Action: "ten.invitation.issue.v1"},
+	"invitationHandler.RevokeAgentInvitation": {ActionType: "command", Action: "ten.invitation.revoke.v1"},
+	"accountHandler.UpdateAgent":              {ActionType: "command", Action: "ten.role.change.v1"},
+	"contactHandler.CreateContact":            {ActionType: "command", Action: "cus.contact.create.v1"},
+	"contactHandler.UpdateContact":            {ActionType: "command", Action: "cus.contact.update.v1"},
+	"contactHandler.DeleteContact":            {ActionType: "command", Action: "cus.contact.delete.v1"},
+	"contactHandler.MergeContact":             {ActionType: "command", Action: "cus.contact.merge.v1"},
+	"emailLogHandler.Retry":                   {ActionType: "command", Action: "msg.message.retry.v1"},
+	"emailLogHandler.Bounce":                  {ActionType: "command", Action: "msg.provider_status.update.v1"},
+	"ticketHandler.Create":                    {ActionType: "command", Action: "tkt.ticket.create.v1"},
+	"webhookHandler.Create":                   {ActionType: "command", Action: "ext.webhook.manage.v1"},
 }
 
 func ResolveExternalWriteAction(handlerMethod string) ExternalWriteActionPolicy {

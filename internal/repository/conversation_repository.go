@@ -2,28 +2,37 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 type ConversationRepository struct {
-	db       *gorm.DB
-	messages conversationMessagePort
-	cleanup  conversationCleanupPort
-	inboxes  conversationInboxPort
-	contacts conversationContactPort
-	users    conversationUserPort
-	teams    conversationTeamPort
-	labels   conversationLabelPort
-	deleteMu sync.Mutex
-	deleteID uint
+	db                       *gorm.DB
+	messages                 conversationMessagePort
+	cleanup                  conversationCleanupPort
+	inboxes                  conversationInboxPort
+	contacts                 conversationContactPort
+	users                    conversationUserPort
+	teams                    conversationTeamPort
+	labels                   conversationLabelPort
+	deleteMu                 sync.Mutex
+	deleteID                 uint
+	creationReconcileMu      sync.Mutex
+	creationReconcileID      uint
+	automationCapture        atomic.Bool
+	automationCaptureStarted atomic.Int64
 }
 
 type MacroConversationMutation struct {
@@ -39,7 +48,7 @@ type MacroConversationMutation struct {
 }
 
 func (r *ConversationRepository) ApplyMacroMutation(accountID, id uint, mutation MacroConversationMutation) error {
-	updates := map[string]any{"last_activity_at": time.Now().UTC(), "object_version": gorm.Expr("object_version + 1"), "updated_at": time.Now().UTC()}
+	updates := map[string]any{"last_activity_at": time.Now().UTC()}
 	if mutation.Status != nil {
 		updates["status"] = *mutation.Status
 	}
@@ -61,14 +70,8 @@ func (r *ConversationRepository) ApplyMacroMutation(accountID, id uint, mutation
 	if mutation.ClearSnooze {
 		updates["snoozed_until"] = nil
 	}
-	res := r.db.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, id).Updates(updates)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected != 1 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	_, err := r.updateWithAutomation(accountID, id, nil, updates)
+	return err
 }
 
 func NewConversationRepository(db *gorm.DB) *ConversationRepository {
@@ -138,21 +141,109 @@ func (r *ConversationRepository) MessageTargetExists(accountID, conversationID u
 // A duplicate delivery cannot increment unread_count twice. CON owns both its
 // state change and corresponding local change record.
 func (r *ConversationRepository) ApplyMessageActivity(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, messageChangeID string) error {
+	return r.applyMessageActivity(accountID, conversationID, actorID, incoming, occurredAt, messageChangeID, nil)
+}
+
+// ApplyMessageActivityWithReopen completes a durable MSG workflow under the CON
+// row lock. A newer owner mutation vetoes the requested transition, never rebases it.
+func (r *ConversationRepository) ApplyMessageActivityWithReopen(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, messageChangeID string, expectedVersion int, reopen bool) error {
+	if !incoming || expectedVersion < 1 {
+		return gorm.ErrInvalidData
+	}
+	return r.applyMessageActivity(accountID, conversationID, actorID, incoming, occurredAt, messageChangeID, &messageReopenIntent{ExpectedVersion: expectedVersion, Reopen: reopen})
+}
+
+// ApplyCreationMessageActivity accepts only a step present in CON's committed
+// plan; caller-controlled message fields cannot create or extend a workflow.
+func (r *ConversationRepository) ApplyCreationMessageActivity(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, messageChangeID string, expectedVersion int, workflowID string, step int) error {
+	plan, err := r.loadCreationPlan(context.Background(), accountID, conversationID, workflowID)
+	if err != nil {
+		return err
+	}
+	if step < 0 || step >= len(plan.Messages) || expectedVersion != plan.CreatedVersion+step || messageChangeID != creationMessageChangeID(workflowID, step) {
+		return gorm.ErrInvalidData
+	}
+	message := plan.Messages[step]
+	if message.SenderID != actorID || (message.MessageType == domain.MessageTypeIncoming) != incoming {
+		return gorm.ErrInvalidData
+	}
+	return r.applyMessageActivity(accountID, conversationID, actorID, incoming, occurredAt, messageChangeID, &messageReopenIntent{ExpectedVersion: expectedVersion, CreationWorkflowID: workflowID, CreationWorkflowStep: step})
+}
+
+func (r *ConversationRepository) applyMessageActivity(accountID, conversationID, actorID uint, incoming bool, occurredAt time.Time, messageChangeID string, intent *messageReopenIntent) error {
 	if accountID == 0 || conversationID == 0 || messageChangeID == "" {
 		return gorm.ErrInvalidData
 	}
+	occurredAt = occurredAt.UTC() // canonical SQLite ordering after owner-only activity application
 	activityChangeID := "con-activity-" + messageChangeID
+	if len(activityChangeID) > 64 {
+		sum := sha256.Sum256([]byte(activityChangeID))
+		activityChangeID = hex.EncodeToString(sum[:])
+	}
+	validateReceipt := func(existing domain.LocalChangeJournal) error {
+		if existing.SourceModule != "CON" || existing.AccountID != accountID || existing.ObjectType != "Conversation" || existing.ObjectID != conversationID || existing.CommandID != messageChangeID || existing.Action != "update" || existing.SourceType != "msg.message.created.v1" || existing.ObjectVersionAfter < 1 || existing.ActorID != actorID {
+			return gorm.ErrInvalidData
+		}
+		if intent != nil {
+			var stored messageReopenIntent
+			if json.Unmarshal([]byte(existing.AfterState), &stored) != nil || stored != *intent {
+				return gorm.ErrInvalidData
+			}
+		} else if existing.AfterState != "" {
+			return gorm.ErrInvalidData
+		}
+		return nil
+	}
+	contactBlocked := false
+	if intent != nil && intent.Reopen {
+		// Resolve a prior decision before consulting CUS: an acknowledged owner
+		// receipt must remain replayable even if the contact is blocked later.
+		var existing domain.LocalChangeJournal
+		err := r.db.Where("change_id = ?", activityChangeID).First(&existing).Error
+		if err == nil {
+			return validateReceipt(existing)
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var snapshot domain.Conversation
+		if err := r.db.Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).First(&snapshot).Error; err != nil {
+			return err
+		}
+		if snapshot.ObjectVersion == intent.ExpectedVersion && snapshot.Status == domain.ConversationStatusResolved && !snapshot.Muted {
+			if r.contacts == nil {
+				return fmt.Errorf("CUS reopen eligibility port is unavailable")
+			}
+			contact, err := r.contacts.FindSummaryByID(accountID, snapshot.ContactID)
+			if err != nil {
+				return err
+			}
+			if contact == nil || contact.ID != snapshot.ContactID || contact.AccountID != accountID {
+				return gorm.ErrInvalidData
+			}
+			contactBlocked = contact.Blocked
+		}
+		// This is a cross-owner observation, not a distributed lock. CON still
+		// rechecks its own version and mute state while applying the receipt.
+	}
+
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		var existing int64
-		if err := tx.Model(&domain.LocalChangeJournal{}).Where("change_id = ?", activityChangeID).Count(&existing).Error; err != nil {
-			return err
-		}
-		if existing != 0 {
-			return nil
-		}
 		var conversation domain.Conversation
-		if err := tx.Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).First(&conversation).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).First(&conversation).Error; err != nil {
 			return err
+		}
+		// Check after acquiring the owner lock so duplicate workers observe the
+		// first committed receipt rather than executing the activity twice.
+		var existing domain.LocalChangeJournal
+		err := tx.Where("change_id = ?", activityChangeID).First(&existing).Error
+		if err == nil {
+			return validateReceipt(existing)
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if intent != nil && intent.ExpectedVersion > conversation.ObjectVersion {
+			return ErrConversationVersionConflict
 		}
 		updates := map[string]any{"object_version": gorm.Expr("object_version + 1")}
 		if conversation.LastActivityAt.Before(occurredAt) {
@@ -161,7 +252,13 @@ func (r *ConversationRepository) ApplyMessageActivity(accountID, conversationID,
 		if incoming {
 			updates["unread_count"] = gorm.Expr("unread_count + 1")
 		}
-		result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ?", accountID, conversationID, domain.ConversationStatusDeleting).Updates(updates)
+		versionStale := intent != nil && conversation.ObjectVersion != intent.ExpectedVersion
+		reopened := intent != nil && intent.Reopen && !versionStale && !contactBlocked && !conversation.Muted && conversation.Status == domain.ConversationStatusResolved
+		if reopened {
+			updates["status"] = domain.ConversationStatusOpen
+			updates["snoozed_until"] = nil
+		}
+		result := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ? AND status <> ? AND object_version = ?", accountID, conversationID, domain.ConversationStatusDeleting, conversation.ObjectVersion).Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -181,24 +278,75 @@ func (r *ConversationRepository) ApplyMessageActivity(accountID, conversationID,
 			CommandID: messageChangeID, CorrelationID: messageChangeID, CausationID: messageChangeID,
 			OccurredAt: occurredAt,
 		}
+		if contactBlocked {
+			change.Reason = "message_reopen_blocked"
+		}
+		if reopened {
+			change.ChangedFields += ",status,snoozed_until"
+			change.Reason = "message_reopened"
+		}
+		if intent != nil {
+			targetVersion := version
+			if versionStale {
+				// Retain the original rejected workflow target. AUT must fail its
+				// CAS rather than inherit any intervening manual edit's version.
+				targetVersion = intent.ExpectedVersion
+				change.Reason = "reopen_version_stale"
+				if intent.CreationWorkflowID != "" {
+					change.Reason = "creation_version_stale"
+				}
+			}
+			state := map[string]any{"expected_version": intent.ExpectedVersion, "reopen": intent.Reopen, "creation_workflow_id": intent.CreationWorkflowID, "creation_workflow_step": intent.CreationWorkflowStep, "automation_target_version": targetVersion, "contact_blocked": contactBlocked}
+			if reopened {
+				state["status_before"], state["status_after"] = conversation.Status, domain.ConversationStatusOpen
+			}
+			raw, err := json.Marshal(state)
+			if err != nil {
+				return err
+			}
+			change.AfterState = string(raw)
+		}
 		return NewJournalRepository(tx).RecordLocalChange(tx, &change)
 	})
 }
 
 func (r *ConversationRepository) Create(c *domain.Conversation) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
+	return r.createWithInitialMessages(c, nil)
+}
+
+func (r *ConversationRepository) createWithInitialMessages(c *domain.Conversation, messages []domain.Message) error {
+	if c == nil || c.AccountID == 0 {
+		return gorm.ErrInvalidData
+	}
+	created := *c
+	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var maxDisplayID uint
 		row := tx.Model(&domain.Conversation{}).
-			Where("account_id = ?", c.AccountID).
-			Select("COALESCE(MAX(display_id), 0)").
-			Row()
-		_ = row.Scan(&maxDisplayID)
-
-		c.DisplayID = maxDisplayID + 1
-		c.LastActivityAt = time.Now().UTC()
-
-		return tx.Create(c).Error
+			Where("account_id = ?", created.AccountID).
+			Select("COALESCE(MAX(display_id), 0)").Row()
+		if err := row.Scan(&maxDisplayID); err != nil {
+			return err
+		}
+		created.DisplayID = maxDisplayID + 1
+		created.LastActivityAt = time.Now().UTC()
+		created.ObjectVersion = 1
+		if err := tx.Create(&created).Error; err != nil {
+			return err
+		}
+		workflowID := ""
+		if len(messages) > 0 {
+			var err error
+			workflowID, err = r.recordCreationPlan(tx, &created, messages)
+			if err != nil {
+				return err
+			}
+		}
+		return r.captureAutomationFactWithWorkflow(tx, &created, true, []string{"created"}, workflowID)
 	})
+	if err == nil {
+		*c = created
+	}
+	return err
 }
 
 // CreateImported preserves a source display ID when one is supplied while
@@ -380,11 +528,13 @@ func (r *ConversationRepository) AddParticipants(accountID, conversationID uint,
 }
 
 func (r *ConversationRepository) ListParticipants(accountID, conversationID uint) ([]domain.ConversationParticipant, error) {
-	if err := ensureConversationAccount(r.db, accountID, conversationID); err != nil {
+	// Do not log caller identifiers or raw dependency errors from Call reads.
+	db := r.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
+	if err := ensureConversationAccount(db, accountID, conversationID); err != nil {
 		return nil, err
 	}
 	participants := make([]domain.ConversationParticipant, 0)
-	err := r.db.Where("conversation_id = ?", conversationID).Order("id ASC").Find(&participants).Error
+	err := db.Where("conversation_id = ?", conversationID).Order("id ASC").Find(&participants).Error
 	return participants, err
 }
 
@@ -472,10 +622,10 @@ func (r *ConversationRepository) FindSLACandidates(accountID uint) ([]domain.Con
 func (r *ConversationRepository) ListForReport(accountID uint, since, until *time.Time) ([]domain.Conversation, error) {
 	query := r.db.Model(&domain.Conversation{}).Where("account_id = ?", accountID)
 	if since != nil {
-		query = query.Where("created_at >= ?", *since)
+		query = query.Where("created_at >= ?", ReportTimeBoundary(query, *since))
 	}
 	if until != nil {
-		query = query.Where("created_at <= ?", *until)
+		query = query.Where("created_at < ?", ReportTimeBoundary(query, *until))
 	}
 	var conversations []domain.Conversation
 	err := query.Order("created_at ASC, id ASC").Find(&conversations).Error
@@ -770,8 +920,24 @@ func (r *ConversationRepository) ListQASamplingTargets(accountID uint, limit int
 	return targets, nil
 }
 
+// Update never upserts or writes associations. A stale snapshot must be read
+// again before it can replace editable fields. SLA/read projections and
+// contact/inbox identity are written only through their dedicated owner methods.
 func (r *ConversationRepository) Update(c *domain.Conversation) error {
-	return r.db.Save(c).Error
+	if c == nil || c.ObjectVersion < 1 {
+		return gorm.ErrInvalidData
+	}
+	updates := map[string]any{
+		"assignee_id": c.AssigneeID, "team_id": c.TeamID,
+		"status": c.Status, "priority": c.Priority,
+		"custom_attributes": c.CustomAttributes, "snoozed_until": c.SnoozedUntil,
+		"last_activity_at": c.LastActivityAt, "muted": c.Muted,
+	}
+	updated, err := r.updateWithAutomation(c.AccountID, c.ID, &c.ObjectVersion, updates)
+	if err == nil {
+		c.ObjectVersion, c.UpdatedAt = updated.ObjectVersion, updated.UpdatedAt
+	}
+	return err
 }
 
 func (r *ConversationRepository) UpdateStatus(accountID, id uint, status string, snoozedUntil *time.Time) error {
@@ -780,9 +946,8 @@ func (r *ConversationRepository) UpdateStatus(accountID, id uint, status string,
 		"snoozed_until":    snoozedUntil,
 		"last_activity_at": time.Now().UTC(),
 	}
-	return r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(updates).Error
+	_, err := r.updateWithAutomation(accountID, id, nil, updates)
+	return err
 }
 
 func (r *ConversationRepository) Assign(accountID, id uint, assigneeID *uint) error {
@@ -790,9 +955,8 @@ func (r *ConversationRepository) Assign(accountID, id uint, assigneeID *uint) er
 		"assignee_id":      assigneeID,
 		"last_activity_at": time.Now().UTC(),
 	}
-	return r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(updates).Error
+	_, err := r.updateWithAutomation(accountID, id, nil, updates)
+	return err
 }
 
 func (r *ConversationRepository) AssignTeam(accountID, id uint, teamID *uint) error {
@@ -800,9 +964,8 @@ func (r *ConversationRepository) AssignTeam(accountID, id uint, teamID *uint) er
 		"team_id":          teamID,
 		"last_activity_at": time.Now().UTC(),
 	}
-	return r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(updates).Error
+	_, err := r.updateWithAutomation(accountID, id, nil, updates)
+	return err
 }
 
 // CountActiveAssigned is the CON-owned workload query used by routing. Label
@@ -860,8 +1023,9 @@ func (r *ConversationRepository) LastAssignedAgent(accountID, inboxID, excludeID
 	return *conversation.AssigneeID, nil
 }
 
-// ResumeExpiredSnoozed owns both the CON scan and conditional state change.
-// The guarded update makes repeated or concurrent scheduler runs idempotent.
+// ResumeExpiredSnoozed owns the CON scan and each atomic expiry transition.
+// A later failure returns earlier committed winners as well as the error, so
+// callers can publish those winners without falsely reporting a rolled-back pass.
 func (r *ConversationRepository) ResumeExpiredSnoozed(ctx context.Context, now time.Time) ([]domain.Conversation, error) {
 	var candidates []domain.Conversation
 	if err := r.db.WithContext(ctx).
@@ -872,24 +1036,13 @@ func (r *ConversationRepository) ResumeExpiredSnoozed(ctx context.Context, now t
 
 	resumed := make([]domain.Conversation, 0, len(candidates))
 	for i := range candidates {
-		conversation := &candidates[i]
-		result := r.db.WithContext(ctx).Model(&domain.Conversation{}).
-			Where("account_id = ? AND id = ? AND status = ? AND snoozed_until IS NOT NULL AND snoozed_until <= ?", conversation.AccountID, conversation.ID, domain.ConversationStatusSnoozed, now).
-			Updates(map[string]any{
-				"status":           domain.ConversationStatusOpen,
-				"snoozed_until":    nil,
-				"last_activity_at": now,
-			})
-		if result.Error != nil {
-			return nil, result.Error
+		conversation, err := r.resumeExpiredSnoozedCandidate(ctx, candidates[i], now)
+		if err != nil {
+			return resumed, err
 		}
-		if result.RowsAffected == 0 {
-			continue
+		if conversation != nil {
+			resumed = append(resumed, *conversation)
 		}
-		conversation.Status = domain.ConversationStatusOpen
-		conversation.SnoozedUntil = nil
-		conversation.LastActivityAt = now
-		resumed = append(resumed, *conversation)
 	}
 	return resumed, nil
 }
@@ -932,24 +1085,21 @@ func (r *ConversationRepository) AssignWithTeam(accountID, id uint, hasAssignee 
 			updates["team_id"] = nil
 		}
 	}
-	return r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(updates).Error
+	_, err := r.updateWithAutomation(accountID, id, nil, updates)
+	return err
 }
 
 func (r *ConversationRepository) TouchActivity(accountID, id uint) error {
 	return r.db.Model(&domain.Conversation{}).
 		Where("account_id = ? AND id = ?", accountID, id).
-		Update("last_activity_at", time.Now().UTC()).Error
+		Updates(map[string]any{"last_activity_at": time.Now().UTC(), "object_version": gorm.Expr("object_version + 1")}).Error
 }
 
 func (r *ConversationRepository) UpdatePriority(accountID, id uint, priority string) error {
-	return r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(map[string]any{
-			"priority":         priority,
-			"last_activity_at": time.Now().UTC(),
-		}).Error
+	_, err := r.updateWithAutomation(accountID, id, nil, map[string]any{
+		"priority": priority, "last_activity_at": time.Now().UTC(),
+	})
+	return err
 }
 
 func (r *ConversationRepository) ApplySLAPolicy(accountID, id, policyID uint) error {
@@ -1074,9 +1224,8 @@ func (r *ConversationRepository) UpdateContactLastSeen(accountID, id uint, seenA
 
 // ToggleMute updates conversation mute state
 func (r *ConversationRepository) ToggleMute(accountID, id uint, muted bool) error {
-	return r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Update("muted", muted).Error
+	_, err := r.updateWithAutomation(accountID, id, nil, map[string]any{"muted": muted})
+	return err
 }
 
 // AttachLabel records the CON-owned relationship between a conversation and a
@@ -1098,27 +1247,12 @@ func (r *ConversationRepository) AttachLabel(accountID, conversationID, labelID 
 // AttachLabelReference writes the CON-owned relationship after the caller has
 // validated the CUS-owned label.
 func (r *ConversationRepository) AttachLabelReference(accountID, conversationID, labelID uint) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var conversationCount int64
-		if err := tx.Model(&domain.Conversation{}).Where("account_id = ? AND id = ?", accountID, conversationID).Count(&conversationCount).Error; err != nil {
-			return err
-		}
-		if conversationCount != 1 {
-			return gorm.ErrRecordNotFound
-		}
-		relation := domain.ConversationLabel{ConversationID: conversationID, LabelID: labelID}
-		return tx.Where(relation).FirstOrCreate(&relation).Error
-	})
+	return r.changeLabelWithAutomation(accountID, conversationID, labelID, true)
 }
 
-// DetachLabel removes a CON-owned label relationship with tenant guards on
-// the CON-owned relationship for an account-scoped conversation.
+// DetachLabel removes a CON-owned label relationship with tenant guards.
 func (r *ConversationRepository) DetachLabel(accountID, conversationID, labelID uint) error {
-	return r.db.Where(
-		"conversation_id IN (?) AND label_id = ?",
-		r.db.Model(&domain.Conversation{}).Select("id").Where("account_id = ? AND id = ?", accountID, conversationID),
-		labelID,
-	).Delete(&domain.ConversationLabel{}).Error
+	return r.changeLabelWithAutomation(accountID, conversationID, labelID, false)
 }
 
 // FindLabelIDs returns CON-owned relationship data for an account-scoped conversation.
@@ -1425,36 +1559,7 @@ func (r *ConversationRepository) Filter(accountID uint, filters []domain.FilterR
 
 // UpdateCustomAttributes updates or merges key-values into conversation custom attributes
 func (r *ConversationRepository) UpdateCustomAttributes(accountID, id uint, attrs map[string]any) (map[string]any, error) {
-	var conv domain.Conversation
-	if err := r.db.Where("account_id = ? AND id = ?", accountID, id).First(&conv).Error; err != nil {
-		return nil, err
-	}
-
-	merged := make(map[string]any)
-	if conv.CustomAttributes != "" {
-		_ = json.Unmarshal([]byte(conv.CustomAttributes), &merged)
-	}
-	for k, v := range attrs {
-		merged[k] = v
-	}
-
-	bytes, err := json.Marshal(merged)
-	if err != nil {
-		return nil, err
-	}
-
-	conv.CustomAttributes = string(bytes)
-	conv.LastActivityAt = time.Now().UTC()
-	if err := r.db.Model(&domain.Conversation{}).
-		Where("account_id = ? AND id = ?", accountID, id).
-		Updates(map[string]any{
-			"custom_attributes": conv.CustomAttributes,
-			"last_activity_at":  conv.LastActivityAt,
-		}).Error; err != nil {
-		return nil, err
-	}
-
-	return merged, nil
+	return r.mergeAttributesWithAutomation(accountID, id, attrs)
 }
 
 // ListAttachments returns all attachments belonging to messages in the conversation

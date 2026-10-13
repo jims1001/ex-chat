@@ -40,8 +40,13 @@ func TestConversation_FullLifecycle(t *testing.T) {
 	routingService := service.NewRoutingService(db, convRepo, hub)
 
 	convHandler := handler.NewConversationHandler(convRepo, msgRepo, inboxRepo, contactRepo, routingService, hub)
+	convHandler.SetJWTSecret(cfg.JWTSecret)
+	bootstrapHandler := handler.NewInboxHandler(inboxRepo, userRepo)
+	bootstrapHandler.SetContactRepo(contactRepo)
+	bootstrapHandler.SetJWTSecret(cfg.JWTSecret)
 
 	r := gin.New()
+	r.POST("/api/v1/widget/config", bootstrapHandler.WidgetConfigCreate)
 
 	// Public Widget Endpoints
 	r.POST("/api/v1/widget/conversations", convHandler.WidgetCreateConversation)
@@ -87,7 +92,20 @@ func TestConversation_FullLifecycle(t *testing.T) {
 	}
 	_ = inboxRepo.Create(&inbox)
 
-	// 2. Visitor creates conversation via Widget
+	// 2. Bootstrap a signed visitor before creating a widget conversation.
+	bootstrapRequest := httptest.NewRequest(http.MethodPost, "/api/v1/widget/config?website_token=tok_widget_abc", bytes.NewBufferString(`{}`))
+	bootstrapRequest.Header.Set("Content-Type", "application/json")
+	bootstrapResponse := httptest.NewRecorder()
+	r.ServeHTTP(bootstrapResponse, bootstrapRequest)
+	if bootstrapResponse.Code != http.StatusCreated {
+		t.Fatalf("bootstrap: %d %s", bootstrapResponse.Code, bootstrapResponse.Body.String())
+	}
+	var visitor struct {
+		Token string `json:"visitor_token"`
+	}
+	if err := json.Unmarshal(bootstrapResponse.Body.Bytes(), &visitor); err != nil || visitor.Token == "" {
+		t.Fatal("missing bootstrap session", err)
+	}
 	visitorConvBody, _ := json.Marshal(map[string]string{
 		"source_id": "visitor_session_1",
 		"message":   "Hello! I need help with billing.",
@@ -95,6 +113,7 @@ func TestConversation_FullLifecycle(t *testing.T) {
 	w1 := httptest.NewRecorder()
 	req1, _ := http.NewRequest("POST", "/api/v1/widget/conversations?website_token=tok_widget_abc", bytes.NewBuffer(visitorConvBody))
 	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Visitor-Session", visitor.Token)
 	r.ServeHTTP(w1, req1)
 
 	if w1.Code != http.StatusCreated {
@@ -177,6 +196,7 @@ func TestConversation_FullLifecycle(t *testing.T) {
 	// 7. Visitor views messages (should only have 2 messages, private note MUST be hidden)
 	wVisMsgs := httptest.NewRecorder()
 	reqVisMsgs, _ := http.NewRequest("GET", "/api/v1/widget/messages?website_token=tok_widget_abc&conversation_id=1", nil)
+	reqVisMsgs.Header.Set("X-Visitor-Session", visitor.Token)
 	r.ServeHTTP(wVisMsgs, reqVisMsgs)
 
 	var visMsgsRes struct {
@@ -212,6 +232,7 @@ func TestConversation_FullLifecycle(t *testing.T) {
 	wReopen := httptest.NewRecorder()
 	reqReopen, _ := http.NewRequest("POST", "/api/v1/widget/messages?website_token=tok_widget_abc", bytes.NewBuffer(visitorMsgBody))
 	reqReopen.Header.Set("Content-Type", "application/json")
+	reqReopen.Header.Set("X-Visitor-Session", visitor.Token)
 	r.ServeHTTP(wReopen, reqReopen)
 
 	if wReopen.Code != http.StatusCreated {

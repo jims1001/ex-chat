@@ -13,6 +13,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/repository"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type automationContextKey struct{}
@@ -40,17 +41,35 @@ func GetAutomationDepth(ctx context.Context) int {
 }
 
 type AutomationService struct {
-	db        *gorm.DB
-	convRepo  *repository.ConversationRepository
-	msgRepo   *repository.MessageRepository
-	labelRepo *repository.LabelRepository
-	accounts  automationAccountPort
-	teams     automationTeamPort
-	contacts  automationContactPort
+	db                     *gorm.DB
+	durable                bool
+	canceller              automationCancellationPort
+	historyProjector       func(domain.AutomationRuleExecution, *domain.AutomationRuleVersion) any
+	compatibilityProjector func(domain.AutomationCompatibilityInput) domain.AutomationCompatibilityRule
+	convRepo               *repository.ConversationRepository
+	msgRepo                *repository.MessageRepository
+	labelRepo              *repository.LabelRepository
+	accounts               automationAccountPort
+	teams                  automationTeamPort
+	contacts               automationContactPort
 
 	// Idempotency cache to prevent same-second duplicated execution for same conversation+event+rule
 	recentExecMu sync.Mutex
 	recentExec   map[string]time.Time
+}
+
+type automationCancellationPort interface {
+	CancelAutomation(context.Context, uint, uint) (any, error)
+}
+
+func (s *AutomationService) SetAutomationCanceller(port automationCancellationPort) {
+	s.canceller = port
+}
+func (s *AutomationService) CancelExecution(ctx context.Context, accountID, executionID uint) (any, error) {
+	if !s.durable || s.canceller == nil {
+		return nil, errors.New("durable automation cancellation is not enabled")
+	}
+	return s.canceller.CancelAutomation(ctx, accountID, executionID)
 }
 
 type automationAccountPort interface {
@@ -92,8 +111,107 @@ func (s *AutomationService) ListRules(accountID uint) ([]domain.AutomationRule, 
 	return rules, err
 }
 
+var ErrAutomationConditionMode = errors.New("active numeric condition profiles require durable-local automation mode")
+
+var ErrAutomationConditionSemanticsInvalid = errors.New("invalid automation condition semantics")
+
+var ErrAutomationEventUnsupported = errors.New("event is not supported by durable automation; use conversation_created, conversation_updated, conversation_opened, conversation_resolved, or message_created")
+
+func durableAutomationEventSupported(event string) bool {
+	return event == "conversation_created" || event == "conversation_updated" || event == "conversation_opened" || event == "conversation_resolved" || event == "message_created"
+}
+
 func (s *AutomationService) CreateRule(rule *domain.AutomationRule) error {
-	return s.db.Select("AccountID", "Name", "Description", "EventName", "Conditions", "Actions", "Active").Create(rule).Error
+	if err := domain.ValidateAutomationConditionSemantics(rule.ConditionSemantics, rule.Conditions); err != nil {
+		return fmt.Errorf("%w: %v", ErrAutomationConditionSemanticsInvalid, err)
+	}
+	if !s.durable && rule.Active && rule.ConditionSemantics != "" {
+		return ErrAutomationConditionMode
+	}
+	if s.durable && !durableAutomationEventSupported(rule.EventName) {
+		return ErrAutomationEventUnsupported
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Select("AccountID", "Name", "Description", "EventName", "Conditions", "ConditionSemantics", "Actions", "Active", "CreatedAt", "UpdatedAt").Create(rule).Error; err != nil {
+			return err
+		}
+		return freezeAutomationRule(tx, rule, 1)
+	})
+}
+
+// SetDurableExecution selects one executor for the entire service, never per rule.
+// Owner transactions capture triggers; legacy callbacks are disabled in this mode.
+func (s *AutomationService) SetDurableExecution(enabled bool) { s.durable = enabled }
+
+func freezeAutomationRule(tx *gorm.DB, rule *domain.AutomationRule, version uint) error {
+	if err := domain.ValidateAutomationConditionSemantics(rule.ConditionSemantics, rule.Conditions); err != nil {
+		return fmt.Errorf("%w: %v", ErrAutomationConditionSemanticsInvalid, err)
+	}
+	frozen := previewAutomationRule(*rule)
+	frozen.Version = version
+	frozen.CreatedAt = rule.UpdatedAt.UTC()
+	return tx.Create(&frozen).Error
+}
+
+// previewAutomationRule is the exact legacy freeze normalization without an
+// activation time, version assignment, database access, or rule mutation.
+func previewAutomationRule(rule domain.AutomationRule) domain.AutomationRuleVersion {
+	conditions := rule.Conditions
+	normalizer := &AutomationService{}
+	// Only legacy definitions use the legacy normalization. Adopted definitions
+	// retain exact decimal tokens and custom-field identity metadata verbatim.
+	if rule.ConditionSemantics == "" {
+		if strings.TrimSpace(conditions) == "" || strings.TrimSpace(conditions) == "{}" {
+			conditions = "[]"
+		}
+		if parsed := normalizer.parseConditions(conditions); len(parsed) > 0 {
+			raw, _ := json.Marshal(parsed)
+			conditions = string(raw)
+		}
+	}
+	actions := rule.Actions
+	if parsed := normalizer.parseActions(actions); len(parsed) > 0 {
+		for i := range parsed {
+			if parsed[i].ActionName == "change_status" || parsed[i].ActionName == "change_priority" || parsed[i].CapabilityID == "conversation.change_status" || parsed[i].CapabilityID == "conversation.change_priority" {
+				if value, ok := parsed[i].ActionParams.(string); ok {
+					parsed[i].ActionParams = []string{value}
+				}
+			}
+		}
+		raw, _ := json.Marshal(parsed)
+		actions = string(raw)
+	}
+	if strings.TrimSpace(actions) == "" || strings.TrimSpace(actions) == "{}" {
+		actions = "[]"
+	}
+	return domain.AutomationRuleVersion{AccountID: rule.AccountID, RuleID: rule.ID, EventName: rule.EventName, Conditions: conditions, ConditionSemantics: rule.ConditionSemantics, Actions: actions}
+}
+
+// PrepareDurableRules freezes pre-existing legacy definitions before durable
+// capture is enabled. It does not modify any definition that already has a version.
+func (s *AutomationService) PrepareDurableRules() error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var rules []domain.AutomationRule
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id ASC").Find(&rules).Error; err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			if s.durable && rule.Active && !durableAutomationEventSupported(rule.EventName) {
+				return fmt.Errorf("rule %d: %w", rule.ID, ErrAutomationEventUnsupported)
+			}
+			var count int64
+			if err := tx.Model(&domain.AutomationRuleVersion{}).Where("account_id = ? AND rule_id = ?", rule.AccountID, rule.ID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				rule.UpdatedAt = time.Now().UTC() // activation-time snapshot, never backdated
+				if err := freezeAutomationRule(tx, &rule, 1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func (s *AutomationService) FindRule(accountID, ruleID uint) (*domain.AutomationRule, error) {
@@ -106,9 +224,59 @@ func (s *AutomationService) FindRule(accountID, ruleID uint) (*domain.Automation
 }
 
 func (s *AutomationService) UpdateRule(rule *domain.AutomationRule, updates map[string]any) error {
-	delete(updates, "id")
-	delete(updates, "account_id")
-	return s.db.Model(rule).Updates(updates).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var current domain.AutomationRule
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND id = ?", rule.AccountID, rule.ID).First(&current).Error; err != nil {
+			return err
+		}
+		allowed := map[string]any{}
+		for _, key := range []string{"name", "description", "event_name", "conditions", "condition_semantics", "actions", "active"} {
+			if value, ok := updates[key]; ok {
+				allowed[key] = value
+			}
+		}
+		profile := current.ConditionSemantics
+		if value, present := allowed["condition_semantics"]; present {
+			var valid bool
+			profile, valid = value.(string)
+			if !valid {
+				return fmt.Errorf("%w: condition_semantics must be a string", ErrAutomationConditionSemanticsInvalid)
+			}
+		}
+		conditions := current.Conditions
+		if value, present := allowed["conditions"]; present && profile != "" {
+			var valid bool
+			conditions, valid = value.(string)
+			if !valid {
+				return fmt.Errorf("%w: adopted conditions must be a JSON string definition", ErrAutomationConditionSemanticsInvalid)
+			}
+		}
+		if err := domain.ValidateAutomationConditionSemantics(profile, conditions); err != nil {
+			return fmt.Errorf("%w: %v", ErrAutomationConditionSemanticsInvalid, err)
+		}
+		allowed["updated_at"] = time.Now().UTC()
+		if err := tx.Model(&current).Updates(allowed).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("account_id = ? AND id = ?", rule.AccountID, rule.ID).First(&current).Error; err != nil {
+			return err
+		}
+		if !s.durable && current.Active && current.ConditionSemantics != "" {
+			return ErrAutomationConditionMode
+		}
+		if s.durable && !durableAutomationEventSupported(current.EventName) {
+			return ErrAutomationEventUnsupported
+		}
+		var latest uint
+		if err := tx.Model(&domain.AutomationRuleVersion{}).Where("account_id = ? AND rule_id = ?", rule.AccountID, rule.ID).Select("COALESCE(MAX(version),0)").Scan(&latest).Error; err != nil {
+			return err
+		}
+		if err := freezeAutomationRule(tx, &current, latest+1); err != nil {
+			return err
+		}
+		*rule = current
+		return nil
+	})
 }
 
 func (s *AutomationService) DeleteRule(accountID, ruleID uint) error {
@@ -116,19 +284,8 @@ func (s *AutomationService) DeleteRule(accountID, ruleID uint) error {
 }
 
 func (s *AutomationService) ListExecutions(accountID uint, ruleID, conversationID, status string) ([]domain.AutomationRuleExecution, error) {
-	query := s.db.Where("account_id = ?", accountID)
-	if ruleID != "" {
-		query = query.Where("rule_id = ?", ruleID)
-	}
-	if conversationID != "" {
-		query = query.Where("conversation_id = ?", conversationID)
-	}
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-	executions := make([]domain.AutomationRuleExecution, 0)
-	err := query.Order("triggered_at DESC").Limit(100).Find(&executions).Error
-	return executions, err
+	page, err := s.ListExecutionsPage(accountID, ruleID, conversationID, status, AutomationExecutionPageOptions{})
+	return page.Items, err
 }
 
 func (s *AutomationService) FindExecution(accountID, executionID uint) (*domain.AutomationRuleExecution, error) {
@@ -169,10 +326,12 @@ type RuleCondition struct {
 }
 
 type ActionInstruction struct {
-	ActionName   string `json:"action_name"`
-	ActionParams any    `json:"action_params"`
-	Name         string `json:"name"`
-	Params       any    `json:"params"`
+	CapabilityID      string `json:"capability_id,omitempty"`
+	CapabilityVersion string `json:"capability_version,omitempty"`
+	ActionName        string `json:"action_name"`
+	ActionParams      any    `json:"action_params"`
+	Name              string `json:"name"`
+	Params            any    `json:"params"`
 }
 
 // ActionResult records individual action status and error
@@ -213,7 +372,7 @@ func (s *AutomationService) HandleMessageCreatedWithContext(ctx context.Context,
 }
 
 func (s *AutomationService) evaluateAndExecute(ctx context.Context, conv *domain.Conversation, msg *domain.Message, eventName string) {
-	if conv == nil {
+	if conv == nil || s.durable {
 		return
 	}
 
@@ -255,6 +414,21 @@ func (s *AutomationService) evaluateAndExecute(ctx context.Context, conv *domain
 	}
 
 	for _, rule := range rules {
+		// Explicit profiles belong to durable-local execution. Never let restored
+		// or externally inserted profiles fall through legacy OR evaluation.
+		if rule.ConditionSemantics != "" {
+			profile := "unknown"
+			if rule.ConditionSemantics == domain.AutomationNumericCustomV1 {
+				profile = domain.AutomationNumericCustomV1
+			}
+			logger.WithComponent("automation").Warn("automation profile skipped by legacy executor",
+				"rule_id", rule.ID,
+				"account_id", rule.AccountID,
+				"reason", "condition_semantics_requires_durable_local",
+				"profile", profile,
+			)
+			continue
+		}
 		// Idempotency check: prevent same rule triggering on same conversation within 2 seconds
 		idempKey := fmt.Sprintf("%d:%d:%d:%s", conv.AccountID, conv.ID, rule.ID, eventName)
 		s.recentExecMu.Lock()
@@ -410,7 +584,7 @@ func (s *AutomationService) parseActions(rawActions string) []ActionInstruction 
 	}
 
 	var actions []ActionInstruction
-	if err := json.Unmarshal([]byte(raw), &actions); err == nil && len(actions) > 0 {
+	if err := decodeAutomationActionNumbers(raw, &actions); err == nil && len(actions) > 0 {
 		return s.normalizeActions(actions)
 	}
 
@@ -419,7 +593,7 @@ func (s *AutomationService) parseActions(rawActions string) []ActionInstruction 
 		Rules   []ActionInstruction `json:"rules"`
 		Values  []ActionInstruction `json:"values"`
 	}
-	if err := json.Unmarshal([]byte(raw), &wrapper); err == nil {
+	if err := decodeAutomationActionNumbers(raw, &wrapper); err == nil {
 		if len(wrapper.Actions) > 0 {
 			return s.normalizeActions(wrapper.Actions)
 		}
@@ -432,7 +606,7 @@ func (s *AutomationService) parseActions(rawActions string) []ActionInstruction 
 	}
 
 	var single ActionInstruction
-	if err := json.Unmarshal([]byte(raw), &single); err == nil && (single.ActionName != "" || single.Name != "") {
+	if err := decodeAutomationActionNumbers(raw, &single); err == nil && (single.ActionName != "" || single.Name != "" || single.CapabilityID != "") {
 		return s.normalizeActions([]ActionInstruction{single})
 	}
 
@@ -717,6 +891,11 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 			return 0
 		}
 		switch v := val.(type) {
+		case json.Number:
+			id, ok := domain.ParseAutomationNumberUint64(v)
+			if ok && id <= uint64(^uint(0)) {
+				return uint(id)
+			}
 		case float64:
 			if v > 0 {
 				return uint(v)
@@ -1008,4 +1187,10 @@ func (s *AutomationService) executeAction(ctx context.Context, conv *domain.Conv
 	conv.LastActivityAt = now
 	conv.UpdatedAt = now
 	return s.convRepo.TouchActivity(conv.AccountID, conv.ID)
+}
+
+func decodeAutomationActionNumbers(raw string, out any) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	return decoder.Decode(out)
 }

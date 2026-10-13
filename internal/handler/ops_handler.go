@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"gorm.io/gorm"
 	"net/http"
 	"strconv"
 	"strings"
@@ -91,6 +93,11 @@ func (h *OpsHandler) CreateCannedResponse(c *gin.Context) {
 		return
 	}
 
+	if strings.TrimSpace(req.ShortCode) == "" {
+		response.BadRequest(c, "short_code is required")
+		return
+	}
+
 	cr := domain.CannedResponse{
 		AccountID: accountID,
 		ShortCode: strings.TrimSpace(req.ShortCode),
@@ -98,6 +105,10 @@ func (h *OpsHandler) CreateCannedResponse(c *gin.Context) {
 	}
 
 	if err := h.cannedRepo.Create(&cr); err != nil {
+		if errors.Is(err, repository.ErrCannedResponseVersioned) || errors.Is(err, repository.ErrCannedResponseDuplicate) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Canned response requires a versioned command or a distinct shortcode"})
+			return
+		}
 		logger.WithComponent("canned_response").Error("failed to create canned response",
 			"account_id", accountID,
 			"short_code", cr.ShortCode,
@@ -138,10 +149,22 @@ func (h *OpsHandler) UpdateCannedResponse(c *gin.Context) {
 		return
 	}
 
+	if strings.TrimSpace(req.ShortCode) == "" {
+		response.BadRequest(c, "short_code is required")
+		return
+	}
 	cr.ShortCode = strings.TrimSpace(req.ShortCode)
 	cr.Content = req.Content
 
 	if err := h.cannedRepo.Update(cr); err != nil {
+		if errors.Is(err, repository.ErrCannedResponseVersioned) || errors.Is(err, repository.ErrCannedResponseDuplicate) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Canned response requires a versioned command or a distinct shortcode"})
+			return
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "Canned response not found")
+			return
+		}
 		logger.WithComponent("canned_response").Error("failed to update canned response",
 			"account_id", accountID,
 			"canned_response_id", uint(id),
@@ -171,6 +194,10 @@ func (h *OpsHandler) DeleteCannedResponse(c *gin.Context) {
 	}
 
 	if err := h.cannedRepo.Delete(accountID, uint(id)); err != nil {
+		if errors.Is(err, repository.ErrCannedResponseVersioned) || errors.Is(err, repository.ErrCannedResponseDuplicate) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Canned response requires a versioned command or a distinct shortcode"})
+			return
+		}
 		logger.WithComponent("canned_response").Error("failed to delete canned response",
 			"account_id", accountID,
 			"canned_response_id", uint(id),

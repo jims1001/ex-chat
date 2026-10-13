@@ -33,8 +33,13 @@ func TestContact_LifecycleAndMerge(t *testing.T) {
 	contactRepo := repository.NewContactRepository(db)
 
 	contactHandler := handler.NewContactHandler(contactRepo, inboxRepo)
+	contactHandler.SetJWTSecret(cfg.JWTSecret)
+	bootstrapHandler := handler.NewInboxHandler(inboxRepo, userRepo)
+	bootstrapHandler.SetContactRepo(contactRepo)
+	bootstrapHandler.SetJWTSecret(cfg.JWTSecret)
 
 	r := gin.New()
+	r.POST("/api/v1/widget/config", bootstrapHandler.WidgetConfigCreate)
 
 	// Widget identification
 	r.POST("/api/v1/widget/contact", contactHandler.WidgetIdentify)
@@ -108,7 +113,20 @@ func TestContact_LifecycleAndMerge(t *testing.T) {
 		t.Fatalf("create contact 2 expected 201, got %d: %s", w2.Code, w2.Body.String())
 	}
 
-	// 4. Test Widget Identify (auto creates visitor contact linked to source_id)
+	// 4. Bootstrap a new signed visitor, then update that owned profile.
+	bootstrapRequest := httptest.NewRequest(http.MethodPost, "/api/v1/widget/config?website_token=web_token_12345", bytes.NewBufferString(`{}`))
+	bootstrapRequest.Header.Set("Content-Type", "application/json")
+	bootstrapResponse := httptest.NewRecorder()
+	r.ServeHTTP(bootstrapResponse, bootstrapRequest)
+	if bootstrapResponse.Code != http.StatusCreated {
+		t.Fatalf("bootstrap: %d %s", bootstrapResponse.Code, bootstrapResponse.Body.String())
+	}
+	var visitor struct {
+		Token string `json:"visitor_token"`
+	}
+	if err := json.Unmarshal(bootstrapResponse.Body.Bytes(), &visitor); err != nil || visitor.Token == "" {
+		t.Fatal("missing bootstrap session", err)
+	}
 	widgetBody, _ := json.Marshal(map[string]string{
 		"source_id": "session_uuid_999",
 		"name":      "Anonymous Visitor",
@@ -116,6 +134,7 @@ func TestContact_LifecycleAndMerge(t *testing.T) {
 	wWidget := httptest.NewRecorder()
 	reqWidget, _ := http.NewRequest("POST", "/api/v1/widget/contact?website_token=web_token_12345", bytes.NewBuffer(widgetBody))
 	reqWidget.Header.Set("Content-Type", "application/json")
+	reqWidget.Header.Set("X-Visitor-Session", visitor.Token)
 	r.ServeHTTP(wWidget, reqWidget)
 
 	if wWidget.Code != http.StatusOK {

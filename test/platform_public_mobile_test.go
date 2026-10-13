@@ -20,9 +20,9 @@ func TestPlatform_Public_And_MobilePush(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	cfg := &config.Config{
-		Environment: "test",
-		DBDriver:    "sqlite",
-		DBPath:      ":memory:",
+		Environment:        "test",
+		DBDriver:           "sqlite",
+		DBPath:             ":memory:",
 		JWTSecret:          "test_secret_key_1234567890123456",
 		JWTExpirationHours: 72,
 	}
@@ -142,16 +142,25 @@ func TestPlatform_Public_And_MobilePush(t *testing.T) {
 	}
 
 	var contactResp struct {
-		Data domain.Contact `json:"data"`
+		Data struct {
+			domain.Contact
+			SourceID     string `json:"source_id"`
+			VisitorToken string `json:"visitor_token"`
+		} `json:"data"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &contactResp)
 	contactID := contactResp.Data.ID
-	if contactID == 0 {
-		t.Fatalf("expected contactID > 0")
+	visitorSession := contactResp.Data.VisitorToken
+	if contactID == 0 || visitorSession == "" || contactResp.Data.SourceID == "" {
+		t.Fatal("expected signed server-created public visitor identity")
+	}
+	if contactResp.Data.Email != "" {
+		t.Fatal("anonymous public bootstrap must not adopt the caller's email")
 	}
 
 	// 5.3 OPEN-04: Public Conversation Creation
 	req = httptest.NewRequest(http.MethodPost, "/public/api/v1/inboxes/pub_web_token_abc/contacts/"+strconv.Itoa(int(contactID))+"/conversations", nil)
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
@@ -175,6 +184,7 @@ func TestPlatform_Public_And_MobilePush(t *testing.T) {
 	body, _ = json.Marshal(msgPayload)
 	msgUrl := "/public/api/v1/inboxes/pub_web_token_abc/contacts/" + strconv.Itoa(int(contactID)) + "/conversations/" + strconv.Itoa(int(convID)) + "/messages"
 	req = httptest.NewRequest(http.MethodPost, msgUrl, bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -184,6 +194,7 @@ func TestPlatform_Public_And_MobilePush(t *testing.T) {
 
 	// Re-sending with same echo_id should return 200 OK without creating a duplicate message
 	req = httptest.NewRequest(http.MethodPost, msgUrl, bytes.NewReader(body))
+	req.Header.Set("X-Visitor-Session", visitorSession)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)

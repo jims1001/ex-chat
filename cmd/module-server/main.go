@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/OracleBetX-Projects/ex-chat/internal/modruntime"
+	"github.com/OracleBetX-Projects/ex-chat/internal/service"
 )
 
 func main() {
@@ -21,7 +22,15 @@ func main() {
 	server := &http.Server{Addr: runtime.Config.Address, Handler: runtime.Handler(), ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	workerContext, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
+	mailCfg := runtime.Config.OrdinaryEmail
+	runtime.OrdinaryEmailTransport = service.NewSMTPEmailSender(mailCfg.Host, mailCfg.Port, mailCfg.Username, mailCfg.Password)
+	mailDone := make(chan struct{})
+	go func() {
+		defer close(mailDone)
+		runtime.RunOrdinaryEmail(workerContext, func(error) { log.Print("ordinary email checkpoint remains pending") })
+	}()
 	go runtime.RunEventFanout(workerContext, func(err error) { log.Printf("module event fanout failed: %v", err) })
+	go runtime.RunAutomation(workerContext, func(err error) { log.Printf("automation runner failed: %v", err) })
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
@@ -31,6 +40,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	stopWorker()
+	<-mailDone
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

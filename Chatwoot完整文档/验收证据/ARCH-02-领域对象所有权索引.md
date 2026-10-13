@@ -122,11 +122,34 @@
 | 116 | AccessGrant | models.go | MED | 权威 | 私有媒体访问授权 |
 | 117 | AutomationRuleVersion | models.go | AUT | 权威 | 自动化规则冻结版本 |
 
+| 118 | PaymentCheckoutIntent | payment.go:7 | BIL | 权威 | 已定价的一次性充值意图、Provider 会话与待履约状态 |
+| 119 | PaymentWebhookReceipt | payment.go:31 | BIL | 权威 | 验签事件摘要、幂等收据与处理状态 |
+
+| 120 | ChannelConnection | channel_ingress.go | CHN | 权威 | 已验证供应商收件人到租户 Inbox 的唯一映射与加密凭据 |
+| 121 | ChannelContactIdentity | channel_ingress.go | CUS | 权威 | 渠道客户身份幂等键，关联 ContactInbox |
+| 122 | ChannelConversationSession | channel_ingress.go | CON | 权威 | 渠道客户会话选择的持久化并发锁与映射 |
+| 123 | ChannelMessageReceipt | channel_ingress.go | MSG | 权威 | 与消息及本地日志同事务提交的供应商消息去重收据 |
+| 124 | OutboundMessageAttempt | message_outbound.go | MSG | 权威 | 持久化出站文本意图、不可变路由与正文快照、发送租约及供应商状态；仅 MSG 写入 |
+| 125 | SAMLAuthnRequest | saml_request.go | IAM | 权威 | 浏览器与状态摘要绑定的一次性 SAML 请求；独立安全原语，未接入登录端点 |
+| 126 | SAMLReplay | saml_request.go | IAM | 权威 | 发行者范围的 SAML 响应及断言双重重放保护；跨租户和配置版本保留消费事实 |
+
+| 127 | AgentInvitation | agent_invitation.go | TEN | 权威 | 租户成员邀请；仅存储 24 小时邮件证明摘要及角色绑定，恢复时终止未消费邀请 |
+| 128 | InvitationIdentity | agent_invitation.go | IAM | 权威 | 新身份激活的一次性检查点；仅表示身份创建事实，不授予登录、会话或租户成员权限 |
+| 129 | OrdinaryEmailIntent | ordinary_email.go | MSG | 权威 | 新建显式普通邮件的不可变正文、全局 SMTP 绑定及持久化投递状态；不接管历史或敏感凭据邮件 |
+| 130 | OrdinaryEmailAttempt | ordinary_email.go | MSG | 日志 | 普通邮件每次租约、提交前检查点及结果证据；结果未知时不得自动重发 |
+| 131 | OrdinarySMTPResult | ordinary_smtp.go | MSG | 响应 DTO | 普通 SMTP 的安全结果分类；不持久化，不携带供应商响应或凭据 |
+
+| 132 | BillingCustomer | billing_customer.go | BIL | 权威 | 显式币种选择、不可变客户创建意图及供应商来源绑定；无门户短期链接，不代表付费订阅或权益 |
+
+## 出站文本所有者边界
+
+`ChannelOutboundService` 归属 MSG，通过 CHN 的 `OutboundConnection` 与 CON 的 `OutboundMessageTarget` 读取发送绑定。`OutboundMessageTarget` 使用现有 CON→CUS 依赖，通过命名窄接口 `OutboundChannelRecipient` 读取 CUS 的精确租户、Inbox 与 Contact 渠道身份；不读取外部所有者的表。此接口沿用既有 retry/reopen 窄端口模式，未扩展依赖图或绕过严格扫描器。隔离所有者数据库测试验证身份绑定、租户边界，以及身份变更后禁止发送。
+
 ## 完整性校验
 
 - 源码基线：`rg '^type [A-Za-z0-9_]+ struct' internal/domain`。
-- 源码对象数：117。
-- 索引对象数：117；其中 116 个静态归属 26 个模块，1 个为明确排除的 L0 共享机制。
+- 源码结构数：140；其中 8 个既有自动化兼容性/数值解析辅助结构不作为持久化权威对象登记。
+- 索引对象数：132；其中 131 个静态归属 26 个模块，1 个为明确排除的 L0 共享机制。
 - 重复对象：0。
 - 缺失对象：0。
 - 多重静态所有者：0；`LocalChangeJournal` 不计入静态所有者分母，其记录按 `source_module` 动态归属。

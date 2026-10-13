@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/database"
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ModuleSnapshot struct {
@@ -50,6 +52,8 @@ func snapshotQuery(db *gorm.DB, model any) (*gorm.DB, error) {
 	return query, nil
 }
 
+// CreateSnapshot requires quiesced owner writes while its tables are read.
+// Independent owner snapshots do not establish a coherent cross-owner cut.
 func CreateSnapshot(db *gorm.DB, moduleID, generation, path string) error {
 	if db == nil || strings.TrimSpace(generation) == "" || strings.TrimSpace(path) == "" {
 		return errors.New("snapshot database, generation and path are required")
@@ -64,15 +68,36 @@ func CreateSnapshot(db *gorm.DB, moduleID, generation, path string) error {
 		if err != nil {
 			return err
 		}
+		if _, quota := model.(*domain.AIUsageQuota); moduleID == "AIC" && quota {
+			payload, err := snapshotAIUsageRows(db)
+			if err != nil {
+				return fmt.Errorf("snapshot table %s: invalid AI usage checkpoint", table)
+			}
+			snapshot.Tables[table] = payload
+			continue
+		}
+		if moduleID == "RPT" {
+			if payload, handled, err := createRPTReportingSnapshot(db, model); handled {
+				if err != nil {
+					return fmt.Errorf("snapshot table %s: invalid stored reporting events", table)
+				}
+				snapshot.Tables[table] = payload
+				continue
+			}
+		}
 		slice := reflect.New(reflect.SliceOf(reflect.TypeOf(model).Elem()))
 		query, err := snapshotQuery(db, model)
 		if err != nil {
 			return err
 		}
+		switch model.(type) {
+		case *domain.OrdinaryEmailIntent, *domain.OrdinaryEmailAttempt:
+			query = ordinaryEmailPrivateDB(query)
+		}
 		if err := query.Find(slice.Interface()).Error; err != nil {
 			return fmt.Errorf("snapshot table %s: %w", table, err)
 		}
-		payload, err := json.Marshal(slice.Elem().Interface())
+		payload, err := marshalSnapshotRows(slice.Elem().Interface())
 		if err != nil {
 			return err
 		}
@@ -87,12 +112,26 @@ func CreateSnapshot(db *gorm.DB, moduleID, generation, path string) error {
 	if err != nil {
 		return err
 	}
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, filePayload, 0600); err != nil {
+	// A predictable .tmp path could already be world-readable or a symlink.
+	// Create a fresh private file in the same directory, then atomically replace.
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if _, err := temp.Write(filePayload); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
 		return err
 	}
 	return nil
@@ -141,6 +180,11 @@ func RestoreSnapshot(ctx context.Context, db *gorm.DB, moduleID, generation, pat
 			return errors.New("module snapshot contains a foreign table")
 		}
 	}
+	if moduleID == "AUT" {
+		if err := validateAutomationSnapshotProfiles(file.Snapshot.Tables); err != nil {
+			return err
+		}
+	}
 	tables := make([]string, 0, len(expected))
 	for table := range expected {
 		tables = append(tables, table)
@@ -148,20 +192,108 @@ func RestoreSnapshot(ctx context.Context, db *gorm.DB, moduleID, generation, pat
 	sort.Strings(tables)
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, table := range tables {
+			if _, replay := expected[table].(*domain.SAMLReplay); moduleID == "IAM" && replay {
+				// A recovery must not erase security facts recorded after its checkpoint.
+				continue
+			}
 			if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Table(table).Delete(expected[table]).Error; err != nil {
 				return err
 			}
 		}
 		for _, table := range tables {
 			model := expected[table]
+			if moduleID == "RPT" {
+				if handled, err := restoreRPTReportingRows(tx, model, file.Snapshot.Tables[table]); handled {
+					if err != nil {
+						return fmt.Errorf("restore table %s: invalid stored reporting events", table)
+					}
+					continue
+				}
+			}
 			slice := reflect.New(reflect.SliceOf(reflect.TypeOf(model).Elem()))
-			if err := json.Unmarshal(file.Snapshot.Tables[table], slice.Interface()); err != nil {
+			if err := unmarshalSnapshotRows(file.Snapshot.Tables[table], slice.Interface()); err != nil {
 				return fmt.Errorf("restore table %s: invalid rows", table)
 			}
+			if moduleID == "AIC" {
+				if handled, err := restoreAIUsageSnapshotRows(tx, slice.Interface()); handled {
+					if err != nil {
+						return fmt.Errorf("restore table %s: AI usage restore failed", table)
+					}
+					continue
+				}
+			}
+			if moduleID == "ENT" {
+				if handled, err := restoreENTFeatureRows(tx, slice.Interface()); handled {
+					if err != nil {
+						return fmt.Errorf("restore table %s: feature flags restore failed", table)
+					}
+					continue
+				}
+			}
+			if moduleID == "MSG" {
+				if handled, err := restoreOrdinaryEmailRows(tx, slice.Interface()); handled {
+					if err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			if moduleID == "MSG" {
+				if handled, err := restoreConfirmationSnapshotLogs(tx, slice.Interface()); handled {
+					if err != nil {
+						return fmt.Errorf("restore table %s: confirmation log cleanup failed", table)
+					}
+					continue
+				}
+			}
+			if moduleID == "TEN" {
+				if handled, err := restoreInvitationSnapshotRows(tx, slice.Interface()); handled {
+					if err != nil {
+						return fmt.Errorf("restore table %s: invalid invitation checkpoint", table)
+					}
+					continue
+				}
+			}
+			if moduleID == "IAM" {
+				if handled, err := restoreSAMLSnapshotRows(tx, slice.Interface()); handled {
+					if err != nil {
+						return fmt.Errorf("restore table %s: invalid security checkpoint", table)
+					}
+					continue
+				}
+			}
 			if slice.Elem().Len() > 0 {
-				if err := tx.Table(table).Create(slice.Interface()).Error; err != nil {
+				if err := tx.Table(table).Omit(clause.Associations).Create(slice.Interface()).Error; err != nil {
 					return fmt.Errorf("restore table %s: %w", table, err)
 				}
+			}
+		}
+		if moduleID == "AUT" {
+			if err := validateRestoredAutomationSnapshot(tx); err != nil {
+				return err
+			}
+		}
+		if moduleID == "IAM" {
+			if err := validateRestoredInvitationIdentities(tx); err != nil {
+				return err
+			}
+		}
+		if err := restoreSnapshotSequences(tx, models); err != nil {
+			return err
+		}
+		if moduleID == "MSG" {
+			if err := restoreOrdinaryEmailSafety(tx); err != nil {
+				return err
+			}
+		}
+		if moduleID == "OPS" {
+			if err := restoreCannedSequence(tx); err != nil {
+				return err
+			}
+		}
+		if moduleID == "SRH" {
+			if err := restoreSavedFilterSequence(tx); err != nil {
+				return err
 			}
 		}
 		if rebuild != nil {

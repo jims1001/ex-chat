@@ -191,8 +191,13 @@ func (s *WebhookService) SetHTTPClient(client *http.Client) {
 func (s *WebhookService) RetryDelivery(accountID, deliveryID uint) (*domain.WebhookDelivery, error) {
 	var del domain.WebhookDelivery
 	err := s.db.Where("account_id = ? AND id = ?", accountID, deliveryID).First(&del).Error
+	// An explicit target is authoritative: a missing/foreign row or any read
+	// failure must stop before fallback selection, creation, mutation, or HTTP.
+	if deliveryID > 0 && err != nil {
+		return nil, err
+	}
 	if err != nil {
-		// If specific ID not found, attempt to find latest delivery for this account
+		// Preserve the legacy no-ID selection of the latest account delivery.
 		err = s.db.Where("account_id = ?", accountID).Order("id DESC").First(&del).Error
 		if err != nil {
 			// If no delivery at all, check if there's any webhook to create an attempt

@@ -89,19 +89,28 @@ func (r *AccountRepository) UpsertMember(accountID, userID uint, role string) (*
 		role = domain.RoleAgent
 	}
 	var member domain.AccountUser
-	err = r.db.Where("account_id = ? AND user_id = ?", accountID, userID).First(&member).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		member = domain.AccountUser{AccountID: accountID, UserID: userID, Role: role}
-		if err := r.db.Create(&member).Error; err != nil {
-			return nil, err
+	err = r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountMembershipWrites(tx, accountID); err != nil {
+			return err
 		}
-	} else if err != nil {
+		err = tx.Where("account_id = ? AND user_id = ?", accountID, userID).First(&member).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			member = domain.AccountUser{AccountID: accountID, UserID: userID, Role: role}
+			if err := tx.Create(&member).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else if member.Role != role {
+			member.Role = role
+			if err := tx.Save(&member).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
-	} else if member.Role != role {
-		member.Role = role
-		if err := r.db.Save(&member).Error; err != nil {
-			return nil, err
-		}
 	}
 	member.User = user
 	return &member, nil
@@ -205,7 +214,19 @@ func (r *AccountRepository) AddMemberWithRole(accountID, userID uint, role strin
 		CustomRoleID: customRoleID,
 		Availability: domain.AvailabilityOnline,
 	}
-	return r.db.Create(&member).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountMembershipWrites(tx, accountID); err != nil {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", accountID, userID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrInvitationMemberExists
+		}
+		return tx.Create(&member).Error
+	})
 }
 
 func (r *AccountRepository) GetMembership(accountID, userID uint) (*domain.AccountUser, error) {
@@ -323,18 +344,24 @@ func (r *AccountRepository) ListMemberRecords(accountID uint) ([]domain.AccountU
 // CreateMemberRecord persists only TEN-owned membership data. IAM identity
 // validation must be completed through the IAM contract before this method.
 func (r *AccountRepository) CreateMemberRecord(accountID, userID uint, role string) (*domain.AccountUser, error) {
-	account, err := r.FindByID(accountID)
-	if err != nil {
-		return nil, err
-	}
-	if account == nil {
-		return nil, gorm.ErrRecordNotFound
-	}
 	if role == "" {
 		role = domain.RoleAgent
 	}
 	member := &domain.AccountUser{AccountID: accountID, UserID: userID, Role: role, Availability: domain.AvailabilityOnline}
-	if err := r.db.Create(member).Error; err != nil {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockAccountMembershipWrites(tx, accountID); err != nil {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&domain.AccountUser{}).Where("account_id = ? AND user_id = ?", accountID, userID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrInvitationMemberExists
+		}
+		return tx.Create(member).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return member, nil

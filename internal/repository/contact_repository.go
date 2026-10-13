@@ -12,6 +12,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/domain"
 	"github.com/OracleBetX-Projects/ex-chat/internal/foundation"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type ContactRepository struct {
@@ -67,8 +68,10 @@ func (r *ContactRepository) FindAccountIDByGlobalID(id uint) (*uint, error) {
 }
 
 func (r *ContactRepository) Exists(accountID, id uint) (bool, error) {
+	// Do not log caller identifiers or raw dependency errors from Call reads.
+	db := r.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 	var count int64
-	err := r.db.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
+	err := db.Model(&domain.Contact{}).Where("account_id = ? AND id = ?", accountID, id).Count(&count).Error
 	return count == 1, err
 }
 
@@ -92,7 +95,9 @@ func (r *ContactRepository) VisitorTokenMatches(accountID, contactID, inboxID ui
 
 func (r *ContactRepository) FindByEmail(accountID uint, email string) (*domain.Contact, error) {
 	var contact domain.Contact
-	err := r.db.Where("account_id = ? AND email = ?", accountID, email).First(&contact).Error
+	// Imports may retain mixed-case addresses. Match the same normalized
+	// identity used by EmailExists and visitor profile updates.
+	err := r.db.Where("account_id = ? AND LOWER(email) = ?", accountID, strings.ToLower(strings.TrimSpace(email))).First(&contact).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -197,7 +202,7 @@ func (r *ContactRepository) UpdatePublic(accountID, contactID uint, updates, cus
 	if customAttrs != nil {
 		existing := make(map[string]any)
 		if strings.TrimSpace(contact.CustomAttributes) != "" {
-			_ = json.Unmarshal([]byte(contact.CustomAttributes), &existing)
+			_ = unmarshalCustomAttributeObject(contact.CustomAttributes, &existing)
 		}
 		for key, value := range customAttrs {
 			if value == nil {
@@ -227,10 +232,10 @@ func (r *ContactRepository) List(accountID uint, page, pageSize int, search stri
 func (r *ContactRepository) CountForReport(accountID uint, since, until *time.Time) (int64, error) {
 	query := r.db.Model(&domain.Contact{}).Where("account_id = ?", accountID)
 	if since != nil {
-		query = query.Where("created_at >= ?", *since)
+		query = query.Where("created_at >= ?", ReportTimeBoundary(query, *since))
 	}
 	if until != nil {
-		query = query.Where("created_at <= ?", *until)
+		query = query.Where("created_at < ?", ReportTimeBoundary(query, *until))
 	}
 	var count int64
 	err := query.Count(&count).Error
@@ -472,6 +477,15 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 	if exists != 2 {
 		return gorm.ErrRecordNotFound
 	}
+	// Channel identity merges require an explicit identity-transfer protocol.
+	// Reject before cross-owner conversation/message reassignment can run.
+	var channelIdentities int64
+	if err := r.db.Model(&domain.ChannelContactIdentity{}).Where("account_id = ? AND contact_id IN ?", accountID, []uint{baseID, mergeeID}).Count(&channelIdentities).Error; err != nil {
+		return err
+	}
+	if channelIdentities > 0 {
+		return ErrChannelContactMergeUnsupported
+	}
 	hasOwnerPort := r.conversations != nil || r.messages != nil || r.tickets != nil || r.orders != nil || r.campaigns != nil
 	if hasOwnerPort {
 		if r.conversations == nil || r.messages == nil || r.tickets == nil || r.orders == nil || r.campaigns == nil {
@@ -534,11 +548,11 @@ func (r *ContactRepository) MergeContacts(accountID, baseID, mergeeID uint) erro
 		// Merge CustomAttributes JSON
 		baseCustomAttrs := make(map[string]any)
 		if strings.TrimSpace(baseContact.CustomAttributes) != "" {
-			_ = json.Unmarshal([]byte(baseContact.CustomAttributes), &baseCustomAttrs)
+			_ = unmarshalCustomAttributeObject(baseContact.CustomAttributes, &baseCustomAttrs)
 		}
 		mergeeCustomAttrs := make(map[string]any)
 		if strings.TrimSpace(mergeeContact.CustomAttributes) != "" {
-			_ = json.Unmarshal([]byte(mergeeContact.CustomAttributes), &mergeeCustomAttrs)
+			_ = unmarshalCustomAttributeObject(mergeeContact.CustomAttributes, &mergeeCustomAttrs)
 		}
 
 		mergedAttrs := make(map[string]any)
@@ -676,9 +690,15 @@ func (r *ContactRepository) Search(accountID uint, search string, page, pageSize
 		return nil, 0, err
 	}
 
+	// A representable page may still overflow its offset. Such a page is
+	// beyond all representable rows, not an instruction to restart at page one.
+	if page-1 > int(^uint(0)>>1)/pageSize {
+		return []domain.Contact{}, total, nil
+	}
 	offset := (page - 1) * pageSize
 	err := query.Preload("Company").Preload("Labels").
-		Offset(offset).Limit(pageSize).
+		// The extra row is lookahead only; pages still advance by pageSize.
+		Offset(offset).Limit(pageSize + 1).
 		Order("id DESC").
 		Find(&contacts).Error
 
@@ -903,7 +923,7 @@ func (r *ContactRepository) DestroyCustomAttributes(accountID, contactID uint, k
 
 	attrs := make(map[string]any)
 	if contact.CustomAttributes != "" {
-		_ = json.Unmarshal([]byte(contact.CustomAttributes), &attrs)
+		_ = unmarshalCustomAttributeObject(contact.CustomAttributes, &attrs)
 	}
 
 	for _, k := range keys {

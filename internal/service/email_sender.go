@@ -2,11 +2,9 @@ package service
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"mime"
 	"net/mail"
-	"net/smtp"
 	"strings"
 	"sync"
 	"time"
@@ -52,7 +50,6 @@ func formatAddressHeader(rawAddr string) string {
 	return rawAddr
 }
 
-
 // SentEmail records captured email payload for inspection
 type SentEmail struct {
 	From     string
@@ -63,7 +60,11 @@ type SentEmail struct {
 	SentAt   time.Time
 }
 
-// EmailSender defines interface for sending email
+// EmailSender defines interface for sending email. Implementations used for
+// synchronous credential mail must honor context cancellation and deadlines.
+// The built-in SMTP sender enforces these on its socket. Custom implementations
+// that ignore context can block their caller and are unsupported for this use;
+// EmailService does not detach them into background goroutines.
 type EmailSender interface {
 	Send(ctx context.Context, from, to, subject, htmlBody, textBody string) error
 }
@@ -86,7 +87,6 @@ func NewSMTPEmailSender(host, port, username, password string) *SMTPEmailSender 
 }
 
 func (s *SMTPEmailSender) Send(ctx context.Context, from, to, subject, htmlBody, textBody string) error {
-	addr := fmt.Sprintf("%s:%s", s.Host, s.Port)
 	boundary := fmt.Sprintf("boundary-%d", time.Now().UnixNano())
 
 	logger.WithComponent("smtp").Info("sending email via smtp",
@@ -96,11 +96,6 @@ func (s *SMTPEmailSender) Send(ctx context.Context, from, to, subject, htmlBody,
 		"to", to,
 		"subject", subject,
 	)
-
-	var auth smtp.Auth
-	if s.Username != "" {
-		auth = smtp.PlainAuth("", s.Username, s.Password, s.Host)
-	}
 
 	headers := []string{
 		fmt.Sprintf("From: %s", formatAddressHeader(from)),
@@ -134,84 +129,21 @@ func (s *SMTPEmailSender) Send(ctx context.Context, from, to, subject, htmlBody,
 
 	rawMsg := []byte(msgBuilder.String())
 
-	// If port is 465, use direct TLS
-	if s.Port == "465" {
-		tlsConfig := &tls.Config{
-			ServerName: s.Host,
-		}
-		conn, err := tls.Dial("tcp", addr, tlsConfig)
-		if err != nil {
-			logger.WithComponent("smtp").Error("smtp tls dial failed",
-				"addr", addr,
-				"error", err.Error(),
-			)
-			return fmt.Errorf("tls dial failed: %w", err)
-		}
-		defer conn.Close()
-
-		client, err := smtp.NewClient(conn, s.Host)
-		if err != nil {
-			logger.WithComponent("smtp").Error("smtp new client failed",
-				"addr", addr,
-				"error", err.Error(),
-			)
-			return fmt.Errorf("smtp new client failed: %w", err)
-		}
-		defer client.Close()
-
-		if auth != nil {
-			if err = client.Auth(auth); err != nil {
-				logger.WithComponent("smtp").Error("smtp client auth failed",
-					"username", s.Username,
-					"error", err.Error(),
-				)
-				return fmt.Errorf("smtp auth failed: %w", err)
-			}
-		}
-		if err = client.Mail(from); err != nil {
-			logger.WithComponent("smtp").Error("smtp mail from failed",
-				"from", from,
-				"error", err.Error(),
-			)
-			return fmt.Errorf("smtp mail from failed: %w", err)
-		}
-		if err = client.Rcpt(to); err != nil {
-			logger.WithComponent("smtp").Error("smtp rcpt to failed",
-				"to", to,
-				"error", err.Error(),
-			)
-			return fmt.Errorf("smtp rcpt to failed: %w", err)
-		}
-		w, err := client.Data()
-		if err != nil {
-			logger.WithComponent("smtp").Error("smtp data failed", "error", err.Error())
-			return fmt.Errorf("smtp data failed: %w", err)
-		}
-		_, err = w.Write(rawMsg)
-		if err != nil {
-			logger.WithComponent("smtp").Error("smtp write failed", "error", err.Error())
-			return fmt.Errorf("smtp write failed: %w", err)
-		}
-		err = w.Close()
-		if err != nil {
-			logger.WithComponent("smtp").Error("smtp close data failed", "error", err.Error())
-			return fmt.Errorf("smtp close data failed: %w", err)
-		}
-
-		logger.WithComponent("smtp").Info("email sent successfully via tls smtp",
-			"to", to,
-			"subject", subject,
-		)
-
-		return client.Quit()
+	// Confirmation, password reset and invitations carry bearer credentials.
+	// Their shared marker selects the bounded, verified-TLS transport as well
+	// as error redaction. Ordinary mail retains its existing transport below.
+	if ctx != nil && ctx.Value(sensitiveEmailContextKey{}) == true {
+		return s.sendSensitiveSMTP(ctx, from, to, rawMsg, s.Port == "465")
 	}
 
-	if err := smtp.SendMail(addr, auth, from, []string{to}, rawMsg); err != nil {
-		logger.WithComponent("smtp").Error("smtp sendmail failed",
-			"addr", addr,
-			"to", to,
-			"error", err.Error(),
-		)
+	// Preserve the historical synchronous ordinary-mail cancellation contract.
+	// Only the owned retry lifecycle opts into interruptible ordinary SMTP.
+	transportCtx := context.Background()
+	if ctx != nil && ctx.Value(emailRetryLifecycleContextKey{}) == true {
+		transportCtx = ctx
+	}
+	if err := s.sendLegacySMTPContext(transportCtx, from, to, rawMsg, s.Port == "465"); err != nil {
+		logger.WithComponent("smtp").Error("smtp sendmail failed", "host", s.Host, "to", to, "error", safeEmailSendError(ctx, err))
 		return err
 	}
 
@@ -244,7 +176,7 @@ func (m *MockEmailSender) Send(ctx context.Context, from, to, subject, htmlBody,
 		err := m.failErr
 		logger.WithComponent("mock_smtp").Warn("mock email delivery simulated failure",
 			"to", to,
-			"error", err.Error(),
+			"error", safeEmailSendError(ctx, err),
 		)
 		return err
 	}

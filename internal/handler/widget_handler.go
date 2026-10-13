@@ -2,14 +2,12 @@ package handler
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +20,7 @@ import (
 	"github.com/OracleBetX-Projects/ex-chat/internal/ws"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/logger"
 	"github.com/OracleBetX-Projects/ex-chat/pkg/response"
+	"github.com/OracleBetX-Projects/ex-chat/pkg/uploadpath"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -148,6 +147,7 @@ type WidgetUpdateContactRequest struct {
 	Email            string         `json:"email"`
 	PhoneNumber      string         `json:"phone_number"`
 	Identifier       string         `json:"identifier"`
+	IdentifierHash   string         `json:"identifier_hash"`
 	CustomAttributes map[string]any `json:"custom_attributes"`
 }
 
@@ -198,54 +198,62 @@ func (h *WidgetHandler) extractWebsiteToken(c *gin.Context) string {
 	return strings.TrimSpace(token)
 }
 
-// extractSourceID retrieves the visitor source_id or contact_token, prioritizing signed session tokens
-func (h *WidgetHandler) extractSourceID(c *gin.Context) string {
-	// 1. Check for signed visitor session token
-	sessionToken := c.Query("visitor_session")
-	if sessionToken == "" {
-		sessionToken = c.Query("visitor_token")
-	}
-	if sessionToken == "" {
-		sessionToken = c.GetHeader("X-Visitor-Session")
-	}
-	if sessionToken == "" {
-		sessionToken = c.GetHeader("X-Visitor-Token")
-	}
-	if sessionToken != "" && h.jwtSecret != "" {
-		claims, err := auth.ParseVisitorToken(sessionToken, h.jwtSecret)
-		if err == nil && claims != nil && claims.SourceID != "" {
-			return claims.SourceID
+// visitorSessionToken consistently prioritizes explicit session credentials.
+func visitorSessionToken(c *gin.Context) string {
+	for _, key := range []string{"visitor_session", "visitor_token"} {
+		if values, exists := c.Request.URL.Query()[key]; exists {
+			if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+				return "invalid-empty-visitor-credential"
+			}
+			return values[0]
 		}
 	}
-
-	// 2. Fall back to standard source_id / contact_token
-	sourceID := c.Query("source_id")
-	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
-		sourceID = c.Query("contact_token")
+	for _, key := range []string{"X-Visitor-Session", "X-Visitor-Token"} {
+		if values, exists := c.Request.Header[http.CanonicalHeaderKey(key)]; exists {
+			if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+				return "invalid-empty-visitor-credential"
+			}
+			return values[0]
+		}
 	}
-	if sourceID == "" {
-		sourceID = c.GetHeader("X-Contact-Token")
-	}
-	return strings.TrimSpace(sourceID)
+	return ""
 }
 
-func (h *WidgetHandler) validateUploadSession(c *gin.Context, inboxID uint) bool {
-	if gin.Mode() != gin.ReleaseMode {
-		return true
-	}
-	token := c.Query("visitor_token")
-	if token == "" {
-		token = c.Query("visitor_session")
-	}
-	if token == "" {
-		token = c.GetHeader("X-Visitor-Token")
-	}
-	claims, err := auth.ParseVisitorToken(token, h.jwtSecret)
-	return err == nil && claims != nil && claims.InboxID == inboxID && claims.ContactID > 0
+type widgetVisitorIdentityKey struct{}
+
+type widgetVisitorIdentity struct {
+	claims  *auth.VisitorClaims
+	contact *domain.Contact
 }
 
-// resolveInbox retrieves the inbox from the website token
+// extractSourceID reads only the authenticated identity established by resolveInbox.
+func (h *WidgetHandler) extractSourceID(c *gin.Context) string {
+	identity, _ := c.Request.Context().Value(widgetVisitorIdentityKey{}).(*widgetVisitorIdentity)
+	if identity == nil {
+		return ""
+	}
+	return identity.claims.SourceID
+}
+
+func (h *WidgetHandler) requestSourceID(c *gin.Context, _, _ string) string {
+	return h.extractSourceID(c)
+}
+
+// resolveInbox requires an authenticated visitor on every protected widget route.
 func (h *WidgetHandler) resolveInbox(c *gin.Context) (*domain.Inbox, error) {
+	inbox, err := h.resolveInboxByWebsiteToken(c)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := requireWidgetVisitor(c, inbox, h.contactRepo, h.jwtSecret); err != nil {
+		return nil, err
+	}
+	return inbox, nil
+}
+
+// resolveInboxByWebsiteToken only resolves the public website identifier.
+// Capability-only endpoints must apply their own purpose-specific authorization.
+func (h *WidgetHandler) resolveInboxByWebsiteToken(c *gin.Context) (*domain.Inbox, error) {
 	token := h.extractWebsiteToken(c)
 	if token == "" {
 		response.BadRequest(c, "website_token is required")
@@ -260,41 +268,19 @@ func (h *WidgetHandler) resolveInbox(c *gin.Context) (*domain.Inbox, error) {
 	return inbox, nil
 }
 
-// resolveContact retrieves existing contact or creates a placeholder if requested
-func (h *WidgetHandler) resolveContact(ctx context.Context, inbox *domain.Inbox, sourceID string, autoCreate bool) (*domain.Contact, error) {
+// resolveContact reads the validated session contact or a capability's mapping.
+// Only bootstrap may create a new identity; lookup failures never create one.
+func (h *WidgetHandler) resolveContact(ctx context.Context, inbox *domain.Inbox, sourceID string, _ bool) (*domain.Contact, error) {
 	if strings.TrimSpace(sourceID) == "" {
 		return nil, nil
 	}
-
-	contact, err := h.widgetRepo.FindContactBySourceID(ctx, inbox.ID, sourceID)
-	if err != nil {
-		return nil, err
+	if identity, _ := ctx.Value(widgetVisitorIdentityKey{}).(*widgetVisitorIdentity); identity != nil {
+		if identity.claims.InboxID != inbox.ID || identity.claims.SourceID != sourceID {
+			return nil, auth.ErrInvalidVisitorToken
+		}
+		return identity.contact, nil
 	}
-	if contact != nil {
-		return contact, nil
-	}
-
-	if !autoCreate {
-		return nil, nil
-	}
-
-	// Auto-create visitor contact
-	name := "Visitor "
-	if len(sourceID) > 8 {
-		name += sourceID[:8]
-	} else {
-		name += sourceID
-	}
-
-	newContact := domain.Contact{
-		AccountID: inbox.AccountID,
-		Name:      name,
-	}
-	if err := h.contactRepo.Create(&newContact); err != nil {
-		return nil, err
-	}
-	_, _ = h.contactRepo.FindOrCreateContactInbox(newContact.ID, inbox.ID, sourceID)
-	return &newContact, nil
+	return h.widgetRepo.FindContactBySourceID(ctx, inbox.ID, sourceID)
 }
 
 // ----------------- Conversation History & Details -----------------
@@ -404,7 +390,7 @@ func (h *WidgetHandler) GetConversation(c *gin.Context) {
 
 // ListCampaigns lists active ongoing campaigns targeted for this widget inbox
 func (h *WidgetHandler) ListCampaigns(c *gin.Context) {
-	inbox, err := h.resolveInbox(c)
+	inbox, err := h.resolveInboxByWebsiteToken(c)
 	if err != nil {
 		return
 	}
@@ -440,19 +426,25 @@ func (h *WidgetHandler) RecordEvent(c *gin.Context) {
 		return
 	}
 
-	sourceID := req.SourceID
-	if sourceID == "" {
-		sourceID = req.ContactToken
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 
 	var contactID *uint
 	if sourceID != "" {
 		contact, _ := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
 		if contact != nil {
 			contactID = &contact.ID
+		}
+	}
+
+	if req.ConversationID != nil {
+		if *req.ConversationID == 0 || contactID == nil {
+			response.NotFound(c, "Conversation not found")
+			return
+		}
+		conv, err := h.convRepo.FindWidgetConversation(inbox.AccountID, inbox.ID, *req.ConversationID, contactID)
+		if err != nil || conv == nil {
+			response.NotFound(c, "Conversation not found")
+			return
 		}
 	}
 
@@ -621,13 +613,7 @@ func (h *WidgetHandler) AddLabels(c *gin.Context) {
 		return
 	}
 
-	sourceID := req.SourceID
-	if sourceID == "" {
-		sourceID = req.ContactToken
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 
 	if sourceID == "" {
 		response.BadRequest(c, "source_id or contact_token is required")
@@ -681,13 +667,7 @@ func (h *WidgetHandler) RemoveLabels(c *gin.Context) {
 		return
 	}
 
-	sourceID := req.SourceID
-	if sourceID == "" {
-		sourceID = req.ContactToken
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 
 	contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
 	if err != nil {
@@ -733,18 +713,12 @@ func (h *WidgetHandler) UpdateContact(c *gin.Context) {
 	}
 
 	var req WidgetUpdateContactRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid update payload: "+err.Error())
 		return
 	}
 
-	sourceID := req.SourceID
-	if sourceID == "" {
-		sourceID = req.ContactToken
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 
 	if sourceID == "" {
 		response.BadRequest(c, "source_id or contact_token is required")
@@ -759,6 +733,12 @@ func (h *WidgetHandler) UpdateContact(c *gin.Context) {
 		return
 	}
 
+	if !validateWidgetIdentifierProof(c, inbox, req.Identifier, req.IdentifierHash) {
+		return
+	}
+	if !validateVisitorIdentityUpdate(c, h.contactRepo, contact, req.Identifier, req.Email) {
+		return
+	}
 	updatedContact, err := h.widgetRepo.UpdateContactInfo(c.Request.Context(), inbox.AccountID, contact.ID,
 		req.Name, req.Email, req.PhoneNumber, req.Identifier, req.CustomAttributes)
 	if err != nil {
@@ -782,18 +762,12 @@ func (h *WidgetHandler) MergeContactCustomAttributes(c *gin.Context) {
 	}
 
 	var req WidgetMergeCustomAttributesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid custom attributes payload: "+err.Error())
 		return
 	}
 
-	sourceID := req.SourceID
-	if sourceID == "" {
-		sourceID = req.ContactToken
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 
 	if sourceID == "" {
 		response.BadRequest(c, "source_id or contact_token is required")
@@ -837,18 +811,12 @@ func (h *WidgetHandler) MergeConversationCustomAttributes(c *gin.Context) {
 	}
 
 	var req WidgetMergeCustomAttributesRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid custom attributes payload: "+err.Error())
 		return
 	}
 
-	sourceID := req.SourceID
-	if sourceID == "" {
-		sourceID = req.ContactToken
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 
 	contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
 	if err != nil {
@@ -943,9 +911,6 @@ func (h *WidgetHandler) DestroyContactCustomAttributes(c *gin.Context) {
 	}
 
 	if sourceID == "" {
-		sourceID = c.Query("source_id")
-	}
-	if sourceID == "" {
 		response.BadRequest(c, "source_id or contact_token is required")
 		return
 	}
@@ -980,7 +945,7 @@ func (h *WidgetHandler) SetUser(c *gin.Context) {
 	}
 
 	var req WidgetSetUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindCustomAttributesJSON(c, &req); err != nil {
 		response.BadRequest(c, "Invalid request payload: "+err.Error())
 		return
 	}
@@ -990,40 +955,33 @@ func (h *WidgetHandler) SetUser(c *gin.Context) {
 		return
 	}
 
-	// HMAC Validation if inbox has HMAC token configured
-	if inbox.HMACToken != "" {
-		if strings.TrimSpace(req.IdentifierHash) == "" {
-			if inbox.HMACMandatory {
-				response.Error(c, http.StatusUnauthorized, "identifier_hash is mandatory for this inbox")
-				return
-			}
-		} else {
-			mac := hmac.New(sha256.New, []byte(inbox.HMACToken))
-			mac.Write([]byte(req.Identifier))
-			expectedHash := hex.EncodeToString(mac.Sum(nil))
-			if !strings.EqualFold(expectedHash, strings.TrimSpace(req.IdentifierHash)) {
-				response.Error(c, http.StatusUnauthorized, "Invalid identifier_hash")
-				return
-			}
-		}
+	if !validateWidgetIdentifierProof(c, inbox, req.Identifier, req.IdentifierHash) {
+		return
 	}
 
 	sourceID := h.extractSourceID(c)
-	if sourceID == "" {
-		sourceID = req.Identifier
-	}
 
-	contact, err := h.widgetRepo.SetUser(
-		c.Request.Context(),
-		inbox,
-		req.Identifier,
-		req.Name,
-		req.Email,
-		req.PhoneNumber,
-		req.AvatarURL,
-		req.CustomAttributes,
-		sourceID,
-	)
+	identity, _ := c.Request.Context().Value(widgetVisitorIdentityKey{}).(*widgetVisitorIdentity)
+	if identity == nil {
+		response.Forbidden(c, "A valid visitor session is required")
+		return
+	}
+	identifier := strings.TrimSpace(req.Identifier)
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if !validateVisitorIdentityUpdate(c, h.contactRepo, identity.contact, identifier, email) {
+		return
+	}
+	updates := map[string]any{}
+	for key, value := range map[string]string{
+		"name": req.Name, "email": email, "identifier": identifier,
+		"phone_number": req.PhoneNumber, "avatar_url": req.AvatarURL,
+	} {
+		if value = strings.TrimSpace(value); value != "" {
+			updates[key] = value
+		}
+	}
+	contact, err := h.contactRepo.UpdatePublic(inbox.AccountID, identity.contact.ID, updates, req.CustomAttributes)
+
 	if err != nil {
 		response.InternalError(c, "Failed to set user: "+err.Error())
 		return
@@ -1057,22 +1015,13 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	if !h.validateUploadSession(c, inbox.ID) {
+	identity, _ := c.Request.Context().Value(widgetVisitorIdentityKey{}).(*widgetVisitorIdentity)
+	if identity == nil {
 		response.Forbidden(c, "A valid visitor session is required")
 		return
 	}
-
-	// Validate visitor identity: if source_id/contact_token provided, verify profile; otherwise auto-create or allow for this inbox
-	sourceID := h.extractSourceID(c)
-	if sourceID == "" {
-		response.BadRequest(c, "A valid visitor identity is required")
-		return
-	}
-	contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false)
-	if err != nil || contact == nil {
-		response.NotFound(c, "Visitor profile not found")
-		return
-	}
+	sourceID := identity.claims.SourceID
+	contact := identity.contact
 
 	// File extension whitelist: safe images, documents, audio/video, archives
 	allowedExts := map[string]bool{
@@ -1100,7 +1049,11 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 			return
 		}
 
-		cleanFilename := filepath.Base(file.Filename)
+		cleanFilename := file.Filename
+		if _, err := uploadpath.WidgetKey(inbox.ID, contact.ID, cleanFilename); err != nil {
+			response.BadRequest(c, "Invalid filename")
+			return
+		}
 		ext := strings.ToLower(filepath.Ext(cleanFilename))
 		if blockedExts[ext] || !allowedExts[ext] {
 			response.BadRequest(c, "File type is not permitted for upload")
@@ -1123,17 +1076,23 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 			return
 		}
 
-		uploadDir := filepath.Join("uploads", "widget", fmt.Sprintf("inbox_%d", inbox.ID))
-		_ = os.MkdirAll(uploadDir, 0755)
-
 		destFilename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), cleanFilename)
-		destPath := filepath.Join(uploadDir, destFilename)
+		storageKey, err := uploadpath.WidgetKey(inbox.ID, contact.ID, destFilename)
+		if err != nil {
+			response.BadRequest(c, "Invalid filename")
+			return
+		}
+		destPath := filepath.Join("uploads", filepath.FromSlash(storageKey))
+		if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
+			response.InternalError(c, "Failed to initialize upload storage")
+			return
+		}
 		if err := c.SaveUploadedFile(file, destPath); err != nil {
 			response.InternalError(c, "Failed to save uploaded file: "+err.Error())
 			return
 		}
 
-		fileURL := "/" + filepath.ToSlash(destPath)
+		fileURL := uploadpath.URL(storageKey)
 		blobKey := fmt.Sprintf("blobs/%d_%s", time.Now().UnixNano(), cleanFilename)
 
 		c.JSON(http.StatusOK, gin.H{
@@ -1161,13 +1120,17 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 		} `json:"blob"`
 	}
 	if err := c.ShouldBindJSON(&blobReq); err == nil && blobReq.Blob.Filename != "" {
-		cleanFilename := filepath.Base(blobReq.Blob.Filename)
+		cleanFilename := blobReq.Blob.Filename
+		if _, err := uploadpath.WidgetKey(inbox.ID, contact.ID, cleanFilename); err != nil {
+			response.BadRequest(c, "Invalid filename")
+			return
+		}
 		ext := strings.ToLower(filepath.Ext(cleanFilename))
 		if blockedExts[ext] || !allowedExts[ext] {
 			response.BadRequest(c, "File type is not permitted for upload")
 			return
 		}
-		if blobReq.Blob.ByteSize > 25*1024*1024 {
+		if blobReq.Blob.ByteSize <= 0 || blobReq.Blob.ByteSize > 25*1024*1024 {
 			response.BadRequest(c, "Attachment exceeds maximum size of 25MB")
 			return
 		}
@@ -1182,7 +1145,7 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 			response.InternalError(c, "Failed to authorize direct upload")
 			return
 		}
-		uploadURL := fmt.Sprintf("/api/v1/widget/direct_uploads/%s?website_token=%s&visitor_token=%s", blobKey, inbox.WebsiteToken, visitorToken)
+		uploadURL := (&url.URL{Path: "/api/v1/widget/direct_uploads/" + blobKey, RawQuery: url.Values{"website_token": {inbox.WebsiteToken}, "visitor_token": {visitorToken}}.Encode()}).String()
 		c.JSON(http.StatusOK, gin.H{
 			"key":       blobKey,
 			"signed_id": blobKey,
@@ -1199,21 +1162,8 @@ func (h *WidgetHandler) DirectUpload(c *gin.Context) {
 
 // DirectUploadWithKey receives binary or multipart data for a pre-negotiated direct upload key
 func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
-	inbox, err := h.resolveInbox(c)
+	inbox, err := h.resolveInboxByWebsiteToken(c)
 	if err != nil {
-		return
-	}
-	if !h.validateUploadSession(c, inbox.ID) {
-		response.Forbidden(c, "A valid visitor session is required")
-		return
-	}
-	sourceID := h.extractSourceID(c)
-	if sourceID == "" {
-		response.BadRequest(c, "A valid visitor identity is required")
-		return
-	}
-	if contact, err := h.resolveContact(c.Request.Context(), inbox, sourceID, false); err != nil || contact == nil {
-		response.NotFound(c, "Visitor profile not found")
 		return
 	}
 
@@ -1222,19 +1172,27 @@ func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
 		key = c.Param("filepath")
 	}
 	key = strings.TrimPrefix(key, "/")
-	if key == "" || strings.Contains(key, "..") {
+	if _, err := uploadpath.CanonicalKey(key); err != nil {
 		response.BadRequest(c, "Invalid upload key")
 		return
 	}
 
 	visitorToken := c.Query("visitor_token")
-	if visitorToken == "" {
+	if _, supplied := c.Request.URL.Query()["visitor_token"]; !supplied {
 		visitorToken = c.GetHeader("X-Visitor-Token")
 	}
-	uploadClaims, tokenErr := auth.ParseVisitorToken(visitorToken, h.jwtSecret)
+	uploadClaims, tokenErr := auth.ParseVisitorUploadToken(visitorToken, h.jwtSecret)
 	if tokenErr != nil || uploadClaims == nil || uploadClaims.InboxID != inbox.ID || uploadClaims.ContactID == 0 ||
 		uploadClaims.UploadKey == "" || uploadClaims.UploadKey != key || uploadClaims.MaxBytes <= 0 || uploadClaims.MaxBytes > 25*1024*1024 {
 		response.Forbidden(c, "Upload capability is invalid or does not match this key")
+		return
+	}
+
+	// A capability is the complete credential for this one upload, not a
+	// session. Resolve identity only from its signed claims, never query hints.
+	contact, err := h.resolveContact(c.Request.Context(), inbox, uploadClaims.SourceID, false)
+	if err != nil || contact == nil || contact.ID != uploadClaims.ContactID || contact.AccountID != inbox.AccountID {
+		response.Forbidden(c, "Upload capability does not match this profile")
 		return
 	}
 
@@ -1254,9 +1212,16 @@ func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
 		return
 	}
 
-	uploadDir := filepath.Join("uploads", "widget", fmt.Sprintf("inbox_%d", inbox.ID))
-	_ = os.MkdirAll(uploadDir, 0755)
-	destPath := filepath.Join(uploadDir, cleanBase)
+	storageKey, err := uploadpath.WidgetKey(inbox.ID, contact.ID, cleanBase)
+	if err != nil {
+		response.BadRequest(c, "Invalid upload key")
+		return
+	}
+	destPath := filepath.Join("uploads", filepath.FromSlash(storageKey))
+	if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
+		response.InternalError(c, "Failed to initialize upload storage")
+		return
+	}
 	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if errors.Is(err, os.ErrExist) {
 		c.JSON(http.StatusConflict, gin.H{"success": false, "error": "Upload key has already been used"})
@@ -1311,7 +1276,7 @@ func (h *WidgetHandler) DirectUploadWithKey(c *gin.Context) {
 	}
 	keepFile = true
 
-	fileURL := "/" + filepath.ToSlash(destPath)
+	fileURL := uploadpath.URL(storageKey)
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
 		"key":       key,
@@ -1340,14 +1305,8 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 		return
 	}
 
-	sourceID := strings.TrimSpace(req.SourceID)
+	sourceID := h.requestSourceID(c, req.SourceID, req.ContactToken)
 	if sourceID == "" {
-		sourceID = strings.TrimSpace(req.ContactToken)
-	}
-	if sourceID == "" {
-		sourceID = h.extractSourceID(c)
-	}
-	if sourceID == "" && gin.Mode() == gin.ReleaseMode {
 		response.Error(c, http.StatusUnauthorized, "visitor_session or source_id is required")
 		return
 	}
@@ -1375,7 +1334,7 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 
 	// Only allow visitor to edit their own incoming message, or interactive card/template messages (bot/system CSAT/form responses)
 	// Forbid editing human agent messages (SenderTypeUser)
-	if msg.SenderType != domain.SenderTypeContact && !(gin.Mode() != gin.ReleaseMode && sourceID == "" && msg.ContentType == domain.ContentTypeInputSelect && msg.SenderType == "") {
+	if msg.SenderType != domain.SenderTypeContact || contactID == nil || msg.SenderID != *contactID {
 		response.Forbidden(c, "Only visitor messages can be updated")
 		return
 	}
@@ -1411,7 +1370,7 @@ func (h *WidgetHandler) UpdateMessage(c *gin.Context) {
 
 // ListInboxMembers returns active members in the current inbox
 func (h *WidgetHandler) ListInboxMembers(c *gin.Context) {
-	inbox, err := h.resolveInbox(c)
+	inbox, err := h.resolveInboxByWebsiteToken(c)
 	if err != nil {
 		return
 	}

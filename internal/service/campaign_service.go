@@ -205,7 +205,10 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 	var campaign domain.Campaign
 	err := s.db.Where("account_id = ? AND id = ?", accountID, campaignID).First(&campaign).Error
 	if err != nil {
-		return 0, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, err
+		}
+		return 0, campaignPrerequisiteReadError{cause: err}
 	}
 
 	if campaign.Status == "completed" {
@@ -224,7 +227,10 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 	pageSize := 100
 	for {
 		batch, total, err := s.contactRepo.List(accountID, page, pageSize, "")
-		if err != nil || len(batch) == 0 {
+		if err != nil {
+			return 0, campaignPrerequisiteReadError{cause: err}
+		}
+		if len(batch) == 0 {
 			break
 		}
 		contacts = append(contacts, batch...)
@@ -271,7 +277,7 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 				}
 				matchedContactIDs, err := s.contactIDsMatchingLabels(accountID, labelNames, false)
 				if err != nil {
-					return 0, err
+					return 0, campaignPrerequisiteReadError{cause: err}
 				}
 
 				idMap := make(map[uint]bool)
@@ -309,7 +315,7 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 		} else {
 			matchedContactIDs, err := s.contactIDsMatchingLabels(accountID, []string{audienceStr}, true)
 			if err != nil {
-				return 0, err
+				return 0, campaignPrerequisiteReadError{cause: err}
 			}
 
 			idMap := make(map[uint]bool)
@@ -330,17 +336,25 @@ func (s *CampaignService) TriggerCampaign(accountID, campaignID uint) (int, erro
 		return 0, nil
 	}
 
-	sentCount := 0
-	now := time.Now().UTC()
-
-	for _, contact := range targetContacts {
-		// Ongoing campaigns deduplication check: do not deliver twice to same contact
-		if campaign.CampaignType == "ongoing" {
-			hasDelivered, _ := s.campaignRepo.HasDeliveredToContact(context.Background(), accountID, campaign.ID, contact.ID)
-			if hasDelivered {
-				continue
+	// Finish every required read before the first conversation/message/delivery
+	// effect. A late deduplication failure must not dispatch an earlier prefix.
+	eligibleContacts := targetContacts
+	if campaign.CampaignType == "ongoing" {
+		eligibleContacts = make([]domain.Contact, 0, len(targetContacts))
+		for _, contact := range targetContacts {
+			hasDelivered, err := s.campaignRepo.HasDeliveredToContact(context.Background(), accountID, campaign.ID, contact.ID)
+			if err != nil {
+				return 0, campaignPrerequisiteReadError{cause: err}
+			}
+			if !hasDelivered {
+				eligibleContacts = append(eligibleContacts, contact)
 			}
 		}
+	}
+
+	sentCount := 0
+	now := time.Now().UTC()
+	for _, contact := range eligibleContacts {
 
 		// Find or create conversation through the CON owner.
 		conv, err := s.convRepo.FindByContactAndInbox(accountID, contact.ID, campaign.InboxID)
@@ -425,22 +439,31 @@ func (s *CampaignService) TriggerOngoingCampaignForContact(accountID, inboxID, c
 	}
 
 	ongoingCampaigns, err := s.campaignRepo.ListActiveOngoing(context.Background(), accountID, inboxID)
-	if err != nil || len(ongoingCampaigns) == 0 {
+	if err != nil {
+		return 0, campaignPrerequisiteReadError{cause: err}
+	}
+	if len(ongoingCampaigns) == 0 {
 		return 0, nil
 	}
 
 	contact, err := s.contactRepo.FindByID(accountID, contactID)
-	if err != nil || contact == nil {
+	if err != nil {
+		return 0, campaignPrerequisiteReadError{cause: err}
+	}
+	if contact == nil {
 		return 0, nil
 	}
 
-	triggeredCount := 0
-	now := time.Now().UTC()
+	// Plan the complete eligible set before any campaign sends to this contact.
+	eligibleCampaigns := make([]domain.Campaign, 0, len(ongoingCampaigns))
 
 	for _, camp := range ongoingCampaigns {
 		// Anti-spam deduplication: has this contact already received this campaign?
 		hasDelivered, err := s.campaignRepo.HasDeliveredToContact(context.Background(), accountID, camp.ID, contactID)
-		if err != nil || hasDelivered {
+		if err != nil {
+			return 0, campaignPrerequisiteReadError{cause: err}
+		}
+		if hasDelivered {
 			continue
 		}
 
@@ -448,13 +471,19 @@ func (s *CampaignService) TriggerOngoingCampaignForContact(accountID, inboxID, c
 		if camp.Audience != "" && camp.Audience != "all" {
 			matches, err := s.contactMatchesAudience(accountID, contact, camp.Audience)
 			if err != nil {
-				return triggeredCount, err
+				return 0, campaignPrerequisiteReadError{cause: err}
 			}
 			if !matches {
 				continue
 			}
 		}
 
+		eligibleCampaigns = append(eligibleCampaigns, camp)
+	}
+
+	triggeredCount := 0
+	now := time.Now().UTC()
+	for _, camp := range eligibleCampaigns {
 		senderID := uint(0)
 		if camp.SenderID != nil {
 			senderID = *camp.SenderID
@@ -573,20 +602,29 @@ func containsUint(ids []uint, target uint) bool {
 }
 
 // StartScheduledCampaignWorker periodically checks and triggers scheduled and ongoing campaigns
-func (s *CampaignService) StartScheduledCampaignWorker(ctx context.Context, interval time.Duration) {
+func (s *CampaignService) StartScheduledCampaignWorker(ctx context.Context, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	ticker := time.NewTicker(interval)
 	go func() {
+		defer close(done)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				ticker.Stop()
 				return
 			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
 				s.ProcessScheduledCampaigns()
+				if ctx.Err() != nil {
+					return
+				}
 				s.ProcessOngoingCampaigns()
 			}
 		}
 	}()
+	return done
 }
 
 // ProcessScheduledCampaigns finds due scheduled campaigns and dispatches or activates them

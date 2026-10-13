@@ -293,6 +293,11 @@ func TestBusinessDefectsFix(t *testing.T) {
 			Email:     "resolved.cust@example.com",
 		}
 		db.Create(&contact)
+		const sourceID = "public-owned-contact"
+		if err := db.Create(&domain.ContactInbox{InboxID: inbox.ID, ContactID: contact.ID, SourceID: sourceID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		visitorSession := signWidgetVisitorSession(t, inbox.ID, contact.ID, sourceID, cfg.JWTSecret)
 
 		// Create conversation in 'resolved' status
 		conv := domain.Conversation{
@@ -314,6 +319,7 @@ func TestBusinessDefectsFix(t *testing.T) {
 			bytes.NewBuffer(msgBody),
 		)
 		reqPublic.Header.Set("Content-Type", "application/json")
+		reqPublic.Header.Set("X-Visitor-Session", visitorSession)
 		engine.ServeHTTP(wPublic, reqPublic)
 
 		if wPublic.Code != http.StatusCreated && wPublic.Code != http.StatusOK {
@@ -346,6 +352,11 @@ func TestBusinessDefectsFix(t *testing.T) {
 			Name:      "事件触发客户",
 		}
 		db.Create(&contact)
+		const sourceID = "public-owned-contact"
+		if err := db.Create(&domain.ContactInbox{InboxID: inbox.ID, ContactID: contact.ID, SourceID: sourceID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		visitorSession := signWidgetVisitorSession(t, inbox.ID, contact.ID, sourceID, cfg.JWTSecret)
 
 		conv := domain.Conversation{
 			AccountID: accountID,
@@ -372,6 +383,7 @@ func TestBusinessDefectsFix(t *testing.T) {
 			bytes.NewBuffer(msgBody),
 		)
 		reqPub.Header.Set("Content-Type", "application/json")
+		reqPub.Header.Set("X-Visitor-Session", visitorSession)
 		engine.ServeHTTP(wPub, reqPub)
 
 		if wPub.Code != http.StatusCreated && wPub.Code != http.StatusOK {

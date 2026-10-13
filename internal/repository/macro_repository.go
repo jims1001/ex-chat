@@ -144,6 +144,9 @@ func (r *MacroRepository) ExecuteForUser(ctx context.Context, accountID, macroID
 	if len(actions) == 0 {
 		return nil, fmt.Errorf("invalid macro actions: no executable actions found")
 	}
+	if err := validateMacroActionPlan(actions); err != nil {
+		return nil, err
+	}
 	if r.conversations == nil || r.accounts == nil || r.teams == nil || r.labels == nil || r.messages == nil {
 		return nil, gorm.ErrInvalidData
 	}
@@ -161,6 +164,28 @@ func (r *MacroRepository) ExecuteForUser(ctx context.Context, accountID, macroID
 		}
 	}
 	return results, nil
+}
+
+// Validate the entire parsed plan before any owner reads or effects. External
+// action names remain configurable but have no implemented execution path.
+func validateMacroActionPlan(actions []MacroAction) error {
+	for _, action := range actions {
+		name := action.ActionName
+		if name == "" {
+			name = action.Name
+		}
+		switch name {
+		case "resolve_conversation", "close_conversation", "close", "resolve",
+			"open_conversation", "open", "snooze_conversation", "snooze",
+			"mute_conversation", "change_status", "assign_agent", "remove_assigned_agent",
+			"assign_team", "remove_assigned_team", "change_priority", "add_label", "add_labels",
+			"remove_label", "remove_labels", "send_message", "send_reply", "reply",
+			"add_private_note", "private_note", "send_attachment":
+		default:
+			return fmt.Errorf("unsupported macro action %q", name)
+		}
+	}
+	return nil
 }
 
 func (r *MacroRepository) applyActions(ctx context.Context, accountID, convID, userID uint, actions []MacroAction) error {
@@ -279,8 +304,6 @@ func (r *MacroRepository) applyActions(ctx context.Context, accountID, convID, u
 					return e
 				}
 			}
-		case "send_email_transcript", "send_webhook_event":
-			logger.WithComponent("macro").Info("macro external action requested", "action", name, "account_id", accountID, "conversation_id", convID)
 		}
 	}
 	return r.conversations.ApplyMacroMutation(accountID, convID, mutation)
